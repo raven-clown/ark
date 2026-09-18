@@ -16,6 +16,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.akhq.configs.security.Group;
 import org.akhq.configs.security.Role;
 import org.akhq.configs.security.SecurityProperties;
+import org.akhq.employee.security.EmployeeAuthenticationProvider;
 import org.akhq.models.security.ClaimProvider;
 import org.akhq.models.security.ClaimProviderType;
 import org.akhq.models.security.ClaimRequest;
@@ -51,6 +52,13 @@ public class AKHQSecurityRule extends AbstractSecurityRule<HttpRequest<?>> {
 
     @Override
     public Publisher<SecurityRuleResult> check(HttpRequest<?> request, Authentication authentication) {
+        // Employees carry no "groups" claim for unrollGroups to parse - EmployeeGrantSecurityRule
+        // is authoritative for them instead.
+        if (authentication != null
+            && EmployeeAuthenticationProvider.AUTH_SOURCE.equals(authentication.getAttributes().get("auth_source"))) {
+            return Mono.just(SecurityRuleResult.UNKNOWN);
+        }
+
         var routeMatchInfo = BasicHttpAttributes.getRouteMatchInfo(request);
         if (routeMatchInfo.isEmpty() || !(routeMatchInfo.get() instanceof MethodBasedRouteMatch<?, ?> methodRoute)) {
             return Mono.just(SecurityRuleResult.UNKNOWN);

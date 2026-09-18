@@ -1,90 +1,72 @@
-# AKHQ (previously known as KafkaHQ)
+# Ark
 
-![Last Version](https://img.shields.io/github/tag-pre/tchiotludo/akhq.svg)
-![License](https://img.shields.io/github/license/tchiotludo/akhq)
-![Docker Pull](https://img.shields.io/docker/pulls/tchiotludo/akhq.svg)
-![Github Downloads](https://img.shields.io/github/downloads/tchiotludo/akhq/total)
-![Github Start](https://img.shields.io/github/stars/tchiotludo/akhq.svg)
-![Main](https://github.com/tchiotludo/akhq/workflows/Main/badge.svg)
-[![Artifact HUB](https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/akhq)](https://artifacthub.io/packages/search?repo=akhq)
+![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)
 
-> Kafka GUI for [Apache Kafka](http://kafka.apache.org/) to manage topics, topics data, consumers group, schema registry, connect and more...
+Kafka GUI for [Apache Kafka](http://kafka.apache.org/) to manage topics, topic data, consumer
+groups, schema registry, Kafka Connect, ksqlDB and more, extended with employee identity, team
+based access control, self-service projects and an audit trail built for on-premise, enterprise
+use. Built on top of AKHQ.
 
-<p align="center">
-  <img width="460" src="client/src/images/logo_black.svg"  alt="AKHQ for Kafka logo" /><br /><br />
-  <img width="720" src="docs/.vuepress/public/assets/images/video.gif"  alt="AKHQ for Kafka preview" />
-</p>
+## What Ark adds on top of AKHQ
+
+* **Employee login**: sign in with an employee code looked up against a central company API, or
+  with a manually created account and password.
+* **Central admin dashboard**: platform admins see every employee pulled in from the directory
+  and grant access per team or per person, down to resource and action (read a topic, produce to
+  it, manage a connector, and so on).
+* **Two tier admin hierarchy**: a regular admin can configure everything day to day, only a super
+  admin can change another super admin's account.
+* **Projects**: any employee can create a project, become its owner, add teammates with a role
+  (viewer, developer, maintainer, owner) and link the Kafka clusters the project actually uses.
+  Access is logical only, every project shares the same underlying clusters.
+* **Audit log viewer**: search and filter the existing `akhq-audit` topic by employee, team, or
+  action type, with a print view for compliance reporting.
+* **Cluster connection definitions**: define a cluster's bootstrap servers, schema registry and
+  connect endpoints through a form, and get back the exact YAML block to place in
+  `application.yml`.
+* **Retention settings**: default data retention periods editable from the admin dashboard.
+
+## Core Kafka features (inherited from AKHQ)
+
+* Topics: browse, search, create, configure, tail and produce data
+* Consumer groups: view lag, members, reset or delete offsets
+* Schema registry, Kafka Connect and ksqlDB browsing and management
+* Access control list viewer
+* Node and broker inspection
+
+## Getting started
+
+Backend, requires JDK 25:
+
+```bash
+./gradlew run
+```
+
+Frontend, for local development:
+
+```bash
+cd client
+npm install
+npm run start
+```
+
+Application configuration lives in `src/main/resources/application.yml`. The
+`akhq.employee-directory` section controls the employee login flow, including the mock directory
+client used for local development.
 
 ## Documentation
-* The official AKHQ documentation can be found under: [akhq.io](https://akhq.io/docs)
 
-## From AKHQ project creator
-<table>
-<tr>
-<td>
-  <img width="1000" height="0">
-    <a href="https://github.com/kestra-io/kestra?utm_source=AKHQ" >
-  <img src="https://kestra.io/video.gif" alt="Kestra" width="320" align="right">
-  </a>
+* Architecture and RBAC data model: `docs/enterprise/architecture-blueprint.md`
+* Draft blueprint for a fuller multi-tenant, multi-cluster control plane, not implemented, kept
+  as reference: `docs/enterprise/multi-tenant-control-plane-blueprint.md`
 
-<h3>Kestra: Open source data orchestration and scheduling platform</h3>
+## Security
 
-<p>
-Kestra is an infinitely scalable orchestration and scheduling platform, creating, running, scheduling, and monitoring millions of complex pipelines.
-</p>
-
-[Discover the project!](https://github.com/kestra-io/kestra?utm_source=AKHQ)
-</td>
-</tr>
-</table>
-
-
-
-## Who's using AKHQ
-* [Archer Aviation](https://archer.com/)
-* [Adeo](https://www.adeo.com/)
-* [Avlino](https://avlino.com/)
-* [Auchan Retail](https://www.auchan-retail.com/)
-* [BARMER](https://www.barmer.de/)
-* [Bell](https://www.bell.ca)
-* [Best buy](https://www.bestbuy.com)
-* [BMW Group](https://www.bmwgroup.com)
-* [Boulanger](https://www.boulanger.com/)
-* [BPCE-IT](https://www.bpce-it.fr/)
-* [CEVA Logistics](https://www.cevalogistics.com)
-* [Decathlon](https://www.decathlon.fr/)
-* [Depop](https://www.depop.com)
-* [Doximity](https://www.doximity.com)
-* [Fresha](https://www.fresha.com/)
-* [Galeries Lafayette](https://www.galerieslafayette.com/)
-* [GetYourGuide](https://www.getyourguide.com)
-* [GrtGaz](https://www.grtgaz.com/)
-* [Kitopi](https://kitopi.com)
-* [Klarna](https://www.klarna.com)
-* [La Redoute](https://laredoute.io/)
-* [Leroy Merlin](https://www.leroymerlin.fr/)
-* [MAIF](https://www.maif.fr/)
-* [ManoMano](https://www.manomano.fr/)
-* [NEXT Technologies](https://www.nextapp.co/)
-* [Nuxeo](https://www.nuxeo.com/)
-* [Pipedrive](https://www.pipedrive.com)
-* [TUI](https://www.tui.com)
-* [TVG](https://www.tvg.com)
-* [Vodeno](https://www.vodeno.com/)
-* [Baloise](https://www.baloise.ch/)
-* [Michelin](https://www.michelin.com)
-
-
-
-## Credits
-
-Many thanks to:
-
-* [JetBrains](https://www.jetbrains.com/?from=AKHQ) for their free OpenSource license.
-* Apache, Apache Kafka, Kafka, and associated open source project names are trademarks of the Apache Software Foundation. AKHQ is not affiliated with, endorsed by, or otherwise associated with the Apache Software.
-
-[![Jetbrains](https://resources.jetbrains.com/storage/products/company/brand/logos/jetbrains.svg)](https://jb.gg/OpenSourceSupport)
-
+Read the "Before deploying this anywhere reachable by untrusted users" section of
+`docs/enterprise/architecture-blueprint.md` before any real deployment. The employee login flow
+authenticates on employee code alone by design; that document lays out the tradeoffs and the
+options for closing the gap.
 
 ## License
-Apache 2.0 © [tchiotludo](https://github.com/tchiotludo)
+
+Apache License 2.0. See [LICENSE](LICENSE).

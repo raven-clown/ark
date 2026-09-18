@@ -353,6 +353,76 @@ export const uriTopicLastRecord = (clusterId, topicList) => {
   return `${apiUrl}/${clusterId}/topic/last-record?topics=${topicList}`;
 };
 
+export const uriAdminEmployees = () => `${apiUrl}/admin/employees`;
+
+export const uriAdminEmployee = employeeCode =>
+  `${apiUrl}/admin/employees/${encodeURIComponent(employeeCode)}`;
+
+export const uriAdminEmployeeAdmin = employeeCode =>
+  `${apiUrl}/admin/employees/${encodeURIComponent(employeeCode)}/admin`;
+
+export const uriAdminEmployeeSuperAdmin = employeeCode =>
+  `${apiUrl}/admin/employees/${encodeURIComponent(employeeCode)}/super-admin`;
+
+export const uriAdminEmployeeActive = employeeCode =>
+  `${apiUrl}/admin/employees/${encodeURIComponent(employeeCode)}/active`;
+
+export const uriAdminEmployeeTeams = employeeCode =>
+  `${apiUrl}/admin/employees/${encodeURIComponent(employeeCode)}/teams`;
+
+export const uriAdminEmployeeTeam = (employeeCode, teamName) =>
+  `${apiUrl}/admin/employees/${encodeURIComponent(employeeCode)}/teams/${encodeURIComponent(teamName)}`;
+
+export const uriAdminEmployeeGrants = employeeCode =>
+  `${apiUrl}/admin/employees/${encodeURIComponent(employeeCode)}/grants`;
+
+export const uriAdminEmployeeGrant = (employeeCode, grantId) =>
+  `${apiUrl}/admin/employees/${encodeURIComponent(employeeCode)}/grants/${grantId}`;
+
+export const uriAdminEmployeeManual = () => `${apiUrl}/admin/employees/manual`;
+
+export const uriAdminEmployeePassword = employeeCode =>
+  `${apiUrl}/admin/employees/${encodeURIComponent(employeeCode)}/password`;
+
+export const uriAdminTeams = () => `${apiUrl}/admin/teams`;
+
+export const uriAdminRetentionSettings = () => `${apiUrl}/admin/settings/retention`;
+
+export const uriAdminRetentionSetting = key =>
+  `${apiUrl}/admin/settings/retention/${encodeURIComponent(key)}`;
+
+export const uriProjects = () => `${apiUrl}/projects`;
+
+export const uriMyProjects = () => `${apiUrl}/projects/mine`;
+
+export const uriProject = slug => `${apiUrl}/projects/${encodeURIComponent(slug)}`;
+
+export const uriProjectMembers = slug => `${apiUrl}/projects/${encodeURIComponent(slug)}/members`;
+
+export const uriProjectMember = (slug, employeeCode) =>
+  `${apiUrl}/projects/${encodeURIComponent(slug)}/members/${encodeURIComponent(employeeCode)}`;
+
+export const uriProjectClusters = slug => `${apiUrl}/projects/${encodeURIComponent(slug)}/clusters`;
+
+export const uriProjectCluster = (slug, clusterName) =>
+  `${apiUrl}/projects/${encodeURIComponent(slug)}/clusters/${encodeURIComponent(clusterName)}`;
+
+export const uriAdminClusterConnections = () => `${apiUrl}/admin/cluster-connections`;
+
+export const uriAdminClusterConnection = name =>
+  `${apiUrl}/admin/cluster-connections/${encodeURIComponent(name)}`;
+
+export const uriAdminAuditLog = params => {
+  const query = new URLSearchParams();
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== '') {
+      query.set(key, value);
+    }
+  });
+  const qs = query.toString();
+  return `${apiUrl}/admin/audit-log${qs ? '?' + qs : ''}`;
+};
+
 export default {
   apiUrl,
   uriClusters,

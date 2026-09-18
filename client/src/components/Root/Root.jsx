@@ -1,7 +1,7 @@
 import { Component } from 'react';
 import { basePath } from '../../utils/endpoints';
 import axios from 'axios';
-import { get, put, post, remove } from '../../utils/api';
+import { get, put, post, patch, remove } from '../../utils/api';
 
 class Root extends Component {
   cancel = axios.CancelToken.source();
@@ -43,6 +43,9 @@ class Root extends Component {
   }
   putApi(url, body) {
     return put(url, body, this.buildConfig());
+  }
+  patchApi(url, body) {
+    return patch(url, body, this.buildConfig());
   }
   removeApi(url, body) {
     return remove(url, body, this.buildConfig());

@@ -10,6 +10,10 @@ import io.micronaut.security.utils.SecurityService;
 import jakarta.inject.Inject;
 import org.akhq.configs.security.Group;
 import org.akhq.configs.security.SecurityProperties;
+import org.akhq.employee.repository.EmployeeRepository;
+import org.akhq.employee.security.EmployeeAuthenticationProvider;
+import org.akhq.employee.service.EffectiveGrant;
+import org.akhq.employee.service.PermissionResolutionService;
 import org.akhq.models.security.ClaimProvider;
 import org.akhq.security.annotation.AKHQSecured;
 import org.akhq.security.rule.AKHQSecurityRule;
@@ -33,6 +37,12 @@ abstract public class AbstractController {
 
     @Inject
     private ClaimProvider claimProvider;
+
+    @Inject
+    private EmployeeRepository employeeRepository;
+
+    @Inject
+    private PermissionResolutionService permissionResolutionService;
 
     @Value("${micronaut.server.context-path:}")
     protected String basePath;
@@ -60,15 +70,50 @@ abstract public class AbstractController {
             groups.addAll(securityProperties.getGroups().get(securityProperties.getDefaultGroup()));
         }
 
-        // Add user groups
-        authentication.ifPresent(value -> groups.addAll(
-            AKHQSecurityRule.unrollGroups(value, claimProvider).values().stream()
-                .flatMap(Collection::stream)
-                .map(gb -> new ObjectMapper().convertValue(gb, Group.class))
-                .toList())
-        );
+        // Add user groups. Employees are grouped separately below since their permissions come
+        // from the RBAC database rather than the akhq.security.groups/roles YAML, and their JWT
+        // carries no "groups" claim for AKHQSecurityRule.unrollGroups to parse.
+        authentication.ifPresent(value -> {
+            if (isEmployeeAuthentication(value)) {
+                groups.addAll(getEmployeeEffectiveGrants(value).stream()
+                    .map(this::toSyntheticGroup)
+                    .toList());
+            } else {
+                groups.addAll(
+                    AKHQSecurityRule.unrollGroups(value, claimProvider).values().stream()
+                        .flatMap(Collection::stream)
+                        .map(gb -> new ObjectMapper().convertValue(gb, Group.class))
+                        .toList());
+            }
+        });
 
         return groups;
+    }
+
+    /**
+     * Only safe to use where the caller reads Group.clusters directly (e.g. cluster listing) -
+     * the role name carries no meaning in akhq.security.roles, so anything resolving permissions
+     * through securityProperties.getRoles().get(group.getRole()) must branch on
+     * isEmployeeAuthentication() instead of consuming this.
+     */
+    private Group toSyntheticGroup(EffectiveGrant grant) {
+        Group group = new Group();
+        group.setRole("employee-grant:" + grant.resource() + ":" + grant.action());
+        group.setClusters(List.of(grant.clusterPattern()));
+        group.setPatterns(List.of(grant.topicPattern()));
+        return group;
+    }
+
+    protected boolean isEmployeeAuthentication(Authentication authentication) {
+        return authentication != null
+            && EmployeeAuthenticationProvider.AUTH_SOURCE.equals(authentication.getAttributes().get("auth_source"));
+    }
+
+    protected List<EffectiveGrant> getEmployeeEffectiveGrants(Authentication authentication) {
+        String employeeCode = String.valueOf(authentication.getAttributes().get("employee_code"));
+        return employeeRepository.findByEmployeeCode(employeeCode)
+            .map(employee -> permissionResolutionService.resolveEffectiveGrants(employee.getId()))
+            .orElse(List.of());
     }
 
     /**
@@ -87,6 +132,16 @@ abstract public class AbstractController {
             annotation = getCallingAKHQSecuredAnnotation();
         } catch (NoSuchMethodException e) {
             return List.of();
+        }
+
+        Optional<Authentication> authentication = applicationContext.getBean(SecurityService.class).getAuthentication();
+        if (authentication.isPresent() && isEmployeeAuthentication(authentication.get())) {
+            return getEmployeeEffectiveGrants(authentication.get()).stream()
+                .filter(grant -> grant.resource() == annotation.resource() && grant.action() == annotation.action())
+                .filter(grant -> Pattern.matches(grant.clusterPattern(), cluster))
+                .map(EffectiveGrant::topicPattern)
+                .distinct()
+                .collect(Collectors.toList());
         }
 
         return getUserGroups().stream()
@@ -149,26 +204,35 @@ abstract public class AbstractController {
 
         try {
             AKHQSecured annotation = getCallingAKHQSecuredAnnotation();
+            Optional<Authentication> authentication = applicationContext.getBean(SecurityService.class).getAuthentication();
 
-            isAllowed = getUserGroups().stream()
-                // Get only group with role matching the method annotation resource and action
-                .filter(groupBinding -> securityProperties.getRoles().entrySet().stream()
-                    .filter(role -> groupBinding.getRole().equals(role.getKey()))
-                    .flatMap(role -> role.getValue().stream())
-                    .anyMatch(roleBinding -> roleBinding.getResources().contains(annotation.resource())
-                        && roleBinding.getActions().contains(annotation.action())))
-                // Check that resource and cluster patterns match
-                .anyMatch(group -> {
-                    boolean allowed = group.getClusters().stream()
-                        .anyMatch(pattern -> Pattern.matches(pattern, cluster));
+            if (authentication.isPresent() && isEmployeeAuthentication(authentication.get())) {
+                isAllowed = getEmployeeEffectiveGrants(authentication.get()).stream()
+                    .anyMatch(grant -> grant.resource() == annotation.resource()
+                        && grant.action() == annotation.action()
+                        && Pattern.matches(grant.clusterPattern(), cluster)
+                        && (StringUtils.isEmpty(resource) || Pattern.matches(grant.topicPattern(), resource)));
+            } else {
+                isAllowed = getUserGroups().stream()
+                    // Get only group with role matching the method annotation resource and action
+                    .filter(groupBinding -> securityProperties.getRoles().entrySet().stream()
+                        .filter(role -> groupBinding.getRole().equals(role.getKey()))
+                        .flatMap(role -> role.getValue().stream())
+                        .anyMatch(roleBinding -> roleBinding.getResources().contains(annotation.resource())
+                            && roleBinding.getActions().contains(annotation.action())))
+                    // Check that resource and cluster patterns match
+                    .anyMatch(group -> {
+                        boolean allowed = group.getClusters().stream()
+                            .anyMatch(pattern -> Pattern.matches(pattern, cluster));
 
-                    if (StringUtils.isNotEmpty(resource)) {
-                        allowed = allowed && group.getPatterns().stream()
-                            .anyMatch(pattern -> Pattern.matches(pattern, resource));
-                    }
+                        if (StringUtils.isNotEmpty(resource)) {
+                            allowed = allowed && group.getPatterns().stream()
+                                .anyMatch(pattern -> Pattern.matches(pattern, resource));
+                        }
 
-                    return allowed;
-                });
+                        return allowed;
+                    });
+            }
         } catch (NoSuchMethodException e) {
             isAllowed = false;
         }

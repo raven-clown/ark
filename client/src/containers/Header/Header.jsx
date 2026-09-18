@@ -42,6 +42,8 @@ class Header extends Root {
       sessionStorage.setItem('login', currentUserData.logged);
       sessionStorage.setItem('user', 'default');
       sessionStorage.setItem('roles', organizeRoles(currentUserData.roles));
+      sessionStorage.setItem('isAdmin', 'false');
+      sessionStorage.setItem('isSuperAdmin', 'false');
       localStorage.removeItem('jwtToken');
       this.setState({ login: currentUserData.logged }, () => {
         toast.success('Logged out successfully');

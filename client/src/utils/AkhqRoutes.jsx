@@ -26,6 +26,12 @@ import ConsumerGroupOffsetDelete from '../containers/ConsumerGroup/ConsumerGroup
 import AclDetails from '../containers/Acl/AclDetail';
 import Login from '../containers/Login';
 import Settings from '../containers/Settings/Settings';
+import AdminEmployeeList from '../containers/Admin/AdminEmployeeList';
+import AdminEmployeeDetail from '../containers/Admin/AdminEmployeeDetail';
+import AdminAuditLog from '../containers/Admin/AdminAuditLog';
+import AdminClusterConnections from '../containers/Admin/AdminClusterConnections';
+import ProjectList from '../containers/Projects/ProjectList';
+import ProjectDetail from '../containers/Projects/ProjectDetail';
 import { organizeRoles } from './converters';
 import { uriAuths, uriClusters, uriCurrentUser } from './endpoints';
 import Root from '../components/Root';
@@ -92,6 +98,8 @@ class AkhqRoutes extends Root {
       sessionStorage.setItem('login', true);
       sessionStorage.setItem('user', currentUserData.username);
       sessionStorage.setItem('roles', organizeRoles(currentUserData.roles));
+      sessionStorage.setItem('isAdmin', currentUserData.admin ? 'true' : 'false');
+      sessionStorage.setItem('isSuperAdmin', currentUserData.superAdmin ? 'true' : 'false');
       this.setState({ user: currentUserData.username });
     } else {
       this.saveReturnToOnSessionExpiry();
@@ -138,6 +146,7 @@ class AkhqRoutes extends Root {
     const { location } = this.props;
     const clusters = this.state.clusters || [];
     const roles = JSON.parse(sessionStorage.getItem('roles')) || {};
+    const isAdmin = sessionStorage.getItem('isAdmin') === 'true';
     let clusterId = this.state.clusterId;
 
     if (this.state.user.length <= 0) {
@@ -311,6 +320,28 @@ class AkhqRoutes extends Root {
                 />
               )}
               <Route exact path="/ui/:clusterId/settings" element={<Settings />} />
+              <Route exact path="/ui/projects" element={<ProjectList />} />
+              <Route exact path="/ui/projects/:projectSlug" element={<ProjectDetail />} />
+              {isAdmin && (
+                <Route exact path="/ui/admin/employees" element={<AdminEmployeeList />} />
+              )}
+              {isAdmin && (
+                <Route
+                  exact
+                  path="/ui/admin/employees/:employeeCode"
+                  element={<AdminEmployeeDetail />}
+                />
+              )}
+              {isAdmin && (
+                <Route exact path="/ui/admin/audit-log" element={<AdminAuditLog />} />
+              )}
+              {isAdmin && (
+                <Route
+                  exact
+                  path="/ui/admin/cluster-connections"
+                  element={<AdminClusterConnections />}
+                />
+              )}
               <Route path="/" element={<Navigate to={this.handleRedirect()} />} />
               <Route path="/ui" element={<Navigate to={this.checkAfterLoginAndHandleRedirect()} />} />
               <Route path="/ui/401" element={<Navigate to={this.handleRedirect()} />} />

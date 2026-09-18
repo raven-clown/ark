@@ -81,6 +81,8 @@ class Login extends Form {
         sessionStorage.setItem('login', true);
         sessionStorage.setItem('user', currentUserData.username);
         sessionStorage.setItem('roles', organizeRoles(currentUserData.roles));
+        sessionStorage.setItem('isAdmin', currentUserData.admin ? 'true' : 'false');
+        sessionStorage.setItem('isSuperAdmin', currentUserData.superAdmin ? 'true' : 'false');
 
         const returnTo = sessionStorage.getItem('returnTo');
         sessionStorage.removeItem('returnTo');

@@ -10,6 +10,7 @@ import io.micronaut.http.MediaType;
 import io.micronaut.http.annotation.Controller;
 import io.micronaut.http.annotation.Get;
 import io.micronaut.security.annotation.Secured;
+import io.micronaut.security.authentication.Authentication;
 import io.micronaut.security.ldap.configuration.LdapConfiguration;
 import io.micronaut.security.rules.SecurityRule;
 import io.micronaut.security.utils.SecurityService;
@@ -20,6 +21,9 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import org.akhq.configs.*;
 import org.akhq.configs.security.*;
+import org.akhq.employee.repository.EmployeeRepository;
+import org.akhq.employee.security.EmployeeAuthenticationProvider;
+import org.akhq.employee.service.PermissionResolutionService;
 import org.akhq.repositories.AbstractRepository;
 import org.akhq.security.annotation.HasAnyPermission;
 import org.akhq.utils.VersionProvider;
@@ -149,7 +153,8 @@ public class AkhqController extends AbstractController {
             authDefinition.loginEnabled = true;
             // Display login form if there are LocalUsers OR Ldap is enabled
             authDefinition.formEnabled = !securityProperties.getBasicAuth().isEmpty() ||
-                applicationContext.containsBean(LdapConfiguration.class);
+                applicationContext.containsBean(LdapConfiguration.class) ||
+                applicationContext.containsBean(EmployeeAuthenticationProvider.class);
 
             if (!authDefinition.formEnabled &&
                 authDefinition.oidcAuths == null &&
@@ -177,6 +182,8 @@ public class AkhqController extends AbstractController {
                 .ifPresent(authentication -> {
                     authUser.logged = true;
                     authUser.username = authentication.getName();
+                    authUser.admin = Boolean.TRUE.equals(authentication.getAttributes().get("admin"));
+                    authUser.superAdmin = Boolean.TRUE.equals(authentication.getAttributes().get("super_admin"));
                 });
         }
 
@@ -265,8 +272,32 @@ public class AkhqController extends AbstractController {
             return expandRoles(securityProperties.getGroups().get(securityProperties.getDefaultGroup()));
         }
 
+        Authentication authentication = applicationContext.getBean(SecurityService.class).getAuthentication().get();
+
+        // Employees are granted permissions from the RBAC database, not the static akhq.security YAML
+        if (EmployeeAuthenticationProvider.AUTH_SOURCE.equals(authentication.getAttributes().get("auth_source"))) {
+            return employeeRights(authentication);
+        }
+
         // Authentication enabled and user logged in
         return expandRoles(getUserGroups());
+    }
+
+    private List<AuthUser.AuthPermissions> employeeRights(Authentication authentication) {
+        String employeeCode = String.valueOf(authentication.getAttributes().get("employee_code"));
+
+        return applicationContext.getBean(EmployeeRepository.class).findByEmployeeCode(employeeCode)
+            .map(employee -> applicationContext.getBean(PermissionResolutionService.class)
+                .resolveEffectiveGrants(employee.getId())
+                .stream()
+                .map(grant -> {
+                    Role role = new Role();
+                    role.setResources(List.of(grant.resource()));
+                    role.setActions(List.of(grant.action()));
+                    return new AuthUser.AuthPermissions(role, List.of(grant.topicPattern()), List.of(grant.clusterPattern()));
+                })
+                .collect(Collectors.toList()))
+            .orElse(List.of());
     }
 
     @AllArgsConstructor
@@ -302,6 +333,8 @@ public class AkhqController extends AbstractController {
     public static class AuthUser {
         private boolean logged = false;
         private String username;
+        private boolean admin = false;
+        private boolean superAdmin = false;
         private List<AuthPermissions> roles = new ArrayList<>();
 
         @AllArgsConstructor

@@ -39,6 +39,7 @@ export const SCHEMA = 'schema';
 export const CONNECT = 'connect';
 export const KSQLDB = 'ksqldb';
 export const SETTINGS = 'settings';
+export const ADMIN = 'admin';
 
 // Configurable settings
 export const SETTINGS_VALUES = {

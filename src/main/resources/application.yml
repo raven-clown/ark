@@ -78,6 +78,20 @@ micronaut:
     client:
       allow-block-event-loop: true
 
+datasources:
+  default:
+    url: jdbc:h2:file:${AKHQ_DATA_DIR:./data}/akhq-rbac;AUTO_SERVER=TRUE
+    driverClassName: org.h2.Driver
+    username: sa
+    password: ""
+    schema-generate: NONE
+    dialect: H2
+
+flyway:
+  datasources:
+    default:
+      enabled: true
+      locations: classpath:db/migration
 
 jackson:
   serialization:
@@ -141,6 +155,17 @@ akhq:
 
   audit:
     enabled: false
+
+  # mock-enabled: true auto-succeeds login for any employee code, no real directory call made.
+  # Convenient for local dev, must be set to false before this ever faces production.
+  employee-directory:
+    mock-enabled: true
+    base-url: "https://employee-directory.internal.company.com"
+    lookup-path: "/employees/{employeeCode}"
+    api-key-header: "X-Api-Key"
+    api-key: ""
+    timeout-seconds: 5
+    bootstrap-admin-codes: []
 
   security:
     default-group: admin

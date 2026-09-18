@@ -18,7 +18,11 @@ import {
   faLevelDown,
   faList,
   faObjectGroup,
-  faRocket
+  faRocket,
+  faUsers,
+  faClipboardList,
+  faServer,
+  faLayerGroup
 } from '@fortawesome/free-solid-svg-icons';
 
 class Sidebar extends Component {
@@ -38,6 +42,7 @@ class Sidebar extends Component {
     enableConnect: false,
     enableKsqlDB: false,
     roles: JSON.parse(sessionStorage.getItem('roles')),
+    isAdmin: sessionStorage.getItem('isAdmin') === 'true',
     height: 'auto'
   };
 
@@ -290,7 +295,8 @@ class Sidebar extends Component {
       enableRegistry,
       registryType,
       enableConnect,
-      enableKsqlDB
+      enableKsqlDB,
+      isAdmin
     } = this.state;
     const { expanded } = this.props;
     const roles = this.state.roles || {};
@@ -425,7 +431,89 @@ class Sidebar extends Component {
               {listKsqlDBs}
             </NavItem>
           )}
+          <NavItem
+            eventKey="projects"
+            className={window.location.pathname.includes('/projects') ? 'active' : ''}
+            onClick={() => {
+              this.props.router.navigate('/ui/projects', { replace: false });
+              return false;
+            }}
+          >
+            <NavIcon>
+              {' '}
+              <span>
+                <FontAwesomeIcon icon={faLayerGroup} aria-hidden={true} />
+              </span>
+            </NavIcon>
+            <NavText>
+              {' '}
+              <span>Projects</span>
+            </NavText>
+          </NavItem>
           {this.renderMenuItem(faGear, constants.SETTINGS, 'Settings')}
+          {isAdmin && (
+            <NavItem
+              eventKey="admin"
+              className={window.location.pathname.includes('/admin') ? 'active' : ''}
+              onClick={() => {
+                this.props.router.navigate('/ui/admin/employees', { replace: false });
+                return false;
+              }}
+            >
+              <NavIcon>
+                {' '}
+                <span>
+                  <FontAwesomeIcon icon={faUsers} aria-hidden={true} />
+                </span>
+              </NavIcon>
+              <NavText>
+                {' '}
+                <span>Admin</span>
+              </NavText>
+            </NavItem>
+          )}
+          {isAdmin && (
+            <NavItem
+              eventKey="admin-audit-log"
+              className={window.location.pathname.includes('/admin/audit-log') ? 'active' : ''}
+              onClick={() => {
+                this.props.router.navigate('/ui/admin/audit-log', { replace: false });
+                return false;
+              }}
+            >
+              <NavIcon>
+                {' '}
+                <span>
+                  <FontAwesomeIcon icon={faClipboardList} aria-hidden={true} />
+                </span>
+              </NavIcon>
+              <NavText>
+                {' '}
+                <span>Audit Log</span>
+              </NavText>
+            </NavItem>
+          )}
+          {isAdmin && (
+            <NavItem
+              eventKey="admin-cluster-connections"
+              className={window.location.pathname.includes('/admin/cluster-connections') ? 'active' : ''}
+              onClick={() => {
+                this.props.router.navigate('/ui/admin/cluster-connections', { replace: false });
+                return false;
+              }}
+            >
+              <NavIcon>
+                {' '}
+                <span>
+                  <FontAwesomeIcon icon={faServer} aria-hidden={true} />
+                </span>
+              </NavIcon>
+              <NavText>
+                {' '}
+                <span>Cluster Connections</span>
+              </NavText>
+            </NavItem>
+          )}
         </SideNav.Nav>
       </SideNav>
     );

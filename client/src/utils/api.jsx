@@ -91,6 +91,20 @@ export const post = (url, body, config) =>
       });
   });
 
+export const patch = (url, body, config) =>
+  new Promise((resolve, reject) => {
+    axios
+      .patch(url, body, { ...configs, ...config })
+      .then(res => {
+        resolve(res);
+      })
+      .catch(err => {
+        if (!axios.isCancel(err)) {
+          reject(handleError(err));
+        }
+      });
+  });
+
 export const remove = (url, body, config) =>
   new Promise((resolve, reject) => {
     axios
@@ -132,4 +146,4 @@ export const logout = url => {
   });
 };
 
-export default { get, put, post, remove, login, logout };
+export default { get, put, post, patch, remove, login, logout };
