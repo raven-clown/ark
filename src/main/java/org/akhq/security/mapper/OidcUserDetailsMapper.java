@@ -16,7 +16,10 @@ import io.micronaut.security.oauth2.endpoint.token.response.OpenIdTokenResponse;
 import io.micronaut.security.rules.SecurityRule;
 import jakarta.inject.Inject;
 import jakarta.inject.Singleton;
+import lombok.extern.slf4j.Slf4j;
 import org.akhq.configs.security.Oidc;
+import org.akhq.employee.domain.AccountType;
+import org.akhq.employee.service.EmployeeAuthenticationService;
 import org.akhq.models.security.ClaimProvider;
 import org.akhq.models.security.ClaimProviderType;
 import org.akhq.models.security.ClaimRequest;
@@ -32,6 +35,7 @@ import java.util.stream.Collectors;
  * <p>
  * It will read a username and roles from the OpenID claims and translate them to akhq roles.
  */
+@Slf4j
 @Singleton
 @Replaces(DefaultOpenIdAuthenticationMapper.class)
 @Requires(property = "akhq.security.oidc.enabled", value = StringUtils.TRUE)
@@ -41,6 +45,9 @@ public class OidcUserDetailsMapper extends DefaultOpenIdAuthenticationMapper {
 
     @Inject
     private ClaimProvider claimProvider;
+
+    @Inject
+    private EmployeeAuthenticationService employeeAuthenticationService;
 
     public OidcUserDetailsMapper(OpenIdAdditionalClaimsConfiguration openIdAdditionalClaimsConfiguration, AuthenticationModeConfiguration authenticationModeConfiguration) {
         super(openIdAdditionalClaimsConfiguration, authenticationModeConfiguration);
@@ -54,6 +61,13 @@ public class OidcUserDetailsMapper extends DefaultOpenIdAuthenticationMapper {
 
         // get username and groups declared from OIDC system
         String oidcUsername = getUsername(provider, openIdClaims);
+
+        // Side effect only, mirrors this identity into the employees table for the Admin Dashboard
+        try {
+            employeeAuthenticationService.syncExternalIdentity(oidcUsername, oidcUsername, AccountType.OIDC);
+        } catch (Exception e) {
+            log.warn("Could not sync OIDC identity {} into the employee directory", oidcUsername, e);
+        }
 
         // Some OIDC providers like Keycloak can return a claim with roles and attributes directly,
         // so we don't use the AKHQ internal ClaimProvider mechanism

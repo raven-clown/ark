@@ -6,6 +6,7 @@ import org.akhq.configs.security.Role;
 import org.akhq.employee.config.EmployeeDirectoryProperties;
 import org.akhq.employee.directory.EmployeeDirectoryClient;
 import org.akhq.employee.directory.EmployeeDirectoryRecord;
+import org.akhq.employee.domain.AccountType;
 import org.akhq.employee.domain.Employee;
 import org.akhq.employee.domain.PermissionGrant;
 import org.akhq.employee.repository.EmployeeRepository;
@@ -50,11 +51,7 @@ public class EmployeeAuthenticationService {
 
         employee.setFullName(directoryRecord.get().fullName());
 
-        // Bootstrap admin/super admin status only applies the first time this account is created.
-        // Re-asserting it on every login would silently undo a deliberate later demotion by a real
-        // super admin - bootstrap-admin-codes is a one-time seed, not a standing override.
-        // Refused entirely while the mock directory is active: mock-enabled means any string is a
-        // valid "employee", so bootstrap codes would let anyone become super admin with one request.
+        // One time seed only, refused while mock is active to stop anyone becoming super admin
         if (isNewEmployee && properties.getBootstrapAdminCodes().contains(normalizedCode)) {
             if (properties.isMockEnabled()) {
                 log.error("Refusing to grant bootstrap admin/super admin to {} while the mock employee "
@@ -74,9 +71,7 @@ public class EmployeeAuthenticationService {
             ? employeeRepository.save(employee)
             : employeeRepository.update(employee);
 
-        // A freshly bootstrapped super admin starts with zero grants, which would lock them out of
-        // every cluster-scoped screen - including the admin dashboard meant to grant permissions in
-        // the first place. Seed full access once, on the login that creates the account.
+        // Seeds full access so a new super admin is not locked out of the dashboard that grants it
         if (isNewEmployee && saved.isSuperAdmin()) {
             seedFullAccess(saved);
         }
@@ -84,6 +79,38 @@ public class EmployeeAuthenticationService {
         employeeRepository.touchLastLogin(saved.getId());
         saved.setLastLoginAt(Instant.now());
         return Optional.of(saved);
+    }
+
+    // Side effect only, does not gate OIDC/LDAP login or touch their existing permission source
+    public Employee syncExternalIdentity(String username, String displayName, AccountType accountType) {
+        if (username == null || username.isBlank()) {
+            throw new IllegalArgumentException("username is required");
+        }
+        String normalizedUsername = username.trim();
+        String fullName = (displayName == null || displayName.isBlank()) ? normalizedUsername : displayName;
+
+        Optional<Employee> existing = employeeRepository.findByEmployeeCode(normalizedUsername);
+        boolean isNewEmployee = existing.isEmpty();
+        Employee employee = existing.orElseGet(
+            () -> new Employee(normalizedUsername, fullName, accountType, null));
+
+        employee.setFullName(fullName);
+
+        if (isNewEmployee && properties.getBootstrapAdminCodes().contains(normalizedUsername)) {
+            employee.setAdmin(true);
+            employee.setSuperAdmin(true);
+        }
+
+        Employee saved = isNewEmployee
+            ? employeeRepository.save(employee)
+            : employeeRepository.update(employee);
+
+        if (isNewEmployee && saved.isSuperAdmin()) {
+            seedFullAccess(saved);
+        }
+
+        employeeRepository.touchLastLogin(saved.getId());
+        return saved;
     }
 
     private void seedFullAccess(Employee employee) {
