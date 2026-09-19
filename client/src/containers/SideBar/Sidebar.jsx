@@ -23,7 +23,8 @@ import {
   faClipboardList,
   faServer,
   faLayerGroup,
-  faBell
+  faBell,
+  faGaugeHigh
 } from '@fortawesome/free-solid-svg-icons';
 
 class Sidebar extends Component {
@@ -376,6 +377,10 @@ class Sidebar extends Component {
             roles.ACL &&
             roles.ACL.includes('READ') &&
             this.renderMenuItem(faKey, constants.ACLS, 'ACLS')}
+          {roles &&
+            roles.CLIENT_QUOTA &&
+            roles.CLIENT_QUOTA.includes('READ') &&
+            this.renderMenuItem(faGaugeHigh, constants.CLIENT_QUOTA, 'Client Quotas')}
           {enableRegistry &&
             registryType !== 'GLUE' &&
             roles &&

@@ -28,7 +28,8 @@ public final class ProjectRoleCapabilities {
         new ResourceAction(Role.Resource.SCHEMA, Role.Action.READ),
         new ResourceAction(Role.Resource.NODE, Role.Action.READ),
         new ResourceAction(Role.Resource.ACL, Role.Action.READ),
-        new ResourceAction(Role.Resource.KSQLDB, Role.Action.READ)
+        new ResourceAction(Role.Resource.KSQLDB, Role.Action.READ),
+        new ResourceAction(Role.Resource.CLIENT_QUOTA, Role.Action.READ)
     );
 
     private static final List<ResourceAction> DEVELOPER_EXTRA = List.of(
@@ -45,7 +46,8 @@ public final class ProjectRoleCapabilities {
         new ResourceAction(Role.Resource.CONNECTOR, Role.Action.DELETE),
         new ResourceAction(Role.Resource.SCHEMA, Role.Action.CREATE),
         new ResourceAction(Role.Resource.SCHEMA, Role.Action.UPDATE),
-        new ResourceAction(Role.Resource.TOPIC, Role.Action.ALTER_CONFIG)
+        new ResourceAction(Role.Resource.TOPIC, Role.Action.ALTER_CONFIG),
+        new ResourceAction(Role.Resource.CLIENT_QUOTA, Role.Action.ALTER_CONFIG)
     );
 
     private static final List<ResourceAction> OWNER_EXTRA = List.of(

@@ -209,6 +209,9 @@ akhq:
       ksqldb-admin:
         - resources: [ "KSQLDB" ]
           actions: [ "READ", "EXECUTE" ]
+      client-quota-admin:
+        - resources: [ "CLIENT_QUOTA" ]
+          actions: [ "READ", "ALTER_CONFIG" ]
     groups:
       admin:
         - role: node-admin
@@ -219,5 +222,6 @@ akhq:
         - role: connector-admin
         - role: schema-admin
         - role: node-admin
+        - role: client-quota-admin
         - role: acl-reader
         - role: ksqldb-admin

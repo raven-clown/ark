@@ -26,6 +26,7 @@ import ConsumerGroupOffsetDelete from '../containers/ConsumerGroup/ConsumerGroup
 import AclDetails from '../containers/Acl/AclDetail';
 import Login from '../containers/Login';
 import Settings from '../containers/Settings/Settings';
+import ClientQuota from '../containers/ClientQuota';
 import AdminEmployeeList from '../containers/Admin/AdminEmployeeList';
 import AdminEmployeeDetail from '../containers/Admin/AdminEmployeeDetail';
 import AdminAuditLog from '../containers/Admin/AdminAuditLog';
@@ -257,6 +258,10 @@ class AkhqRoutes extends Root {
                   path="/ui/:clusterId/acls/:principalEncoded/:tab?"
                   element={<AclDetails />}
                 />
+              )}
+
+              {roles && roles.CLIENT_QUOTA && roles.CLIENT_QUOTA.includes('READ') && (
+                <Route exact path="/ui/:clusterId/client-quota" element={<ClientQuota />} />
               )}
 
               {roles && roles.SCHEMA && roles.SCHEMA.includes('READ') && (

@@ -40,6 +40,7 @@ export const CONNECT = 'connect';
 export const KSQLDB = 'ksqldb';
 export const SETTINGS = 'settings';
 export const ADMIN = 'admin';
+export const CLIENT_QUOTA = 'client-quota';
 
 // Configurable settings
 export const SETTINGS_VALUES = {
