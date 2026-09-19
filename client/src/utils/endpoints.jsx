@@ -412,6 +412,11 @@ export const uriClientQuotas = clusterId => `${apiUrl}/${clusterId}/client-quota
 export const uriClientQuota = (clusterId, entityType, entityName) =>
   `${apiUrl}/${clusterId}/client-quota/${entityType}/${encodeURIComponent(entityName)}`;
 
+export const uriScramCredentials = clusterId => `${apiUrl}/${clusterId}/scram-credential`;
+
+export const uriScramCredential = (clusterId, username, mechanism) =>
+  `${apiUrl}/${clusterId}/scram-credential/${encodeURIComponent(username)}/${mechanism}`;
+
 export const uriTeamWebhooks = teamName =>
   `${apiUrl}/admin/teams/${encodeURIComponent(teamName)}/webhooks`;
 

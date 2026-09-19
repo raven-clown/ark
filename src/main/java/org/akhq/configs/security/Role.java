@@ -19,7 +19,8 @@ public class Role {
         NODE,
         ACL,
         KSQLDB,
-        CLIENT_QUOTA
+        CLIENT_QUOTA,
+        SCRAM_CREDENTIAL
     }
 
     public enum Action {

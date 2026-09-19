@@ -212,6 +212,9 @@ akhq:
       client-quota-admin:
         - resources: [ "CLIENT_QUOTA" ]
           actions: [ "READ", "ALTER_CONFIG" ]
+      scram-credential-admin:
+        - resources: [ "SCRAM_CREDENTIAL" ]
+          actions: [ "READ", "CREATE", "DELETE" ]
     groups:
       admin:
         - role: node-admin
@@ -221,6 +224,7 @@ akhq:
         - role: connect-cluster-reader
         - role: connector-admin
         - role: schema-admin
+        - role: scram-credential-admin
         - role: node-admin
         - role: client-quota-admin
         - role: acl-reader

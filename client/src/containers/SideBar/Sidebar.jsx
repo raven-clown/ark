@@ -24,7 +24,8 @@ import {
   faServer,
   faLayerGroup,
   faBell,
-  faGaugeHigh
+  faGaugeHigh,
+  faUserLock
 } from '@fortawesome/free-solid-svg-icons';
 
 class Sidebar extends Component {
@@ -381,6 +382,10 @@ class Sidebar extends Component {
             roles.CLIENT_QUOTA &&
             roles.CLIENT_QUOTA.includes('READ') &&
             this.renderMenuItem(faGaugeHigh, constants.CLIENT_QUOTA, 'Client Quotas')}
+          {roles &&
+            roles.SCRAM_CREDENTIAL &&
+            roles.SCRAM_CREDENTIAL.includes('READ') &&
+            this.renderMenuItem(faUserLock, constants.SCRAM_CREDENTIAL, 'SCRAM Credentials')}
           {enableRegistry &&
             registryType !== 'GLUE' &&
             roles &&

@@ -27,6 +27,7 @@ import AclDetails from '../containers/Acl/AclDetail';
 import Login from '../containers/Login';
 import Settings from '../containers/Settings/Settings';
 import ClientQuota from '../containers/ClientQuota';
+import ScramCredential from '../containers/ScramCredential';
 import AdminEmployeeList from '../containers/Admin/AdminEmployeeList';
 import AdminEmployeeDetail from '../containers/Admin/AdminEmployeeDetail';
 import AdminAuditLog from '../containers/Admin/AdminAuditLog';
@@ -262,6 +263,10 @@ class AkhqRoutes extends Root {
 
               {roles && roles.CLIENT_QUOTA && roles.CLIENT_QUOTA.includes('READ') && (
                 <Route exact path="/ui/:clusterId/client-quota" element={<ClientQuota />} />
+              )}
+
+              {roles && roles.SCRAM_CREDENTIAL && roles.SCRAM_CREDENTIAL.includes('READ') && (
+                <Route exact path="/ui/:clusterId/scram-credential" element={<ScramCredential />} />
               )}
 
               {roles && roles.SCHEMA && roles.SCHEMA.includes('READ') && (

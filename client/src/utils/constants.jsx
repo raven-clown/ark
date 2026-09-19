@@ -41,6 +41,7 @@ export const KSQLDB = 'ksqldb';
 export const SETTINGS = 'settings';
 export const ADMIN = 'admin';
 export const CLIENT_QUOTA = 'client-quota';
+export const SCRAM_CREDENTIAL = 'scram-credential';
 
 // Configurable settings
 export const SETTINGS_VALUES = {
