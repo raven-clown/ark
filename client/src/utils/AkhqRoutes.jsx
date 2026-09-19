@@ -28,6 +28,7 @@ import Login from '../containers/Login';
 import Settings from '../containers/Settings/Settings';
 import ClientQuota from '../containers/ClientQuota';
 import ScramCredential from '../containers/ScramCredential';
+import ClusterOps from '../containers/ClusterOps';
 import AdminEmployeeList from '../containers/Admin/AdminEmployeeList';
 import AdminEmployeeDetail from '../containers/Admin/AdminEmployeeDetail';
 import AdminAuditLog from '../containers/Admin/AdminAuditLog';
@@ -267,6 +268,10 @@ class AkhqRoutes extends Root {
 
               {roles && roles.SCRAM_CREDENTIAL && roles.SCRAM_CREDENTIAL.includes('READ') && (
                 <Route exact path="/ui/:clusterId/scram-credential" element={<ScramCredential />} />
+              )}
+
+              {roles && roles.NODE && roles.NODE.includes('READ') && (
+                <Route exact path="/ui/:clusterId/cluster-ops" element={<ClusterOps />} />
               )}
 
               {roles && roles.SCHEMA && roles.SCHEMA.includes('READ') && (

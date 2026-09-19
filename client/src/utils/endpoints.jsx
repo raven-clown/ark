@@ -417,6 +417,21 @@ export const uriScramCredentials = clusterId => `${apiUrl}/${clusterId}/scram-cr
 export const uriScramCredential = (clusterId, username, mechanism) =>
   `${apiUrl}/${clusterId}/scram-credential/${encodeURIComponent(username)}/${mechanism}`;
 
+export const uriClusterOpsTransactions = clusterId => `${apiUrl}/${clusterId}/cluster-ops/transactions`;
+
+export const uriClusterOpsTransaction = (clusterId, transactionalId) =>
+  `${apiUrl}/${clusterId}/cluster-ops/transactions/${encodeURIComponent(transactionalId)}`;
+
+export const uriClusterOpsAbortTransaction = clusterId =>
+  `${apiUrl}/${clusterId}/cluster-ops/transactions/abort`;
+
+export const uriClusterOpsElectLeader = (clusterId, topic, partition) =>
+  `${apiUrl}/${clusterId}/cluster-ops/topic/${encodeURIComponent(topic)}/partition/${partition}/elect-preferred-leader`;
+
+export const uriClusterOpsLogDirs = clusterId => `${apiUrl}/${clusterId}/cluster-ops/log-dirs`;
+
+export const uriClusterOpsQuorum = clusterId => `${apiUrl}/${clusterId}/cluster-ops/quorum`;
+
 export const uriTeamWebhooks = teamName =>
   `${apiUrl}/admin/teams/${encodeURIComponent(teamName)}/webhooks`;
 

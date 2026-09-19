@@ -25,7 +25,8 @@ import {
   faLayerGroup,
   faBell,
   faGaugeHigh,
-  faUserLock
+  faUserLock,
+  faScrewdriverWrench
 } from '@fortawesome/free-solid-svg-icons';
 
 class Sidebar extends Component {
@@ -386,6 +387,10 @@ class Sidebar extends Component {
             roles.SCRAM_CREDENTIAL &&
             roles.SCRAM_CREDENTIAL.includes('READ') &&
             this.renderMenuItem(faUserLock, constants.SCRAM_CREDENTIAL, 'SCRAM Credentials')}
+          {roles &&
+            roles.NODE &&
+            roles.NODE.includes('READ') &&
+            this.renderMenuItem(faScrewdriverWrench, constants.CLUSTER_OPS, 'Cluster Ops')}
           {enableRegistry &&
             registryType !== 'GLUE' &&
             roles &&

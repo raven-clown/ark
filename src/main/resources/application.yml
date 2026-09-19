@@ -215,6 +215,9 @@ akhq:
       scram-credential-admin:
         - resources: [ "SCRAM_CREDENTIAL" ]
           actions: [ "READ", "CREATE", "DELETE" ]
+      transaction-admin:
+        - resources: [ "TRANSACTION" ]
+          actions: [ "READ", "DELETE" ]
     groups:
       admin:
         - role: node-admin
@@ -229,3 +232,4 @@ akhq:
         - role: client-quota-admin
         - role: acl-reader
         - role: ksqldb-admin
+        - role: transaction-admin

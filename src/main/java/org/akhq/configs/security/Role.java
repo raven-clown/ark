@@ -20,7 +20,8 @@ public class Role {
         ACL,
         KSQLDB,
         CLIENT_QUOTA,
-        SCRAM_CREDENTIAL
+        SCRAM_CREDENTIAL,
+        TRANSACTION
     }
 
     public enum Action {

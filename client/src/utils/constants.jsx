@@ -42,6 +42,7 @@ export const SETTINGS = 'settings';
 export const ADMIN = 'admin';
 export const CLIENT_QUOTA = 'client-quota';
 export const SCRAM_CREDENTIAL = 'scram-credential';
+export const CLUSTER_OPS = 'cluster-ops';
 
 // Configurable settings
 export const SETTINGS_VALUES = {
