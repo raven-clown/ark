@@ -22,7 +22,8 @@ import {
   faUsers,
   faClipboardList,
   faServer,
-  faLayerGroup
+  faLayerGroup,
+  faBell
 } from '@fortawesome/free-solid-svg-icons';
 
 class Sidebar extends Component {
@@ -511,6 +512,27 @@ class Sidebar extends Component {
               <NavText>
                 {' '}
                 <span>Cluster Connections</span>
+              </NavText>
+            </NavItem>
+          )}
+          {isAdmin && (
+            <NavItem
+              eventKey="admin-alerting"
+              className={window.location.pathname.includes('/admin/alerting') ? 'active' : ''}
+              onClick={() => {
+                this.props.router.navigate('/ui/admin/alerting', { replace: false });
+                return false;
+              }}
+            >
+              <NavIcon>
+                {' '}
+                <span>
+                  <FontAwesomeIcon icon={faBell} aria-hidden={true} />
+                </span>
+              </NavIcon>
+              <NavText>
+                {' '}
+                <span>Alerting</span>
               </NavText>
             </NavItem>
           )}

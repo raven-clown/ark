@@ -30,6 +30,7 @@ import AdminEmployeeList from '../containers/Admin/AdminEmployeeList';
 import AdminEmployeeDetail from '../containers/Admin/AdminEmployeeDetail';
 import AdminAuditLog from '../containers/Admin/AdminAuditLog';
 import AdminClusterConnections from '../containers/Admin/AdminClusterConnections';
+import AdminAlerting from '../containers/Admin/AdminAlerting';
 import ProjectList from '../containers/Projects/ProjectList';
 import ProjectDetail from '../containers/Projects/ProjectDetail';
 import { organizeRoles } from './converters';
@@ -341,6 +342,9 @@ class AkhqRoutes extends Root {
                   path="/ui/admin/cluster-connections"
                   element={<AdminClusterConnections />}
                 />
+              )}
+              {isAdmin && (
+                <Route exact path="/ui/admin/alerting" element={<AdminAlerting />} />
               )}
               <Route path="/" element={<Navigate to={this.handleRedirect()} />} />
               <Route path="/ui" element={<Navigate to={this.checkAfterLoginAndHandleRedirect()} />} />

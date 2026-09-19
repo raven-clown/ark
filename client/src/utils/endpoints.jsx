@@ -407,6 +407,12 @@ export const uriProjectClusters = slug => `${apiUrl}/projects/${encodeURICompone
 export const uriProjectCluster = (slug, clusterName) =>
   `${apiUrl}/projects/${encodeURIComponent(slug)}/clusters/${encodeURIComponent(clusterName)}`;
 
+export const uriTeamWebhooks = teamName =>
+  `${apiUrl}/admin/teams/${encodeURIComponent(teamName)}/webhooks`;
+
+export const uriTeamWebhook = (teamName, id) =>
+  `${apiUrl}/admin/teams/${encodeURIComponent(teamName)}/webhooks/${id}`;
+
 export const uriAdminClusterConnections = () => `${apiUrl}/admin/cluster-connections`;
 
 export const uriAdminClusterConnection = name =>

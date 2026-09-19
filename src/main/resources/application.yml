@@ -156,6 +156,11 @@ akhq:
   audit:
     enabled: false
 
+  alerting:
+    enabled: false
+    lag-threshold: 10000
+    check-interval: 5m
+
   # mock-enabled: true auto-succeeds login for any employee code, no real directory call made.
   # Convenient for local dev, must be set to false before this ever faces production.
   employee-directory:
