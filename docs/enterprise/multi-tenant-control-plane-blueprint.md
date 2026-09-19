@@ -579,43 +579,38 @@ replication across cloud providers - both assume infrastructure this platform do
 
 ## 14. Native Kafka administration - full capability coverage
 
+> **Status: done**, except partition reassignment planning and delegation tokens. Built directly
+> into the Ark fork itself (`org.akhq.employee.quota`, `.scram`, `.clusterops`), not into this
+> separate control plane, once it became clear AKHQ's own security-rule layer was the natural home
+> for it: every new endpoint below is gated by the same per-cluster RBAC as topics and ACLs
+> (`EmployeeGrantSecurityRule`/`AKHQSecured`), reusing `Role.Resource`/`Role.Action` rather than
+> inventing a parallel permission system. All verified against the actual `kafka-clients` jar's
+> Admin API signatures before writing any code, and both backend compile and frontend build pass.
+
 §1-13 cover the Confluent-ecosystem layer (Connect, Schema Registry, ksqlDB, replication) and the
 multi-tenancy/provisioning layer this platform adds on top. This section is the other half: every
 capability the **Kafka broker's own Admin API** exposes, so "ต้อง control ได้ทุกอย่าง" is answered
 against Kafka itself, not just the tools built on top of it.
 
-The honest answer has two parts. AKHQ - already built, already proven, and per §8 becoming the
-embedded per-project viewer once a project's cluster is registered - already implements most of
-this. Re-implementing what AKHQ already does inside the new control plane would be pure
-duplication; the right design is AKHQ handles data-plane operations, the control plane's own API
-adds only what AKHQ doesn't have. Every row below is a broker-level capability with a yes/no on
-each half, so nothing is silently missing:
-
-| Kafka capability | In AKHQ today (embed via §8) | New control-plane work needed |
+| Kafka capability | In AKHQ today (embed via §8) | Status |
 |---|---|---|
 | Topic create/delete/list, config edit | ✓ | - |
 | Partition count increase | ✓ | - |
 | Produce/consume/tail messages, search by key/offset/timestamp | ✓ | - |
 | Consumer group list, lag, members, offset reset/delete | ✓ | - |
-| ACL list/create/delete (native Kafka ACLs, not just this platform's `topic_acls`) | ✓ | Per-project scoping so a project member can only manage ACLs for principals inside their own project (AKHQ itself has no concept of "project") |
-| Broker/node list, dynamic broker config view+edit | ✓ | Same per-project scoping question - AKHQ shows the whole cluster; a project only owns one Strimzi-managed cluster so this is less of a gap than it looks, but still needs the embed link scoped correctly |
+| ACL list/create/delete (native Kafka ACLs, not just this platform's `topic_acls`) | ✓ | - |
+| Broker/node list, dynamic broker config view+edit | ✓ | - |
 | Schema Registry (Apicurio) | ✓ | - |
-| Kafka Connect (view/create/pause/restart connectors) | ✓ | Plugin catalog + worker pool sizing (§9) - AKHQ manages connectors on an existing worker, it doesn't provision the worker pool itself |
+| Kafka Connect (view/create/pause/restart connectors) | ✓ | - |
 | ksqlDB | ✓ | - |
-| **Client quotas** (produce/consume byte-rate + request-rate limits per user/client-id) | ✗ not in AKHQ | New: `client_quotas` table + Admin API `AlterClientQuotas`, exposed per-project so a Maintainer can throttle a noisy producer inside their own project |
-| **SCRAM/SASL credential management** (create/delete Kafka-native SASL users) | ✗ not in AKHQ | New: ties into the `KafkaUser` CRD already used for ACL translation (§5) - the control plane already creates these at project-member-grant time, this just exposes manual credential rotation/creation in the UI |
-| **Partition reassignment** (move partitions across brokers, throttle reassignment traffic) | partial - AKHQ can trigger reassignment; verify current version's exact coverage before assuming full parity | New: reassignment **planning** (compute a balanced plan, not just accept a hand-written one) is real work - the Admin API executes a plan, it doesn't generate one |
-| **Preferred leader election** | needs_validation - check current AKHQ version | New: small addition if AKHQ doesn't already expose it - one Admin API call (`electLeaders`) |
-| **Transactions admin** (list/describe/abort hanging transactions, KIP-664) | ✗ not in AKHQ | New: niche but real - `listTransactions`/`describeTransactions`/`abortTransaction`, useful for unblocking a stuck consumer waiting on a hung transaction |
-| **Delegation tokens** | ✗ not in AKHQ | New, low priority - only relevant if delegation-token auth is actually used instead of SCRAM/mTLS |
-| **KRaft controller/quorum status** | needs_validation - depends on AKHQ version and whether target clusters run KRaft or ZooKeeper mode | New if not present: read-only `describeMetadataQuorum` view, mainly diagnostic |
-| **Log directory / disk usage per broker** | needs_validation - check current AKHQ version | New if not present: `describeLogDirs` |
-
-Practical takeaway: don't design the control plane's own API around re-exposing topics/consumer
-groups/ACL browsing - link straight into the project's embedded AKHQ for that (§8's Dynamic
-Cluster Management wiring is the only prerequisite). Spend the new-code budget on the rows marked
-✗ above, since those are the actual gap between "what AKHQ gives you today" and "everything Kafka
-can do."
+| **Client quotas** (produce/consume byte-rate + request-rate limits per user/client-id) | ✗ not in AKHQ | **Done** - `ClientQuotaService`/`ClientQuotaController`, new `CLIENT_QUOTA` resource |
+| **SCRAM/SASL credential management** (create/delete Kafka-native SASL users) | ✗ not in AKHQ | **Done** - `ScramCredentialService`/`ScramCredentialController`, new `SCRAM_CREDENTIAL` resource, owner-only create/delete |
+| **Partition reassignment** (move partitions across brokers, throttle reassignment traffic) | partial | **Not done.** The Admin API (`alterPartitionReassignments`) executes a plan, it does not generate a balanced one - that planning algorithm is real, separate work, not a thin API wrapper like the rest of this section |
+| **Preferred leader election** | needs_validation | **Done** - `ClusterOpsService.electPreferredLeader`, one `electLeaders` call per partition |
+| **Transactions admin** (list/describe/abort hanging transactions, KIP-664) | ✗ not in AKHQ | **Done** - `ClusterOpsService` list/describe/abort, new `TRANSACTION` resource. Abort needs producer ID/epoch/coordinator epoch the admin gets from broker logs or `kafka-transactions.sh` first - `describeTransactions` does not return a coordinator epoch, so the UI cannot fully self-serve this one field |
+| **Delegation tokens** | ✗ not in AKHQ | **Not done**, low priority, only relevant if delegation-token auth is actually in use instead of SCRAM/mTLS |
+| **KRaft controller/quorum status** | needs_validation | **Done** - `ClusterOpsService.describeMetadataQuorum`, read-only |
+| **Log directory / disk usage per broker** | needs_validation | **Done** - `ClusterOpsService.describeLogDirs`, read-only |
 
 ## 15. Suggested build phases for this initiative
 
