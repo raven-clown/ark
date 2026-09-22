@@ -17,7 +17,11 @@ func main() {
 	configPath := flag.String("config", "config.yaml", "path to pipelines config file")
 	flag.Parse()
 
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	level := slog.LevelInfo
+	if os.Getenv("BRIDGE_LOG_LEVEL") == "debug" {
+		level = slog.LevelDebug
+	}
+	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
 	slog.SetDefault(logger)
 
 	cfg, err := config.Load(*configPath)

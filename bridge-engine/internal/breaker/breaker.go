@@ -1,0 +1,63 @@
+package breaker
+
+import (
+	"sync"
+	"time"
+)
+
+type state int
+
+const (
+	closed state = iota
+	open
+	halfOpen
+)
+
+type Breaker struct {
+	mu               sync.Mutex
+	state            state
+	failureThreshold int
+	cooldown         time.Duration
+	consecutiveFails int
+	openedAt         time.Time
+}
+
+func New(failureThreshold int, cooldown time.Duration) *Breaker {
+	return &Breaker{
+		failureThreshold: failureThreshold,
+		cooldown:         cooldown,
+	}
+}
+
+func (b *Breaker) Allow() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	switch b.state {
+	case open:
+		if time.Since(b.openedAt) >= b.cooldown {
+			b.state = halfOpen
+			return true
+		}
+		return false
+	default:
+		return true
+	}
+}
+
+func (b *Breaker) RecordResult(success bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if success {
+		b.consecutiveFails = 0
+		b.state = closed
+		return
+	}
+
+	b.consecutiveFails++
+	if b.state == halfOpen || b.consecutiveFails >= b.failureThreshold {
+		b.state = open
+		b.openedAt = time.Now()
+	}
+}
