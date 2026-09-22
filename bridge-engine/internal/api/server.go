@@ -40,13 +40,17 @@ func NewServer(reg Registry) http.Handler {
 
 	mux.HandleFunc("GET /api/v1/pipelines/{name}", func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("name")
+		var workers []consumer.Status
 		for _, run := range reg.Runners() {
 			if run.Name() == name {
-				writeJSON(w, http.StatusOK, run.Status())
-				return
+				workers = append(workers, run.Status())
 			}
 		}
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "pipeline not found: " + name})
+		if len(workers) == 0 {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "pipeline not found: " + name})
+			return
+		}
+		writeJSON(w, http.StatusOK, workers)
 	})
 
 	return mux

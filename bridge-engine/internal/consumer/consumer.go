@@ -24,6 +24,7 @@ type counters struct {
 
 type Status struct {
 	Pipeline     string `json:"pipeline"`
+	Worker       int    `json:"worker"`
 	Tenant       string `json:"tenant"`
 	MCPAccess    string `json:"mcp_access"`
 	SourceTopic  string `json:"source_topic"`
@@ -36,48 +37,87 @@ type Status struct {
 	Failed       int64  `json:"failed"`
 }
 
+type shared struct {
+	dest    *producer.Producer
+	dlq     *producer.Producer
+	reject  *producer.Producer
+	client  *callback.Client
+	breaker *breaker.Breaker
+}
+
+func newShared(brokers []string, p config.Pipeline) *shared {
+	s := &shared{
+		dest:    producer.New(brokers, p.DestinationTopic),
+		client:  callback.NewClient(30 * time.Second),
+		breaker: breaker.New(5, 30*time.Second),
+	}
+	if p.DeadLetterTopic != "" {
+		s.dlq = producer.New(brokers, p.DeadLetterTopic)
+	}
+	if p.RejectTopic != "" {
+		s.reject = producer.New(brokers, p.RejectTopic)
+	}
+	return s
+}
+
+func (s *shared) Close() error {
+	err := s.dest.Close()
+	if s.dlq != nil {
+		if closeErr := s.dlq.Close(); closeErr != nil && err == nil {
+			err = closeErr
+		}
+	}
+	if s.reject != nil {
+		if closeErr := s.reject.Close(); closeErr != nil && err == nil {
+			err = closeErr
+		}
+	}
+	return err
+}
+
 type Runner struct {
 	pipeline config.Pipeline
+	workerID int
 	reader   *kafka.Reader
-	dest     *producer.Producer
-	dlq      *producer.Producer
-	reject   *producer.Producer
-	client   *callback.Client
-	breaker  *breaker.Breaker
+	shared   *shared
 	log      *slog.Logger
 	counters counters
 }
 
-func New(brokers []string, p config.Pipeline, log *slog.Logger) *Runner {
-	reader := kafka.NewReader(kafka.ReaderConfig{
-		Brokers:        brokers,
-		Topic:          p.SourceTopic,
-		GroupID:        p.ConsumerGroup,
-		MinBytes:       1,
-		MaxBytes:       10e6,
-		MaxWait:        time.Second,
-		CommitInterval: 0,
-		Logger:         kafka.LoggerFunc(func(f string, a ...interface{}) { log.Debug(fmt.Sprintf(f, a...)) }),
-		ErrorLogger:    kafka.LoggerFunc(func(f string, a ...interface{}) { log.Error(fmt.Sprintf(f, a...)) }),
-	})
+func NewPipeline(brokers []string, p config.Pipeline, log *slog.Logger) []*Runner {
+	sh := newShared(brokers, p)
 
-	r := &Runner{
-		pipeline: p,
-		reader:   reader,
-		dest:     producer.New(brokers, p.DestinationTopic),
-		client:   callback.NewClient(30 * time.Second),
-		breaker:  breaker.New(5, 30*time.Second),
-		log:      log.With("pipeline", p.Name),
+	workers := p.Workers
+	if workers < 1 {
+		workers = 1
 	}
 
-	if p.DeadLetterTopic != "" {
-		r.dlq = producer.New(brokers, p.DeadLetterTopic)
-	}
-	if p.RejectTopic != "" {
-		r.reject = producer.New(brokers, p.RejectTopic)
+	runners := make([]*Runner, 0, workers)
+	for w := 0; w < workers; w++ {
+		reader := kafka.NewReader(kafka.ReaderConfig{
+			Brokers:                brokers,
+			Topic:                  p.SourceTopic,
+			GroupID:                p.ConsumerGroup,
+			MinBytes:               1,
+			MaxBytes:               10e6,
+			MaxWait:                time.Second,
+			CommitInterval:         0,
+			WatchPartitionChanges:  true,
+			PartitionWatchInterval: 5 * time.Second,
+			Logger:                 kafka.LoggerFunc(func(f string, a ...interface{}) { log.Debug(fmt.Sprintf(f, a...)) }),
+			ErrorLogger:            kafka.LoggerFunc(func(f string, a ...interface{}) { log.Error(fmt.Sprintf(f, a...)) }),
+		})
+
+		runners = append(runners, &Runner{
+			pipeline: p,
+			workerID: w,
+			reader:   reader,
+			shared:   sh,
+			log:      log.With("pipeline", p.Name, "worker", w),
+		})
 	}
 
-	return r
+	return runners
 }
 
 func (r *Runner) Name() string {
@@ -87,12 +127,13 @@ func (r *Runner) Name() string {
 func (r *Runner) Status() Status {
 	return Status{
 		Pipeline:     r.pipeline.Name,
+		Worker:       r.workerID,
 		Tenant:       r.pipeline.Tenant,
 		MCPAccess:    string(r.pipeline.MCPAccess),
 		SourceTopic:  r.pipeline.SourceTopic,
 		Destination:  r.pipeline.DestinationTopic,
 		Enabled:      r.pipeline.IsEnabled(),
-		BreakerState: r.breaker.State(),
+		BreakerState: r.shared.breaker.State(),
 		Processed:    r.counters.processed.Load(),
 		Rejected:     r.counters.rejected.Load(),
 		DeadLettered: r.counters.deadLettered.Load(),
@@ -101,21 +142,14 @@ func (r *Runner) Status() Status {
 }
 
 func (r *Runner) Close() error {
-	err := r.reader.Close()
-	if closeErr := r.dest.Close(); closeErr != nil && err == nil {
-		err = closeErr
+	return r.reader.Close()
+}
+
+func CloseShared(runners []*Runner) error {
+	if len(runners) == 0 {
+		return nil
 	}
-	if r.dlq != nil {
-		if closeErr := r.dlq.Close(); closeErr != nil && err == nil {
-			err = closeErr
-		}
-	}
-	if r.reject != nil {
-		if closeErr := r.reject.Close(); closeErr != nil && err == nil {
-			err = closeErr
-		}
-	}
-	return err
+	return runners[0].shared.Close()
 }
 
 type job struct {
@@ -201,21 +235,21 @@ func (r *Runner) process(ctx context.Context, msg kafka.Message) error {
 	var lastErr error
 
 	for attempt = 1; attempt <= r.pipeline.Retry.MaxAttempts; attempt++ {
-		if !r.breaker.Allow() {
+		if !r.shared.breaker.Allow() {
 			lastErr = fmt.Errorf("circuit breaker open for %s", r.pipeline.Target.URL)
 			log.Warn("callback skipped, circuit open", "attempt", attempt)
 			break
 		}
 
-		resp, lastErr = r.client.Post(ctx, r.pipeline.Target.URL, correlationID, msg.Value)
+		resp, lastErr = r.shared.client.Post(ctx, r.pipeline.Target.URL, correlationID, msg.Value)
 
 		if lastErr == nil && resp.StatusCode >= 400 && resp.StatusCode < 500 {
-			r.breaker.RecordResult(true)
-			return r.route(ctx, r.reject, msg.Key, msg.Value, headers, log, "rejected", resp.StatusCode)
+			r.shared.breaker.RecordResult(true)
+			return r.route(ctx, r.shared.reject, msg.Key, msg.Value, headers, log, "rejected", resp.StatusCode)
 		}
 
 		success := lastErr == nil && resp.Success()
-		r.breaker.RecordResult(success)
+		r.shared.breaker.RecordResult(success)
 		if success {
 			break
 		}
@@ -231,10 +265,10 @@ func (r *Runner) process(ctx context.Context, msg kafka.Message) error {
 	}
 
 	if lastErr != nil || resp == nil || !resp.Success() {
-		return r.route(ctx, r.dlq, msg.Key, msg.Value, headers, log, "dead_lettered", 0)
+		return r.route(ctx, r.shared.dlq, msg.Key, msg.Value, headers, log, "dead_lettered", 0)
 	}
 
-	if err := r.dest.Send(ctx, msg.Key, resp.Body, headers); err != nil {
+	if err := r.shared.dest.Send(ctx, msg.Key, resp.Body, headers); err != nil {
 		return fmt.Errorf("producing result: %w", err)
 	}
 

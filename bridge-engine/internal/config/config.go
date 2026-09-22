@@ -75,6 +75,7 @@ type Pipeline struct {
 	DeadLetterTopic  string           `yaml:"dead_letter_topic"`
 	RejectTopic      string           `yaml:"reject_topic"`
 	ConsumerGroup    string           `yaml:"consumer_group"`
+	Workers          int              `yaml:"workers"`
 	Consumer         ConsumerSettings `yaml:"consumer"`
 	Target           Target           `yaml:"target"`
 	Concurrency      Concurrency      `yaml:"concurrency"`
@@ -123,6 +124,9 @@ func applyDefaults(cfg *Config) {
 		}
 		if p.Target.Mode == "" {
 			p.Target.Mode = TargetModeSingleURL
+		}
+		if p.Workers < 1 {
+			p.Workers = 1
 		}
 		if p.Consumer.MaxPollRecords == 0 {
 			p.Consumer.MaxPollRecords = 50

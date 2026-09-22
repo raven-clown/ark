@@ -11,6 +11,7 @@ pipelines:
     reject_topic: orders.rejected
 
     consumer_group: order-processor-group
+    workers: 3
     consumer:
       max_poll_records: 50
       max_poll_interval_ms: 300000

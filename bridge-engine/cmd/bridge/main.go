@@ -37,18 +37,21 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	var runners []*consumer.Runner
+	var allRunners []*consumer.Runner
+	var pipelineGroups [][]*consumer.Runner
 	for _, p := range cfg.Pipelines {
 		if !p.IsEnabled() {
 			logger.Info("skipping disabled pipeline", "pipeline", p.Name)
 			continue
 		}
-		runners = append(runners, consumer.New(cfg.Brokers, p, logger))
+		group := consumer.NewPipeline(cfg.Brokers, p, logger)
+		pipelineGroups = append(pipelineGroups, group)
+		allRunners = append(allRunners, group...)
 	}
 
 	apiServer := &http.Server{
 		Addr:    *apiAddr,
-		Handler: api.NewServer(api.NewRegistry(runners)),
+		Handler: api.NewServer(api.NewRegistry(allRunners)),
 	}
 
 	var wg sync.WaitGroup
@@ -62,18 +65,31 @@ func main() {
 		}
 	}()
 
-	for _, runner := range runners {
+	for _, group := range pipelineGroups {
 		wg.Add(1)
-		go func(runner *consumer.Runner) {
+		go func(group []*consumer.Runner) {
 			defer wg.Done()
-			logger.Info("starting pipeline", "pipeline", runner.Name())
-			if err := runner.Run(ctx); err != nil {
-				logger.Error("pipeline stopped with error", "pipeline", runner.Name(), "error", err)
+
+			var pwg sync.WaitGroup
+			for _, runner := range group {
+				pwg.Add(1)
+				go func(runner *consumer.Runner) {
+					defer pwg.Done()
+					logger.Info("starting pipeline worker", "pipeline", runner.Name())
+					if err := runner.Run(ctx); err != nil {
+						logger.Error("pipeline worker stopped with error", "pipeline", runner.Name(), "error", err)
+					}
+					if err := runner.Close(); err != nil {
+						logger.Error("closing worker resources failed", "pipeline", runner.Name(), "error", err)
+					}
+				}(runner)
 			}
-			if err := runner.Close(); err != nil {
-				logger.Error("closing pipeline resources failed", "pipeline", runner.Name(), "error", err)
+			pwg.Wait()
+
+			if err := consumer.CloseShared(group); err != nil {
+				logger.Error("closing pipeline shared resources failed", "error", err)
 			}
-		}(runner)
+		}(group)
 	}
 
 	<-ctx.Done()

@@ -211,13 +211,67 @@ complexity, so they're staged rather than built all at once:
     of a "fast path."
 
 ### Backend — Phase 4: Multi-pipeline & multi-tenant
-- [ ] Multiple pipelines in one config, isolated goroutine pools
+- [x] Multiple pipelines in one config, isolated goroutine pools
+- [x] Per-pipeline `workers` count — N consumer-group members (goroutines)
+      in one process; Kafka's own group coordinator splits the source
+      topic's partitions across them, no extra deploys needed to use
+      more than one core for a single pipeline
 - [ ] Tenant label on every metric/log line
 - [ ] Hot-reload config without downtime (file watch or reload endpoint)
 - [ ] `multi_url` target mode: round-robin, least-in-flight, sticky-partition
 - [ ] Health-checked worker pool for multi_url targets
 - **Exit criteria:** two independent teams' pipelines run in one Bridge
   process without interfering with each other's throughput or config.
+
+#### Phase 4b: ARK Cluster (multi-node, opt-in)
+
+`workers: N` (above) parallelizes a pipeline across goroutines *within
+one process* — it does nothing if one machine's capacity is the actual
+ceiling. ARK Cluster is the answer to that case: spreading a pipeline's
+workers across multiple ARK processes/machines, with automatic
+placement and failover if a node dies. It is entirely opt-in — a single
+`docker compose up` with no cluster config stays a single-node
+deployment, exactly as built through Phase 4. Whether to run one node
+or a cluster is the operator's call, not something the Bridge forces.
+
+The design deliberately reuses Kafka itself as the coordination
+backbone instead of embedding a Raft/gossip implementation or taking a
+dependency on an external coordinator (etcd, ZooKeeper, k8s):
+
+1. **Heartbeat** — every ARK node produces periodically to an internal
+   topic (`__ark_cluster_nodes`), reporting that it's alive and its
+   current capacity.
+2. **Leader election** — every node tries to consume a single-partition
+   internal topic (`__ark_leader_election`) under one consumer group.
+   Kafka only ever hands that one partition to one group member at a
+   time, so whichever node holds it is the leader; if that node dies,
+   Kafka's own rebalance immediately hands the partition to a
+   survivor, which becomes the new leader — no separate election
+   protocol to write.
+3. **Placement** — the leader reads current heartbeats, decides which
+   node should run which pipeline's worker slots, and writes that
+   decision to another internal topic (`__ark_placements`).
+4. **Execution** — every node consumes `__ark_placements`; a node spins
+   up the worker slots it's been assigned and ignores the rest.
+5. **Failure** — a node's heartbeat goes stale, the leader notices and
+   reassigns its slots to the remaining nodes via a new placement
+   record; on restart a node just rejoins and waits for its next
+   assignment.
+
+Net effect: scaling `order-processor` to 3 workers via MCP/UI is one
+call regardless of node count — the cluster decides *where* those 3
+workers run, and adding a new ARK process (any host, any way it's
+launched) makes it join and pick up a share of the work automatically,
+with no orchestration script involved. All coordination state
+(heartbeats, placements) lives in ordinary replicated Kafka topics —
+consistent with §2's non-goal of not building a new storage engine;
+"distributed state" here means Kafka's own replication, not a new DB.
+
+This is real distributed-systems work (failure detection timing,
+split-brain edges during a leader handoff, placement rebalancing
+policy) and is staged after Phase 4's single-node multi-pipeline
+support is solid — build it when a real deployment actually needs more
+than one node's capacity, not speculatively.
 
 ### Backend — Phase 5: Observability
 - [ ] Prometheus metrics endpoint (throughput, latency, lag, error rate,
@@ -474,3 +528,15 @@ plumbing — treat it as **Phase 6b**, not a separate later phase.
   (current assumption: fire-and-forget/async).
 - Single Git repo (monorepo, two binaries) vs. two repos — leaning
   monorepo for now to share config/schema types.
+- Manual partition pinning was requested (an operator choosing exactly
+  which partition each worker reads, instead of Kafka's group
+  coordinator deciding). Checked against kafka-go: `GroupID` and
+  `Partition` are mutually exclusive on a Reader, so manual pinning
+  means giving up group-committed offsets and persisting them
+  ourselves — reintroducing the "new storage layer" §2 rules out, and
+  losing the automatic-failover behavior `workers: N` already gets for
+  free. Current recommendation: don't build it — `workers: N` plus
+  Kafka's own assignor already distributes a topic's partitions across
+  workers without that cost. Revisit only if a concrete need for
+  guaranteed partition→worker pinning shows up that `workers: N` can't
+  satisfy.
