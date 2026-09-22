@@ -143,6 +143,12 @@ go run ./cmd/bridge -config config.example.yaml
 - `GET /api/v1/pipelines/{name}` — status for one pipeline's workers
 - `POST /api/v1/pipelines/{name}/pause` / `/resume`
 
+## Contributing
+
+PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for dev setup,
+what a good PR looks like, and where ARK's scope is deliberately
+bounded (worth reading before proposing something big).
+
 ## License
 
 Apache License 2.0 — see [LICENSE](LICENSE).
