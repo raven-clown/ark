@@ -107,6 +107,7 @@ pipelines:
     reject_topic: orders.rejected
 
     consumer_group: order-processor-group
+    workers: 3                          # consumer-group members (goroutines) in this process
     consumer:
       max_poll_records: 50
       max_poll_interval_ms: 300000
@@ -114,6 +115,8 @@ pipelines:
     target:
       mode: single_url                  # or multi_url
       url: http://order-app:8080/process
+      health_check_url: http://order-app:8080/health   # optional
+      health_check_interval_seconds: 10                 # default when health_check_url is set
       # mode: multi_url
       # urls: [http://worker-1:8080/process, ...]
       # strategy: sticky_partition       # or round_robin, least_inflight
@@ -174,16 +177,36 @@ still without becoming a general DAG engine (see §11 for why).
       topics), not just the HTTP callback — found by testing that a
       transient produce error was failing a message permanently for
       the running process instead of being retried
-- [x] Dead-letter topic on exhausted retries
+- [x] Dead-letter topic on exhausted retries — but only for a
+      message-specific failure (the destination is otherwise healthy
+      and responding, this particular message's attempts all failed).
+      When the circuit breaker is open — a destination-wide outage, not
+      a bad message — `process()` blocks in place re-checking the
+      breaker instead of giving up, so nothing goes to DLQ during an
+      outage; the message just sits in `source_topic` (which is already
+      the queue, see §1) until the destination is reachable again.
 - [x] Reject action (4xx callback response, non-retryable) → reject_topic
 - [x] Concurrency limiter (max_in_flight) with in-order offset commit
 - [x] Consumer pause/resume (`POST /api/v1/pipelines/{name}/pause|resume`
       — moved up from Phase 5 since it only needed the engine, not the
       full REST API)
 - [x] Circuit breaker around the callback client
+- [x] Optional `target.health_check_url`: while the breaker is open, a
+      background probe periodically checks it and closes the breaker on
+      success — recovery doesn't depend on new traffic arriving to
+      trigger a retry. Doubles as a way to wake a cold/sleeping
+      destination using whatever health endpoint it already exposes.
 - **Exit criteria:** a flaky/slow downstream app no longer causes message
   loss or unbounded queueing; DLQ and reject topics populate correctly.
-  — verified: retries exhaust, breaker opens, DLQ/reject populate.
+  — verified: retries exhaust against a message-specific failure → DLQ
+  populates; a destination-wide outage → breaker opens, messages block
+  in place with zero commits, `target.health_check_url` closes the
+  breaker without new traffic, and the whole backlog is genuinely
+  retried (not skipped) once the destination is reachable again. A real
+  bug was found and fixed here: an earlier version let a later message
+  on the same partition commit past an unresolved earlier one, since
+  Kafka's offset commit is a single resume pointer, not a per-message
+  ledger — skipping any offset at all silently drops it.
 
 ### Backend — Phase 3: Rule engine (fast path)
 - [ ] Expression evaluator (`expr` or `cel-go`) wired to rule config
@@ -388,9 +411,12 @@ practice, not preemptively.
 
 ### Backend — Phase 5: Observability — mostly done
 - [x] Prometheus metrics endpoint: per-pipeline/worker throughput
-      counters (processed/rejected/dead_lettered/failed), callback
-      latency histogram, consumer lag gauge (from kafka-go's
-      `Reader.Stats().Lag`), circuit breaker state, pause state
+      counters (processed/rejected/dead_lettered/failed/backpressured),
+      callback latency histogram, consumer lag gauge (from kafka-go's
+      `Reader.Stats().Lag`), circuit breaker state, pause state, worker
+      liveness (`ark_worker_up`), last-activity timestamp (answers "is
+      this pipeline actually flowing data right now" directly instead
+      of inferring it from lag + throughput separately)
 - [ ] Per-tenant metric breakdown (tenant label isn't wired into
       metrics yet, only into `Status`)
 - [x] REST API: list pipelines (`GET /api/v1/pipelines`), pipeline
