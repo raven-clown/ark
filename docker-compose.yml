@@ -11,8 +11,11 @@ services:
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+      KAFKA_LOG_DIRS: /mnt/kafka-data
     ports:
       - "9092:9092"
+    volumes:
+      - ${KAFKA_DATA_DIR:-kafka-data}:/mnt/kafka-data
 
   bridge:
     build:
@@ -21,3 +24,6 @@ services:
       - kafka
     volumes:
       - ./bridge-engine/config.example.yaml:/etc/bridge/config.yaml:ro
+
+volumes:
+  kafka-data:

@@ -18,7 +18,12 @@ docker compose up
 ```
 
 Starts a single-node Kafka broker and the bridge engine wired to
-`bridge-engine/config.example.yaml`.
+`bridge-engine/config.example.yaml`. Kafka's own data directory is a
+named volume by default; point it at another disk or mount with:
+
+```
+KAFKA_DATA_DIR=/mnt/other-disk/kafka docker compose up
+```
 
 To run the engine directly:
 
