@@ -1,0 +1,41 @@
+brokers:
+  - localhost:9092
+
+pipelines:
+  - name: order-processor
+    tenant: team-a
+    mcp_access: read_write
+    source_topic: orders.raw
+    destination_topic: orders.processed
+    dead_letter_topic: orders.dlq
+    reject_topic: orders.rejected
+
+    consumer_group: order-processor-group
+    consumer:
+      max_poll_records: 50
+      max_poll_interval_ms: 300000
+
+    target:
+      mode: single_url
+      url: http://order-app:8080/process
+
+    concurrency:
+      max_in_flight: 10
+
+    retry:
+      max_attempts: 3
+      backoff_ms: 1000
+
+    fast_path_rules:
+      - name: auto-approve-small-orders
+        condition: "data.amount < 1000 && data.risk_score < 0.3"
+        action: pass_through
+      - name: invalid-missing-field
+        condition: "data.customer_id == null"
+        action: reject
+      - name: drop-test-data
+        condition: "data.env == 'test'"
+        action: drop
+      - name: suspicious-fraud-flag
+        condition: "data.risk_score > 0.9"
+        action: dead_letter

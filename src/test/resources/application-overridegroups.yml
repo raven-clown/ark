@@ -1,9 +1,0 @@
-akhq:
-  security:
-    groups:
-      admin:
-        - role: topic-read
-      limited:
-        - role: topic-read
-      extra:
-        - role: topic-read

@@ -1,4 +1,0 @@
-akhq:
-  security:
-    data-masking:
-      mode: none
