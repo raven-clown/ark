@@ -13,7 +13,7 @@ labels: bug
 
 **What you expected**
 
-**What actually happened** (include log output if relevant — set
+**What actually happened** (include log output if relevant, set
 `BRIDGE_LOG_LEVEL=debug` for more detail)
 
 **Environment**
