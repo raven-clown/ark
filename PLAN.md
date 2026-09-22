@@ -240,8 +240,10 @@ complexity, so they're staged rather than built all at once:
     tagging before forwarding.
   - `destination_override` on a rule: send a match to a topic other
     than the pipeline's default `destination_topic` (e.g. route by
-    region). Fan-out to multiple destinations from one rule ties into
-    the Phase 7 fan-out sink work.
+    region) — or `webhook_override` to call a different HTTP endpoint
+    instead of a topic (same either/or choice `post_callback_rules`
+    has, see below). Fan-out to multiple destinations from one rule
+    ties into the Phase 7 fan-out sink work.
   - `sample_rate` on a rule: let only a configured fraction of matches
     through (e.g. keep 10% of debug-tier events).
   - Per-rule rate limiting: matches beyond a threshold/sec get
@@ -272,7 +274,11 @@ post_callback_rules:
   - name: high-value-order-alert
     condition: "response.status == 200 && response.body.amount > 10000"
     action: transform_route
-    destination_override: orders.high-value
+    destination_override: orders.high-value        # send to a different Kafka topic
+  - name: notify-fraud-team
+    condition: "response.body.risk_score > 0.9"
+    action: transform_route
+    webhook_override: http://fraud-alerts.internal/notify  # OR call a different HTTP API
   - name: callback-said-retry
     condition: "response.body.retry_after != null"
     action: dead_letter
@@ -288,6 +294,21 @@ staging logic as `fast_path_rules`: land after schema validation
 (v1.5), alongside `destination_override`/`transform_pass_through` (v2),
 since it's the same rule-evaluation machinery pointed at a different
 input.
+
+**A rule's destination isn't limited to "another Kafka topic."**
+`destination_override` (produce to a topic) and `webhook_override`
+(POST to a different HTTP endpoint than the pipeline's own
+`target.url`) are both valid on the same action — a rule picks exactly
+one of the two per match. This is what makes "send this to that other
+API, or into Kafka, depending on the rule" (raised in review)
+expressible without a special case: routing was always going to a
+"sink," and a sink is either a topic or a webhook. Needing **both** at
+once from one match (fan out to a topic *and* a webhook *and* a DB) is
+the separate, larger Phase 7 fan-out feature — one rule choosing
+between two single destinations is v2-scope; fan-out to multiple
+simultaneous destinations is Phase 7-scope, staged later since it
+needs its own delivery/partial-failure semantics (what happens if the
+topic produce succeeds but the webhook call fails?).
 
 ### Backend — Phase 4: Multi-pipeline & multi-tenant
 - [x] Multiple pipelines in one config, isolated goroutine pools
