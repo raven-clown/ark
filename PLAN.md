@@ -6,7 +6,8 @@
 
 Owner: fe.laxxy@gmail.com
 License: Apache License 2.0
-Status: Planning → Phase 1
+Status: Phase 1 & 2 done, Phase 4 (workers: N) and Phase 5 (status/pause/
+resume/metrics) partially done — see checkboxes below
 
 ---
 
@@ -28,6 +29,16 @@ handling retries, dead-lettering, offset commits, and rebalances by hand.
 
 The app never touches a Kafka client library. It just implements one
 HTTP endpoint it already knows how to build.
+
+The `[Kafka topic A]` on the left is also the Bridge's queue, the same
+role NiFi's inter-processor connections play — pausing or stopping a
+pipeline doesn't drop anything, messages just sit in that topic
+(bounded by its retention setting) until consumption resumes. Since the
+queue lives in Kafka rather than on any Bridge instance's own disk, a
+Bridge node crashing mid-message doesn't touch it either: the offset
+for that message was never committed (commit only happens after a
+successful produce), so it's simply re-delivered to whichever Bridge
+node picks up that partition next.
 
 ## 2. Non-goals (v1)
 
@@ -132,27 +143,47 @@ pipelines:
 Rule actions: `pass_through`, `reject`, `drop`, `dead_letter`. Anything
 not matched by a rule falls through to the normal callback flow.
 
+**Chaining pipelines:** there's no special "multi-stage pipeline"
+feature, and none is needed for the common case of wanting several
+processing stages — a `destination_topic` of one pipeline can simply be
+the `source_topic` of another: `orders.raw → pipeline A → orders.staged
+→ pipeline B → orders.processed`. Each stage is an ordinary entry in
+`pipelines:`, independently pausable/resumable, independently
+observable in metrics. This covers "long, multi-step pipelines" without
+any engine changes; see §6's Phase 3 extensions for `post_callback_rules`,
+which covers the other half — smarter branching *within* one stage,
+still without becoming a general DAG engine (see §11 for why).
+
 ## 6. Phased roadmap
 
-### Backend — Phase 1: Core engine (MVP)
-- [ ] Go module scaffold (`cmd/bridge`, `internal/...`)
-- [ ] Config loader (YAML → typed struct, validation)
-- [ ] Kafka consumer wrapper (single pipeline, single partition strategy)
-- [ ] HTTP callback client with correlation ID injection
-- [ ] Kafka producer wrapper (destination topic)
-- [ ] At-least-once semantics (commit offset only after produce succeeds)
-- [ ] Structured JSON logging with correlation ID
+### Backend — Phase 1: Core engine (MVP) — done
+- [x] Go module scaffold (`cmd/bridge`, `internal/...`)
+- [x] Config loader (YAML → typed struct, validation)
+- [x] Kafka consumer wrapper (single pipeline, single partition strategy)
+- [x] HTTP callback client with correlation ID injection
+- [x] Kafka producer wrapper (destination topic)
+- [x] At-least-once semantics (commit offset only after produce succeeds)
+- [x] Structured JSON logging with correlation ID
 - **Exit criteria:** one pipeline, one topic in, one topic out, via HTTP
-  callback, running locally against docker-compose Kafka.
+  callback, running locally against docker-compose Kafka. — verified
+  end to end against live docker-compose Kafka.
 
-### Backend — Phase 2: Reliability
-- [ ] Retry with backoff on callback failure/timeout
-- [ ] Dead-letter topic on exhausted retries
-- [ ] Reject action (schema/precondition failures) → reject_topic
-- [ ] Concurrency limiter (max_in_flight) + consumer pause/resume
-- [ ] Circuit breaker around the callback client
+### Backend — Phase 2: Reliability — done
+- [x] Retry with backoff on callback failure/timeout
+- [x] Retry with backoff on produce failure too (destination/DLQ/reject
+      topics), not just the HTTP callback — found by testing that a
+      transient produce error was failing a message permanently for
+      the running process instead of being retried
+- [x] Dead-letter topic on exhausted retries
+- [x] Reject action (4xx callback response, non-retryable) → reject_topic
+- [x] Concurrency limiter (max_in_flight) with in-order offset commit
+- [x] Consumer pause/resume (`POST /api/v1/pipelines/{name}/pause|resume`
+      — moved up from Phase 5 since it only needed the engine, not the
+      full REST API)
+- [x] Circuit breaker around the callback client
 - **Exit criteria:** a flaky/slow downstream app no longer causes message
   loss or unbounded queueing; DLQ and reject topics populate correctly.
+  — verified: retries exhaust, breaker opens, DLQ/reject populate.
 
 ### Backend — Phase 3: Rule engine (fast path)
 - [ ] Expression evaluator (`expr` or `cel-go`) wired to rule config
@@ -209,6 +240,31 @@ complexity, so they're staged rather than built all at once:
     before a rule decision — must stay local-cache-only; a rule that
     calls out to a network service on every message defeats the point
     of a "fast path."
+
+**`post_callback_rules` — the mirror-image feature, evaluated on the
+callback's *response* instead of the incoming message:**
+
+```yaml
+post_callback_rules:
+  - name: high-value-order-alert
+    condition: "response.status == 200 && response.body.amount > 10000"
+    action: transform_route
+    destination_override: orders.high-value
+  - name: callback-said-retry
+    condition: "response.body.retry_after != null"
+    action: dead_letter
+```
+
+Answers "the callback came back — now what? check if it actually
+succeeded by app-level standards (not just HTTP status), transform the
+result, decide where it goes" — still exactly one callback per message,
+just richer post-processing of its result. This is the bounded way to
+get that behavior without turning the engine into a general DAG/flow
+graph (see §11 for the explicit scope decision behind this). Same
+staging logic as `fast_path_rules`: land after schema validation
+(v1.5), alongside `destination_override`/`transform_pass_through` (v2),
+since it's the same rule-evaluation machinery pointed at a different
+input.
 
 ### Backend — Phase 4: Multi-pipeline & multi-tenant
 - [x] Multiple pipelines in one config, isolated goroutine pools
@@ -273,13 +329,77 @@ policy) and is staged after Phase 4's single-node multi-pipeline
 support is solid — build it when a real deployment actually needs more
 than one node's capacity, not speculatively.
 
-### Backend — Phase 5: Observability
-- [ ] Prometheus metrics endpoint (throughput, latency, lag, error rate,
-      per-action counts, per-tenant breakdown)
-- [ ] REST API: list pipelines, pipeline detail, pause/resume, view DLQ,
-      retry/discard DLQ message
+**Config distribution.** Today every node reads `pipelines:` from its
+own local YAML file, which is fine for one node but wrong for a
+cluster: node A and B can silently disagree if only one file gets
+edited. Fix: pipeline config becomes a compacted Kafka topic
+(`__ark_pipeline_config`, key = pipeline name) that every node consumes
+to build its in-memory config; the local YAML file becomes just the
+bootstrap seed for an empty topic, not the ongoing source of truth.
+This gets replication/durability for free from Kafka's own topic
+replication (consistent with §2 — still no new storage engine), and it
+directly plugs into Phase 4's "hot-reload" item and Phase 6's
+`apply_pipeline_config`/`create_pipeline`, which would write to this
+topic instead of touching a file.
+
+**What happens if Kafka itself is down (not just one ARK node).** Two
+separate failure modes, two different answers:
+- *Kafka fully unreachable while ARK is already running:* every ARK
+  node loses coordination (heartbeat/leader-election/placement) and
+  the data plane (consume/callback/produce) at the same time, since
+  both depend on the same Kafka. This can't produce a split-brain,
+  because no node believes it's "still working alone" while others are
+  cut off — nobody can do anything without Kafka regardless of cluster
+  design. The moment Kafka comes back, coordination and processing both
+  resume from where committed offsets/state left off. This is a direct
+  consequence of putting coordination on the same substrate as the
+  actual work, not a gap to fix.
+- *A node restarts while Kafka is briefly unreachable:* this is the
+  real gap — with config living only in the `__ark_pipeline_config`
+  topic, a restarting node can't even boot. Fix: every node keeps a
+  local on-disk snapshot of the last config it consumed, written on
+  every update. On startup, try Kafka first; if unreachable, boot from
+  the local snapshot instead of failing, and resync once Kafka is
+  reachable again. This is a per-node resilience cache, not a second
+  source of truth — it holds no state that isn't also in Kafka.
+
+**Why Kafka-coordinator-based leader election instead of a real Raft
+quorum (embedded `hashicorp/raft`, or an external etcd/Consul):**
+
+| | Kafka consumer-group coordinator (chosen) | Raft quorum (etcd/Consul/embedded) |
+|---|---|---|
+| Extra infra | None — reuses Kafka, which ARK already requires | A separate etcd/Consul cluster, or an embedded Raft log/snapshot implementation |
+| Code size | ~200–400 lines: heartbeat + consume a topic + react to rebalance | A full consensus implementation or another dependency to operate |
+| Node count | Any N ≥ 1, no wasted nodes | Must stay odd for full fault tolerance (majority = ⌊N/2⌋+1, so N=2 tolerates zero failures) |
+| Split-brain protection | Kafka's own rebalance `generation` ID fences stale members — same idea as Raft's term number | Purpose-built for this, more battle-tested at the edges |
+| Failure-detection speed | Timeout-based (session timeout, ~10–45s), tied to Kafka's settings | Also timeout-based, but tunable independently and typically faster |
+| Operator familiarity | A repurposed mechanism — less standard mental model to debug against | Very standard ("3-node Raft, need 2 up") — widely recognized |
+| Fits ARK's positioning (§3) | Yes — one binary, minutes to deploy | No — reintroduces the exact heavyweight-dependency problem §3 differentiates against |
+
+**Decision:** Kafka-coordinator-based election. The thing being decided
+("which node runs which worker slot") isn't strongly-consistent data
+where a brief inconsistency is dangerous — at-least-once processing
+already tolerates a worker being briefly absent during a handoff. A
+full Raft implementation would be solving a harder problem than ARK
+actually has, at a cost (extra infra, more code, odd-node-count
+constraint) that directly contradicts §3's differentiation bet.
+Revisit only if the Kafka-coordinator approach proves unreliable in
+practice, not preemptively.
+
+### Backend — Phase 5: Observability — mostly done
+- [x] Prometheus metrics endpoint: per-pipeline/worker throughput
+      counters (processed/rejected/dead_lettered/failed), callback
+      latency histogram, consumer lag gauge (from kafka-go's
+      `Reader.Stats().Lag`), circuit breaker state, pause state
+- [ ] Per-tenant metric breakdown (tenant label isn't wired into
+      metrics yet, only into `Status`)
+- [x] REST API: list pipelines (`GET /api/v1/pipelines`), pipeline
+      detail (`GET /api/v1/pipelines/{name}`), pause/resume
+      (`POST .../pause`, `POST .../resume`)
+- [ ] View DLQ, retry/discard DLQ message
 - **Exit criteria:** an operator can answer "is this healthy?" from
-  metrics alone, and act on a stuck DLQ message via API.
+  metrics alone, and act on a stuck DLQ message via API. — metrics half
+  done; DLQ browsing/retry still open.
 
 ### Backend — Phase 6: MCP server (AI-agent interface)
 
@@ -540,3 +660,17 @@ plumbing — treat it as **Phase 6b**, not a separate later phase.
   workers without that cost. Revisit only if a concrete need for
   guaranteed partition→worker pinning shows up that `workers: N` can't
   satisfy.
+- A general NiFi/n8n-style DAG engine (arbitrary chained
+  processors — transform → filter → enrich → callback — each
+  independently start/stoppable, wired together in a UI) was raised
+  and explicitly declined in favor of two bounded features that cover
+  the same real use cases without the redesign: chaining separate
+  `pipelines:` entries via intermediate topics (§5, already supported,
+  no engine change needed) for multi-stage flows, and
+  `post_callback_rules` (§6, Phase 3 extensions) for branching on a
+  callback's result within one stage. A full DAG engine would directly
+  contradict §2/§3's positioning against n8n/NiFi/Camel and is a
+  multi-week redesign, not a config addition — revisit only if a real
+  deployment hits a case neither bounded feature can express, and treat
+  that as a deliberate positioning change requiring its own decision,
+  not an incremental add.
