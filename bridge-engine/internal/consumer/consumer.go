@@ -18,26 +18,30 @@ import (
 )
 
 type counters struct {
-	processed    atomic.Int64
-	rejected     atomic.Int64
-	deadLettered atomic.Int64
-	failed       atomic.Int64
+	processed        atomic.Int64
+	rejected         atomic.Int64
+	deadLettered     atomic.Int64
+	failed           atomic.Int64
+	running          atomic.Bool
+	lastActivityUnix atomic.Int64
 }
 
 type Status struct {
-	Pipeline     string `json:"pipeline"`
-	Worker       int    `json:"worker"`
-	Tenant       string `json:"tenant"`
-	MCPAccess    string `json:"mcp_access"`
-	SourceTopic  string `json:"source_topic"`
-	Destination  string `json:"destination_topic,omitempty"`
-	Enabled      bool   `json:"enabled"`
-	BreakerState string `json:"breaker_state"`
-	Processed    int64  `json:"processed"`
-	Rejected     int64  `json:"rejected"`
-	DeadLettered int64  `json:"dead_lettered"`
-	Failed       int64  `json:"failed"`
-	Paused       bool   `json:"paused"`
+	Pipeline       string  `json:"pipeline"`
+	Worker         int     `json:"worker"`
+	Tenant         string  `json:"tenant"`
+	MCPAccess      string  `json:"mcp_access"`
+	SourceTopic    string  `json:"source_topic"`
+	Destination    string  `json:"destination_topic,omitempty"`
+	Enabled        bool    `json:"enabled"`
+	Running        bool    `json:"running"`
+	BreakerState   string  `json:"breaker_state"`
+	Processed      int64   `json:"processed"`
+	Rejected       int64   `json:"rejected"`
+	DeadLettered   int64   `json:"dead_lettered"`
+	Failed         int64   `json:"failed"`
+	Paused         bool    `json:"paused"`
+	LastActivityAt *string `json:"last_activity_at,omitempty"`
 }
 
 type shared struct {
@@ -131,7 +135,7 @@ func (r *Runner) Name() string {
 }
 
 func (r *Runner) Status() Status {
-	return Status{
+	s := Status{
 		Pipeline:     r.pipeline.Name,
 		Worker:       r.workerID,
 		Tenant:       r.pipeline.Tenant,
@@ -139,6 +143,7 @@ func (r *Runner) Status() Status {
 		SourceTopic:  r.pipeline.SourceTopic,
 		Destination:  r.pipeline.DestinationTopic,
 		Enabled:      r.pipeline.IsEnabled(),
+		Running:      r.counters.running.Load(),
 		BreakerState: r.shared.breaker.State(),
 		Processed:    r.counters.processed.Load(),
 		Rejected:     r.counters.rejected.Load(),
@@ -146,6 +151,11 @@ func (r *Runner) Status() Status {
 		Failed:       r.counters.failed.Load(),
 		Paused:       r.shared.paused.Load(),
 	}
+	if unix := r.counters.lastActivityUnix.Load(); unix != 0 {
+		formatted := time.Unix(unix, 0).UTC().Format(time.RFC3339)
+		s.LastActivityAt = &formatted
+	}
+	return s
 }
 
 func (r *Runner) Close() error {
@@ -179,6 +189,13 @@ type job struct {
 }
 
 func (r *Runner) Run(ctx context.Context) error {
+	r.counters.running.Store(true)
+	metrics.WorkerUp.WithLabelValues(r.pipeline.Name, r.workerLabel).Set(1)
+	defer func() {
+		r.counters.running.Store(false)
+		metrics.WorkerUp.WithLabelValues(r.pipeline.Name, r.workerLabel).Set(0)
+	}()
+
 	maxInFlight := r.pipeline.Concurrency.MaxInFlight
 	if maxInFlight < 1 {
 		maxInFlight = 1
@@ -241,6 +258,9 @@ func (r *Runner) Run(ctx context.Context) error {
 func (r *Runner) commitInOrder(ctx context.Context, queue chan *job, done chan<- error) {
 	for j := range queue {
 		err := <-j.done
+		now := time.Now()
+		r.counters.lastActivityUnix.Store(now.Unix())
+		metrics.LastActivityTimestamp.WithLabelValues(r.pipeline.Name, r.workerLabel).Set(float64(now.Unix()))
 		if err != nil {
 			r.counters.failed.Add(1)
 			metrics.Failed.WithLabelValues(r.pipeline.Name, r.workerLabel).Inc()

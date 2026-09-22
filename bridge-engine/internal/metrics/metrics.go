@@ -45,8 +45,18 @@ var (
 		Name: "ark_pipeline_paused",
 		Help: "1 if a pipeline is paused, 0 otherwise.",
 	}, []string{"pipeline"})
+
+	WorkerUp = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "ark_worker_up",
+		Help: "1 while a pipeline worker's Run loop is active, 0 once it has stopped or crashed.",
+	}, []string{"pipeline", "worker"})
+
+	LastActivityTimestamp = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "ark_last_activity_timestamp_seconds",
+		Help: "Unix timestamp of the last message this worker finished handling (success, reject, or dead-letter).",
+	}, []string{"pipeline", "worker"})
 )
 
 func init() {
-	prometheus.MustRegister(Processed, Rejected, DeadLettered, Failed, CallbackDuration, ConsumerLag, CircuitBreakerOpen, Paused)
+	prometheus.MustRegister(Processed, Rejected, DeadLettered, Failed, CallbackDuration, ConsumerLag, CircuitBreakerOpen, Paused, WorkerUp, LastActivityTimestamp)
 }
