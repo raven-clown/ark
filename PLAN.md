@@ -4,7 +4,7 @@
 > (consume → validate/route → callback → produce), with an MCP interface
 > so AI agents can operate it, deployed as an open-source, self-hosted tool.
 
-Owner: fe.laxxy@gmail.com
+Owner: ekdanai.kk@gmail.com
 License: Apache License 2.0
 Status: Phase 1 & 2 done, Phase 4 (workers: N) and Phase 5 (status/pause/
 resume/metrics) partially done — see checkboxes below
