@@ -514,6 +514,23 @@ the calling agent to self-restrict):**
 - [ ] `Source` and `Sink` interfaces (Kafka is one implementation of each)
 - [ ] Database sink (direct insert/upsert, bypassing HTTP callback)
 - [ ] Fan-out destinations (topic + webhook + DB in one pipeline)
+- [ ] **HTTP source** (webhook receiver): the mirror image of everything
+      built so far. Today a pipeline's only direction is Kafka → ARK →
+      outbound HTTP callback; this is inbound HTTP → ARK → Kafka
+      instead — an external caller (Stripe, GitHub, an internal app
+      that only knows how to POST, anything) hits an endpoint ARK
+      exposes, and ARK produces that request body onto a topic. A
+      pipeline using an HTTP source has no `source_topic`/
+      `consumer_group` (nothing to consume — the trigger is the
+      inbound request itself) but otherwise reuses the same
+      `Sink`/retry/DLQ machinery the Kafka source already has for the
+      produce side. Real, common use case (getting external webhooks
+      into Kafka without a one-off receiver per integration) — staged
+      here because it needs its own design pass (auth on the inbound
+      endpoint, request size limits, sync-vs-async response semantics:
+      does the caller wait for the produce to confirm, or get a 202
+      immediately?) rather than being a small addition to the existing
+      Kafka-source path.
 - [ ] Revisit: CDC source, RabbitMQ/NATS, schedule trigger — only if
       real demand shows up after Phase 1–6 are solid
 
