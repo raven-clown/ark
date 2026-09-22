@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/breaker"
 	"github.com/raven-clown/ark/bridge-engine/internal/callback"
 	"github.com/raven-clown/ark/bridge-engine/internal/config"
+	"github.com/raven-clown/ark/bridge-engine/internal/metrics"
 	"github.com/raven-clown/ark/bridge-engine/internal/producer"
 )
 
@@ -35,6 +37,7 @@ type Status struct {
 	Rejected     int64  `json:"rejected"`
 	DeadLettered int64  `json:"dead_lettered"`
 	Failed       int64  `json:"failed"`
+	Paused       bool   `json:"paused"`
 }
 
 type shared struct {
@@ -43,6 +46,7 @@ type shared struct {
 	reject  *producer.Producer
 	client  *callback.Client
 	breaker *breaker.Breaker
+	paused  atomic.Bool
 }
 
 func newShared(brokers []string, p config.Pipeline) *shared {
@@ -76,12 +80,13 @@ func (s *shared) Close() error {
 }
 
 type Runner struct {
-	pipeline config.Pipeline
-	workerID int
-	reader   *kafka.Reader
-	shared   *shared
-	log      *slog.Logger
-	counters counters
+	pipeline    config.Pipeline
+	workerID    int
+	workerLabel string
+	reader      *kafka.Reader
+	shared      *shared
+	log         *slog.Logger
+	counters    counters
 }
 
 func NewPipeline(brokers []string, p config.Pipeline, log *slog.Logger) []*Runner {
@@ -109,11 +114,12 @@ func NewPipeline(brokers []string, p config.Pipeline, log *slog.Logger) []*Runne
 		})
 
 		runners = append(runners, &Runner{
-			pipeline: p,
-			workerID: w,
-			reader:   reader,
-			shared:   sh,
-			log:      log.With("pipeline", p.Name, "worker", w),
+			pipeline:    p,
+			workerID:    w,
+			workerLabel: strconv.Itoa(w),
+			reader:      reader,
+			shared:      sh,
+			log:         log.With("pipeline", p.Name, "worker", w),
 		})
 	}
 
@@ -138,6 +144,7 @@ func (r *Runner) Status() Status {
 		Rejected:     r.counters.rejected.Load(),
 		DeadLettered: r.counters.deadLettered.Load(),
 		Failed:       r.counters.failed.Load(),
+		Paused:       r.shared.paused.Load(),
 	}
 }
 
@@ -150,6 +157,20 @@ func CloseShared(runners []*Runner) error {
 		return nil
 	}
 	return runners[0].shared.Close()
+}
+
+func Pause(runners []*Runner) {
+	if len(runners) == 0 {
+		return
+	}
+	runners[0].shared.paused.Store(true)
+}
+
+func Resume(runners []*Runner) {
+	if len(runners) == 0 {
+		return
+	}
+	runners[0].shared.paused.Store(false)
 }
 
 type job struct {
@@ -168,8 +189,19 @@ func (r *Runner) Run(ctx context.Context) error {
 	commitErrCh := make(chan error, 1)
 
 	go r.commitInOrder(ctx, commitQueue, commitErrCh)
+	go r.reportLag(ctx)
 
 	for {
+		for r.shared.paused.Load() {
+			select {
+			case <-ctx.Done():
+				close(commitQueue)
+				<-commitErrCh
+				return nil
+			case <-time.After(time.Second):
+			}
+		}
+
 		msg, err := r.reader.FetchMessage(ctx)
 		if err != nil {
 			close(commitQueue)
@@ -211,6 +243,7 @@ func (r *Runner) commitInOrder(ctx context.Context, queue chan *job, done chan<-
 		err := <-j.done
 		if err != nil {
 			r.counters.failed.Add(1)
+			metrics.Failed.WithLabelValues(r.pipeline.Name, r.workerLabel).Inc()
 			r.log.Error("processing message failed", "error", err, "offset", j.msg.Offset, "partition", j.msg.Partition)
 			continue
 		}
@@ -219,6 +252,30 @@ func (r *Runner) commitInOrder(ctx context.Context, queue chan *job, done chan<-
 		}
 	}
 	done <- nil
+}
+
+func (r *Runner) reportLag(ctx context.Context) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			stats := r.reader.Stats()
+			metrics.ConsumerLag.WithLabelValues(r.pipeline.Name, r.workerLabel).Set(float64(stats.Lag))
+			state := 0.0
+			if r.shared.breaker.State() == "open" {
+				state = 1.0
+			}
+			metrics.CircuitBreakerOpen.WithLabelValues(r.pipeline.Name).Set(state)
+			paused := 0.0
+			if r.shared.paused.Load() {
+				paused = 1.0
+			}
+			metrics.Paused.WithLabelValues(r.pipeline.Name).Set(paused)
+		}
+	}
 }
 
 func (r *Runner) process(ctx context.Context, msg kafka.Message) error {
@@ -241,7 +298,9 @@ func (r *Runner) process(ctx context.Context, msg kafka.Message) error {
 			break
 		}
 
+		callStart := time.Now()
 		resp, lastErr = r.shared.client.Post(ctx, r.pipeline.Target.URL, correlationID, msg.Value)
+		metrics.CallbackDuration.WithLabelValues(r.pipeline.Name).Observe(time.Since(callStart).Seconds())
 
 		if lastErr == nil && resp.StatusCode >= 400 && resp.StatusCode < 500 {
 			r.shared.breaker.RecordResult(true)
@@ -268,11 +327,12 @@ func (r *Runner) process(ctx context.Context, msg kafka.Message) error {
 		return r.route(ctx, r.shared.dlq, msg.Key, msg.Value, headers, log, "dead_lettered", 0)
 	}
 
-	if err := r.shared.dest.Send(ctx, msg.Key, resp.Body, headers); err != nil {
+	if err := r.sendWithRetry(ctx, r.shared.dest, msg.Key, resp.Body, headers, log); err != nil {
 		return fmt.Errorf("producing result: %w", err)
 	}
 
 	r.counters.processed.Add(1)
+	metrics.Processed.WithLabelValues(r.pipeline.Name, r.workerLabel).Inc()
 	log.Info("message processed", "attempts", attempt, "status_code", resp.StatusCode)
 	return nil
 }
@@ -281,15 +341,37 @@ func (r *Runner) route(ctx context.Context, target *producer.Producer, key, valu
 	if target == nil {
 		return fmt.Errorf("%s but no topic configured for pipeline %s", outcome, r.pipeline.Name)
 	}
-	if err := target.Send(ctx, key, value, headers); err != nil {
+	if err := r.sendWithRetry(ctx, target, key, value, headers, log); err != nil {
 		return fmt.Errorf("routing to %s: %w", outcome, err)
 	}
 	switch outcome {
 	case "rejected":
 		r.counters.rejected.Add(1)
+		metrics.Rejected.WithLabelValues(r.pipeline.Name, r.workerLabel).Inc()
 	case "dead_lettered":
 		r.counters.deadLettered.Add(1)
+		metrics.DeadLettered.WithLabelValues(r.pipeline.Name, r.workerLabel).Inc()
 	}
 	log.Info("message "+outcome, "status_code", statusCode)
 	return nil
+}
+
+func (r *Runner) sendWithRetry(ctx context.Context, target *producer.Producer, key, value []byte, headers map[string]string, log *slog.Logger) error {
+	var lastErr error
+	for attempt := 1; attempt <= r.pipeline.Retry.MaxAttempts; attempt++ {
+		lastErr = target.Send(ctx, key, value, headers)
+		if lastErr == nil {
+			return nil
+		}
+
+		log.Warn("produce attempt failed", "attempt", attempt, "error", lastErr)
+		if attempt < r.pipeline.Retry.MaxAttempts {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Duration(r.pipeline.Retry.BackoffMs) * time.Millisecond):
+			}
+		}
+	}
+	return lastErr
 }
