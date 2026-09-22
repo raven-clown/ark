@@ -40,10 +40,12 @@ const (
 )
 
 type Target struct {
-	Mode     TargetMode     `yaml:"mode"`
-	URL      string         `yaml:"url"`
-	URLs     []string       `yaml:"urls"`
-	Strategy TargetStrategy `yaml:"strategy"`
+	Mode            TargetMode     `yaml:"mode"`
+	URL             string         `yaml:"url"`
+	URLs            []string       `yaml:"urls"`
+	Strategy        TargetStrategy `yaml:"strategy"`
+	HealthCheckURL  string         `yaml:"health_check_url"`
+	HealthCheckSecs int            `yaml:"health_check_interval_seconds"`
 }
 
 type ConsumerSettings struct {
@@ -124,6 +126,9 @@ func applyDefaults(cfg *Config) {
 		}
 		if p.Target.Mode == "" {
 			p.Target.Mode = TargetModeSingleURL
+		}
+		if p.Target.HealthCheckURL != "" && p.Target.HealthCheckSecs == 0 {
+			p.Target.HealthCheckSecs = 10
 		}
 		if p.Workers < 1 {
 			p.Workers = 1

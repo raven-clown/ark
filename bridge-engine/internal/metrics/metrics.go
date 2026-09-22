@@ -25,6 +25,11 @@ var (
 		Help: "Messages that failed processing with no DLQ/reject topic to route to.",
 	}, []string{"pipeline", "worker"})
 
+	Backpressured = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "ark_messages_backpressured_total",
+		Help: "Messages left uncommitted because the circuit breaker was open (destination-wide outage), not routed to DLQ since the message itself isn't the problem.",
+	}, []string{"pipeline", "worker"})
+
 	CallbackDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "ark_callback_duration_seconds",
 		Help:    "Latency of HTTP callback calls to a pipeline's target.",
@@ -58,5 +63,5 @@ var (
 )
 
 func init() {
-	prometheus.MustRegister(Processed, Rejected, DeadLettered, Failed, CallbackDuration, ConsumerLag, CircuitBreakerOpen, Paused, WorkerUp, LastActivityTimestamp)
+	prometheus.MustRegister(Processed, Rejected, DeadLettered, Failed, Backpressured, CallbackDuration, ConsumerLag, CircuitBreakerOpen, Paused, WorkerUp, LastActivityTimestamp)
 }

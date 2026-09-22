@@ -66,3 +66,21 @@ func (c *Client) Post(ctx context.Context, url string, correlationID string, pay
 func (r *Response) Success() bool {
 	return r.StatusCode >= 200 && r.StatusCode < 300
 }
+
+func (c *Client) Probe(ctx context.Context, url string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return fmt.Errorf("building health check request: %w", err)
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("probing %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 500 {
+		return fmt.Errorf("probing %s: status %d", url, resp.StatusCode)
+	}
+	return nil
+}

@@ -207,6 +207,9 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	go r.commitInOrder(ctx, commitQueue, commitErrCh)
 	go r.reportLag(ctx)
+	if r.workerID == 0 && r.pipeline.Target.HealthCheckURL != "" {
+		go r.probeHealth(ctx)
+	}
 
 	for {
 		for r.shared.paused.Load() {
@@ -258,6 +261,7 @@ func (r *Runner) Run(ctx context.Context) error {
 func (r *Runner) commitInOrder(ctx context.Context, queue chan *job, done chan<- error) {
 	for j := range queue {
 		err := <-j.done
+
 		now := time.Now()
 		r.counters.lastActivityUnix.Store(now.Unix())
 		metrics.LastActivityTimestamp.WithLabelValues(r.pipeline.Name, r.workerLabel).Set(float64(now.Unix()))
@@ -272,6 +276,31 @@ func (r *Runner) commitInOrder(ctx context.Context, queue chan *job, done chan<-
 		}
 	}
 	done <- nil
+}
+
+func (r *Runner) probeHealth(ctx context.Context) {
+	interval := time.Duration(r.pipeline.Target.HealthCheckSecs) * time.Second
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if r.shared.breaker.State() != "open" {
+				continue
+			}
+			probeCtx, cancel := context.WithTimeout(ctx, interval)
+			err := r.shared.client.Probe(probeCtx, r.pipeline.Target.HealthCheckURL)
+			cancel()
+			if err != nil {
+				r.log.Debug("health check probe failed", "error", err)
+				continue
+			}
+			r.log.Info("health check probe succeeded, closing circuit breaker")
+			r.shared.breaker.RecordResult(true)
+		}
+	}
 }
 
 func (r *Runner) reportLag(ctx context.Context) {
@@ -307,17 +336,23 @@ func (r *Runner) process(ctx context.Context, msg kafka.Message) error {
 	log := r.log.With("correlation_id", correlationID, "offset", msg.Offset, "partition", msg.Partition)
 	headers := map[string]string{callback.CorrelationIDHeader: correlationID}
 
-	var attempt int
 	var resp *callback.Response
 	var lastErr error
+	realAttempts := 0
 
-	for attempt = 1; attempt <= r.pipeline.Retry.MaxAttempts; attempt++ {
+	for realAttempts < r.pipeline.Retry.MaxAttempts {
 		if !r.shared.breaker.Allow() {
-			lastErr = fmt.Errorf("circuit breaker open for %s", r.pipeline.Target.URL)
-			log.Warn("callback skipped, circuit open", "attempt", attempt)
-			break
+			metrics.Backpressured.WithLabelValues(r.pipeline.Name, r.workerLabel).Inc()
+			log.Warn("callback blocked, circuit open, waiting for it to close before retrying this message")
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Second):
+			}
+			continue
 		}
 
+		realAttempts++
 		callStart := time.Now()
 		resp, lastErr = r.shared.client.Post(ctx, r.pipeline.Target.URL, correlationID, msg.Value)
 		metrics.CallbackDuration.WithLabelValues(r.pipeline.Name).Observe(time.Since(callStart).Seconds())
@@ -333,8 +368,8 @@ func (r *Runner) process(ctx context.Context, msg kafka.Message) error {
 			break
 		}
 
-		log.Warn("callback attempt failed", "attempt", attempt, "error", lastErr)
-		if attempt < r.pipeline.Retry.MaxAttempts {
+		log.Warn("callback attempt failed", "attempt", realAttempts, "error", lastErr)
+		if realAttempts < r.pipeline.Retry.MaxAttempts {
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
@@ -353,7 +388,7 @@ func (r *Runner) process(ctx context.Context, msg kafka.Message) error {
 
 	r.counters.processed.Add(1)
 	metrics.Processed.WithLabelValues(r.pipeline.Name, r.workerLabel).Inc()
-	log.Info("message processed", "attempts", attempt, "status_code", resp.StatusCode)
+	log.Info("message processed", "attempts", realAttempts, "status_code", resp.StatusCode)
 	return nil
 }
 

@@ -19,6 +19,8 @@ pipelines:
     target:
       mode: single_url
       url: http://order-app:8080/process
+      health_check_url: http://order-app:8080/
+      health_check_interval_seconds: 5
 
     concurrency:
       max_in_flight: 10
