@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/segmentio/kafka-go"
@@ -14,6 +15,27 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/producer"
 )
 
+type counters struct {
+	processed    atomic.Int64
+	rejected     atomic.Int64
+	deadLettered atomic.Int64
+	failed       atomic.Int64
+}
+
+type Status struct {
+	Pipeline     string `json:"pipeline"`
+	Tenant       string `json:"tenant"`
+	MCPAccess    string `json:"mcp_access"`
+	SourceTopic  string `json:"source_topic"`
+	Destination  string `json:"destination_topic,omitempty"`
+	Enabled      bool   `json:"enabled"`
+	BreakerState string `json:"breaker_state"`
+	Processed    int64  `json:"processed"`
+	Rejected     int64  `json:"rejected"`
+	DeadLettered int64  `json:"dead_lettered"`
+	Failed       int64  `json:"failed"`
+}
+
 type Runner struct {
 	pipeline config.Pipeline
 	reader   *kafka.Reader
@@ -23,6 +45,7 @@ type Runner struct {
 	client   *callback.Client
 	breaker  *breaker.Breaker
 	log      *slog.Logger
+	counters counters
 }
 
 func New(brokers []string, p config.Pipeline, log *slog.Logger) *Runner {
@@ -55,6 +78,26 @@ func New(brokers []string, p config.Pipeline, log *slog.Logger) *Runner {
 	}
 
 	return r
+}
+
+func (r *Runner) Name() string {
+	return r.pipeline.Name
+}
+
+func (r *Runner) Status() Status {
+	return Status{
+		Pipeline:     r.pipeline.Name,
+		Tenant:       r.pipeline.Tenant,
+		MCPAccess:    string(r.pipeline.MCPAccess),
+		SourceTopic:  r.pipeline.SourceTopic,
+		Destination:  r.pipeline.DestinationTopic,
+		Enabled:      r.pipeline.IsEnabled(),
+		BreakerState: r.breaker.State(),
+		Processed:    r.counters.processed.Load(),
+		Rejected:     r.counters.rejected.Load(),
+		DeadLettered: r.counters.deadLettered.Load(),
+		Failed:       r.counters.failed.Load(),
+	}
 }
 
 func (r *Runner) Close() error {
@@ -133,6 +176,7 @@ func (r *Runner) commitInOrder(ctx context.Context, queue chan *job, done chan<-
 	for j := range queue {
 		err := <-j.done
 		if err != nil {
+			r.counters.failed.Add(1)
 			r.log.Error("processing message failed", "error", err, "offset", j.msg.Offset, "partition", j.msg.Partition)
 			continue
 		}
@@ -194,6 +238,7 @@ func (r *Runner) process(ctx context.Context, msg kafka.Message) error {
 		return fmt.Errorf("producing result: %w", err)
 	}
 
+	r.counters.processed.Add(1)
 	log.Info("message processed", "attempts", attempt, "status_code", resp.StatusCode)
 	return nil
 }
@@ -204,6 +249,12 @@ func (r *Runner) route(ctx context.Context, target *producer.Producer, key, valu
 	}
 	if err := target.Send(ctx, key, value, headers); err != nil {
 		return fmt.Errorf("routing to %s: %w", outcome, err)
+	}
+	switch outcome {
+	case "rejected":
+		r.counters.rejected.Add(1)
+	case "dead_lettered":
+		r.counters.deadLettered.Add(1)
 	}
 	log.Info("message "+outcome, "status_code", statusCode)
 	return nil

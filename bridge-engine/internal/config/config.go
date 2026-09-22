@@ -67,20 +67,20 @@ type FastPathRule struct {
 }
 
 type Pipeline struct {
-	Name              string           `yaml:"name"`
-	Tenant            string           `yaml:"tenant"`
-	MCPAccess         MCPAccess        `yaml:"mcp_access"`
-	SourceTopic       string           `yaml:"source_topic"`
-	DestinationTopic  string           `yaml:"destination_topic"`
-	DeadLetterTopic   string           `yaml:"dead_letter_topic"`
-	RejectTopic       string           `yaml:"reject_topic"`
-	ConsumerGroup     string           `yaml:"consumer_group"`
-	Consumer          ConsumerSettings `yaml:"consumer"`
-	Target            Target           `yaml:"target"`
-	Concurrency       Concurrency      `yaml:"concurrency"`
-	Retry             Retry            `yaml:"retry"`
-	FastPathRules     []FastPathRule   `yaml:"fast_path_rules"`
-	Enabled           *bool            `yaml:"enabled"`
+	Name             string           `yaml:"name"`
+	Tenant           string           `yaml:"tenant"`
+	MCPAccess        MCPAccess        `yaml:"mcp_access"`
+	SourceTopic      string           `yaml:"source_topic"`
+	DestinationTopic string           `yaml:"destination_topic"`
+	DeadLetterTopic  string           `yaml:"dead_letter_topic"`
+	RejectTopic      string           `yaml:"reject_topic"`
+	ConsumerGroup    string           `yaml:"consumer_group"`
+	Consumer         ConsumerSettings `yaml:"consumer"`
+	Target           Target           `yaml:"target"`
+	Concurrency      Concurrency      `yaml:"concurrency"`
+	Retry            Retry            `yaml:"retry"`
+	FastPathRules    []FastPathRule   `yaml:"fast_path_rules"`
+	Enabled          *bool            `yaml:"enabled"`
 }
 
 type Config struct {

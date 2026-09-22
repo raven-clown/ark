@@ -161,6 +161,55 @@ not matched by a rule falls through to the normal callback flow.
 - **Exit criteria:** messages matching a rule skip the HTTP callback
   entirely; metrics show the split between fast-path and callback traffic.
 
+#### Phase 3 extensions (post-v1, staged by real need)
+
+`fast_path_rules` starts with exactly the 4 actions above and nothing
+else — the extensions below are real, useful, and each adds real
+complexity, so they're staged rather than built all at once:
+
+- **v1 (Phase 3 itself):** `pass_through` / `reject` / `drop` /
+  `dead_letter` only. Covers most routing needs.
+- **v1.5 — schema validation as a first-class action:**
+  ```yaml
+  - name: schema-check
+    action: reject
+    unless_schema_valid: "./schemas/order.schema.json"
+  ```
+  Replaces hand-written null-check conditions with a JSON Schema
+  reference. Highest value-to-complexity ratio of this whole list —
+  next thing to build after v1.
+- **v2 — transform, per-destination routing override, dedup, rate
+  limit:**
+  - `transform_pass_through`: redact/add fields on the fast path
+    without a callback round-trip (e.g. strip `ssn`/`credit_card`,
+    stamp `processed_by`/`ts`) — useful for PII redaction or metadata
+    tagging before forwarding.
+  - `destination_override` on a rule: send a match to a topic other
+    than the pipeline's default `destination_topic` (e.g. route by
+    region). Fan-out to multiple destinations from one rule ties into
+    the Phase 7 fan-out sink work.
+  - `sample_rate` on a rule: let only a configured fraction of matches
+    through (e.g. keep 10% of debug-tier events).
+  - Per-rule rate limiting: matches beyond a threshold/sec get
+    dropped or dead-lettered instead of passing — guards against a
+    bug that suddenly floods a rule.
+  - Time-based conditions (`time.hour`, `time.weekday`) for
+    business-hours-only routing.
+  - A rule-level safety valve: auto-disable (and alert, not just log)
+    a rule whose match rate suddenly spikes far outside its historical
+    norm, so a bad rule can't silently bypass every callback.
+- **v2.5+ — stateful conditions, enrichment lookups:** the two most
+  complex items, both needing a state store (in-memory + TTL, or an
+  embedded KV) that v1 deliberately has none of:
+  - Deduplication (drop a repeated key within N seconds) and
+    windowed thresholds ("same customer errors 5x in 1 min →
+    dead_letter") — both require memory across messages, not just a
+    single message's fields.
+  - Enrichment lookups (e.g. check `customer_id` against a blocklist)
+    before a rule decision — must stay local-cache-only; a rule that
+    calls out to a network service on every message defeats the point
+    of a "fast path."
+
 ### Backend — Phase 4: Multi-pipeline & multi-tenant
 - [ ] Multiple pipelines in one config, isolated goroutine pools
 - [ ] Tenant label on every metric/log line

@@ -45,6 +45,20 @@ func (b *Breaker) Allow() bool {
 	}
 }
 
+func (b *Breaker) State() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	switch b.state {
+	case open:
+		return "open"
+	case halfOpen:
+		return "half_open"
+	default:
+		return "closed"
+	}
+}
+
 func (b *Breaker) RecordResult(success bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()

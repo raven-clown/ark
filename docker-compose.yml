@@ -1,6 +1,15 @@
 services:
+  kafka-data-init:
+    image: busybox
+    command: ["chown", "-R", "1000:1000", "/mnt/kafka-data"]
+    volumes:
+      - ${KAFKA_DATA_DIR:-kafka-data}:/mnt/kafka-data
+
   kafka:
     image: apache/kafka:3.8.0
+    depends_on:
+      kafka-data-init:
+        condition: service_completed_successfully
     environment:
       KAFKA_NODE_ID: 1
       KAFKA_PROCESS_ROLES: broker,controller
