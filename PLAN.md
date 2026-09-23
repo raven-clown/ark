@@ -6,8 +6,8 @@
 
 Owner: ekdanai.kk@gmail.com
 License: Apache License 2.0
-Status: Phase 1, 2, and 3 done. Phase 4 (`workers: N`) and Phase 5
-(status/pause/resume/metrics) partially done, see checkboxes below.
+Status: Phase 1, 2, 3, and 5 done. Phase 4 (`workers: N` done,
+hot-reload/multi_url not yet) partially done, see checkboxes below.
 CI (`.github/workflows/ci.yml`) runs build/vet/test, govulncheck,
 gosec, Semgrep, OSV-Scanner, Gitleaks, and a Trivy image scan on
 every PR.
@@ -477,7 +477,7 @@ code, odd-node-count constraint) that directly contradicts §3's
 differentiation bet. Revisit only if the Kafka-coordinator approach
 proves unreliable in practice, not preemptively.
 
-### Backend: Phase 5: Observability, mostly done
+### Backend: Phase 5: Observability, done
 - [x] Prometheus metrics endpoint: per-pipeline/worker throughput
       counters (processed/rejected/dead_lettered/failed/backpressured),
       callback latency histogram, consumer lag gauge (from kafka-go's
@@ -490,10 +490,25 @@ proves unreliable in practice, not preemptively.
 - [x] REST API: list pipelines (`GET /api/v1/pipelines`), pipeline
       detail (`GET /api/v1/pipelines/{name}`), pause/resume
       (`POST .../pause`, `POST .../resume`)
-- [ ] View DLQ, retry/discard DLQ message
+- [x] View DLQ, retry/discard DLQ message: `internal/dlq.Browser`
+      tails `dead_letter_topic`/`reject_topic` with its own
+      never-committed consumer group into a bounded in-memory ring
+      buffer (default 200 entries), so a restart just rescans from
+      the earliest offset rather than needing persisted state of its
+      own. `GET .../dlq`, `GET .../dlq/{partition:offset}`,
+      `POST .../dlq/{id}/retry` (re-produces the entry to
+      `source_topic`, so it re-enters the pipeline from the top,
+      fast_path_rules included, and removes it from the list),
+      `POST .../dlq/{id}/discard` (removes it from the list only; the
+      underlying Kafka message is untouched, consistent with ARK
+      never owning storage of its own). Same four routes under
+      `.../reject`.
 - **Exit criteria:** an operator can answer "is this healthy?" from
-  metrics alone, and act on a stuck DLQ message via API. Metrics half
-  done; DLQ browsing/retry still open.
+  metrics alone, and act on a stuck DLQ message via API. Verified end
+  to end: a rejected message browsed, retried (reappeared with a new
+  offset since it failed the same way again, confirming it actually
+  re-entered the pipeline rather than being faked), and a separate
+  entry discarded.
 
 ### Backend: Phase 6: MCP server (AI-agent interface)
 

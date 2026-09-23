@@ -7,6 +7,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/raven-clown/ark/bridge-engine/internal/consumer"
+	"github.com/raven-clown/ark/bridge-engine/internal/dlq"
 )
 
 type Registry interface {
@@ -88,7 +89,70 @@ func NewServer(reg Registry) http.Handler {
 		writeJSON(w, http.StatusOK, map[string]string{"pipeline": name, "state": "running"})
 	})
 
+	registerDLQRoutes(mux, reg, "dlq", func(run *consumer.Runner) *dlq.Browser { return run.DLQBrowser() })
+	registerDLQRoutes(mux, reg, "reject", func(run *consumer.Runner) *dlq.Browser { return run.RejectBrowser() })
+
 	return mux
+}
+
+func registerDLQRoutes(mux *http.ServeMux, reg Registry, kind string, pick func(*consumer.Runner) *dlq.Browser) {
+	findBrowser := func(pipelineName string) (*dlq.Browser, bool) {
+		for _, run := range reg.PipelineRunners(pipelineName) {
+			if b := pick(run); b != nil {
+				return b, true
+			}
+		}
+		return nil, false
+	}
+
+	mux.HandleFunc("GET /api/v1/pipelines/{name}/"+kind, func(w http.ResponseWriter, r *http.Request) {
+		browser, ok := findBrowser(r.PathValue("name"))
+		if !ok {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": kind + " not configured for pipeline: " + r.PathValue("name")})
+			return
+		}
+		writeJSON(w, http.StatusOK, browser.List())
+	})
+
+	mux.HandleFunc("GET /api/v1/pipelines/{name}/"+kind+"/{id}", func(w http.ResponseWriter, r *http.Request) {
+		browser, ok := findBrowser(r.PathValue("name"))
+		if !ok {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": kind + " not configured for pipeline: " + r.PathValue("name")})
+			return
+		}
+		entry, ok := browser.Get(r.PathValue("id"))
+		if !ok {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": kind + " entry not found: " + r.PathValue("id")})
+			return
+		}
+		writeJSON(w, http.StatusOK, entry)
+	})
+
+	mux.HandleFunc("POST /api/v1/pipelines/{name}/"+kind+"/{id}/retry", func(w http.ResponseWriter, r *http.Request) {
+		browser, ok := findBrowser(r.PathValue("name"))
+		if !ok {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": kind + " not configured for pipeline: " + r.PathValue("name")})
+			return
+		}
+		if err := browser.Retry(r.Context(), r.PathValue("id")); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"id": r.PathValue("id"), "state": "retried"})
+	})
+
+	mux.HandleFunc("POST /api/v1/pipelines/{name}/"+kind+"/{id}/discard", func(w http.ResponseWriter, r *http.Request) {
+		browser, ok := findBrowser(r.PathValue("name"))
+		if !ok {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": kind + " not configured for pipeline: " + r.PathValue("name")})
+			return
+		}
+		if !browser.Discard(r.PathValue("id")) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": kind + " entry not found: " + r.PathValue("id")})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"id": r.PathValue("id"), "state": "discarded"})
+	})
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {

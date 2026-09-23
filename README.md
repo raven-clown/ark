@@ -120,6 +120,13 @@ That's the whole config for a working pipeline. With it:
       destination_override: orders.high-value   # or webhook_override: http://...
   ```
 
+- **Browse, retry, or discard what landed in `dead_letter_topic` or
+  `reject_topic`,** without a separate Kafka console tool:
+  `GET /api/v1/pipelines/order-processor/dlq` lists recent entries,
+  `POST .../dlq/{id}/retry` re-enters the message into the pipeline
+  from `source_topic` (fast_path_rules and all), `POST .../dlq/{id}/discard`
+  removes it from the list. Same routes under `.../reject`.
+
 ## Where it's going
 
 Designed in detail in [PLAN.md](PLAN.md), not built yet:
@@ -176,6 +183,9 @@ go run ./cmd/bridge -config config.example.yaml
 - `GET /api/v1/pipelines`: status for every pipeline worker
 - `GET /api/v1/pipelines/{name}`: status for one pipeline's workers
 - `POST /api/v1/pipelines/{name}/pause` and `/resume`
+- `GET /api/v1/pipelines/{name}/dlq` and `/reject`: recent entries
+- `GET /api/v1/pipelines/{name}/dlq/{id}` and `/reject/{id}`: one entry
+- `POST .../dlq/{id}/retry` and `/discard` (same for `/reject`)
 
 ## Contributing
 

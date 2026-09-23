@@ -25,14 +25,22 @@ services:
       - "9092:9092"
     volumes:
       - ${KAFKA_DATA_DIR:-kafka-data}:/mnt/kafka-data
+    healthcheck:
+      test: ["CMD", "/opt/kafka/bin/kafka-broker-api-versions.sh", "--bootstrap-server", "localhost:9092"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
 
   bridge:
     build:
       context: ./bridge-engine
     depends_on:
-      - kafka
+      kafka:
+        condition: service_healthy
     volumes:
       - ./bridge-engine/config.example.yaml:/etc/bridge/config.yaml:ro
+    restart: on-failure:5
 
 volumes:
   kafka-data:

@@ -14,6 +14,7 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/breaker"
 	"github.com/raven-clown/ark/bridge-engine/internal/callback"
 	"github.com/raven-clown/ark/bridge-engine/internal/config"
+	"github.com/raven-clown/ark/bridge-engine/internal/dlq"
 	"github.com/raven-clown/ark/bridge-engine/internal/kafkaadmin"
 	"github.com/raven-clown/ark/bridge-engine/internal/metrics"
 	"github.com/raven-clown/ark/bridge-engine/internal/producer"
@@ -48,19 +49,23 @@ type Status struct {
 }
 
 type shared struct {
-	brokers      []string
-	dest         *producer.Producer
-	dlq          *producer.Producer
-	reject       *producer.Producer
-	client       *callback.Client
-	breaker      *breaker.Breaker
-	rules        *rules.Engine
-	paused       atomic.Bool
-	overrideMu   sync.Mutex
-	overrideDest map[string]*producer.Producer
+	brokers       []string
+	dest          *producer.Producer
+	dlq           *producer.Producer
+	reject        *producer.Producer
+	client        *callback.Client
+	breaker       *breaker.Breaker
+	rules         *rules.Engine
+	paused        atomic.Bool
+	overrideMu    sync.Mutex
+	overrideDest  map[string]*producer.Producer
+	dlqBrowser    *dlq.Browser
+	rejectBrowser *dlq.Browser
 }
 
-func newShared(brokers []string, p config.Pipeline) (*shared, error) {
+const dlqBrowserMaxEntries = 200
+
+func newShared(ctx context.Context, brokers []string, p config.Pipeline, log *slog.Logger) (*shared, error) {
 	engine, err := rules.Compile(p)
 	if err != nil {
 		return nil, err
@@ -74,12 +79,24 @@ func newShared(brokers []string, p config.Pipeline) (*shared, error) {
 		rules:        engine,
 		overrideDest: make(map[string]*producer.Producer),
 	}
+
+	sourceProducer := producer.New(brokers, p.SourceTopic)
+
 	if p.DeadLetterTopic != "" {
 		s.dlq = producer.New(brokers, p.DeadLetterTopic)
+		if err := kafkaadmin.EnsureTopic(ctx, brokers, p.DeadLetterTopic, 1); err != nil {
+			return nil, fmt.Errorf("ensuring dead_letter_topic %s exists: %w", p.DeadLetterTopic, err)
+		}
+		s.dlqBrowser = dlq.NewBrowser(brokers, p.DeadLetterTopic, p.ConsumerGroup+"-dlq-browser", dlqBrowserMaxEntries, sourceProducer, log)
 	}
 	if p.RejectTopic != "" {
 		s.reject = producer.New(brokers, p.RejectTopic)
+		if err := kafkaadmin.EnsureTopic(ctx, brokers, p.RejectTopic, 1); err != nil {
+			return nil, fmt.Errorf("ensuring reject_topic %s exists: %w", p.RejectTopic, err)
+		}
+		s.rejectBrowser = dlq.NewBrowser(brokers, p.RejectTopic, p.ConsumerGroup+"-reject-browser", dlqBrowserMaxEntries, sourceProducer, log)
 	}
+
 	return s, nil
 }
 
@@ -113,6 +130,16 @@ func (s *shared) Close() error {
 		}
 	}
 	s.overrideMu.Unlock()
+	if s.dlqBrowser != nil {
+		if closeErr := s.dlqBrowser.Close(); closeErr != nil && err == nil {
+			err = closeErr
+		}
+	}
+	if s.rejectBrowser != nil {
+		if closeErr := s.rejectBrowser.Close(); closeErr != nil && err == nil {
+			err = closeErr
+		}
+	}
 	return err
 }
 
@@ -127,11 +154,6 @@ type Runner struct {
 }
 
 func NewPipeline(ctx context.Context, brokers []string, p config.Pipeline, log *slog.Logger) ([]*Runner, error) {
-	sh, err := newShared(brokers, p)
-	if err != nil {
-		return nil, fmt.Errorf("pipeline %q: %w", p.Name, err)
-	}
-
 	workers := p.Workers
 	if workers < 1 {
 		workers = 1
@@ -139,6 +161,18 @@ func NewPipeline(ctx context.Context, brokers []string, p config.Pipeline, log *
 
 	if err := kafkaadmin.EnsureTopic(ctx, brokers, p.SourceTopic, workers); err != nil {
 		return nil, fmt.Errorf("pipeline %q: ensuring source_topic %s exists: %w", p.Name, p.SourceTopic, err)
+	}
+
+	sh, err := newShared(ctx, brokers, p, log)
+	if err != nil {
+		return nil, fmt.Errorf("pipeline %q: %w", p.Name, err)
+	}
+
+	if sh.dlqBrowser != nil {
+		go sh.dlqBrowser.Run(ctx)
+	}
+	if sh.rejectBrowser != nil {
+		go sh.rejectBrowser.Run(ctx)
 	}
 
 	runners := make([]*Runner, 0, workers)
@@ -196,6 +230,14 @@ func (r *Runner) Status() Status {
 		s.LastActivityAt = &formatted
 	}
 	return s
+}
+
+func (r *Runner) DLQBrowser() *dlq.Browser {
+	return r.shared.dlqBrowser
+}
+
+func (r *Runner) RejectBrowser() *dlq.Browser {
+	return r.shared.rejectBrowser
 }
 
 func (r *Runner) Close() error {
