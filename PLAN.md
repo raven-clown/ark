@@ -363,7 +363,10 @@ succeeds but the webhook call fails?).
       splits the source topic's partitions across them, so no extra
       deploys are needed to use more than one core for a single
       pipeline.
-- [ ] Tenant label on every metric/log line
+- [x] Tenant label on every metric/log line: every Prometheus vector
+      and the per-runner `slog` logger both carry a `tenant` label
+      alongside `pipeline`, sourced from the config's optional
+      `tenant:` field.
 - [ ] Hot-reload config without downtime (file watch or reload endpoint)
 - [ ] `multi_url` target mode: round-robin, least-in-flight, sticky-partition
 - [ ] Health-checked worker pool for multi_url targets

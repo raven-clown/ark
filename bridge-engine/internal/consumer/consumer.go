@@ -154,6 +154,8 @@ type Runner struct {
 }
 
 func NewPipeline(ctx context.Context, brokers []string, p config.Pipeline, log *slog.Logger) ([]*Runner, error) {
+	log = log.With("pipeline", p.Name, "tenant", p.Tenant)
+
 	workers := p.Workers
 	if workers < 1 {
 		workers = 1
@@ -197,11 +199,15 @@ func NewPipeline(ctx context.Context, brokers []string, p config.Pipeline, log *
 			workerLabel: strconv.Itoa(w),
 			reader:      reader,
 			shared:      sh,
-			log:         log.With("pipeline", p.Name, "worker", w),
+			log:         log.With("worker", w),
 		})
 	}
 
 	return runners, nil
+}
+
+func (r *Runner) Tenant() string {
+	return r.pipeline.Tenant
 }
 
 func (r *Runner) Name() string {
@@ -272,10 +278,10 @@ type job struct {
 
 func (r *Runner) Run(ctx context.Context) error {
 	r.counters.running.Store(true)
-	metrics.WorkerUp.WithLabelValues(r.pipeline.Name, r.workerLabel).Set(1)
+	metrics.WorkerUp.WithLabelValues(r.pipeline.Name, r.workerLabel, r.pipeline.Tenant).Set(1)
 	defer func() {
 		r.counters.running.Store(false)
-		metrics.WorkerUp.WithLabelValues(r.pipeline.Name, r.workerLabel).Set(0)
+		metrics.WorkerUp.WithLabelValues(r.pipeline.Name, r.workerLabel, r.pipeline.Tenant).Set(0)
 	}()
 
 	maxInFlight := r.pipeline.Concurrency.MaxInFlight
@@ -346,10 +352,10 @@ func (r *Runner) commitInOrder(ctx context.Context, queue chan *job, done chan<-
 
 		now := time.Now()
 		r.counters.lastActivityUnix.Store(now.Unix())
-		metrics.LastActivityTimestamp.WithLabelValues(r.pipeline.Name, r.workerLabel).Set(float64(now.Unix()))
+		metrics.LastActivityTimestamp.WithLabelValues(r.pipeline.Name, r.workerLabel, r.pipeline.Tenant).Set(float64(now.Unix()))
 		if err != nil {
 			r.counters.failed.Add(1)
-			metrics.Failed.WithLabelValues(r.pipeline.Name, r.workerLabel).Inc()
+			metrics.Failed.WithLabelValues(r.pipeline.Name, r.workerLabel, r.pipeline.Tenant).Inc()
 			r.log.Error("processing message failed", "error", err, "offset", j.msg.Offset, "partition", j.msg.Partition)
 			continue
 		}
@@ -394,17 +400,17 @@ func (r *Runner) reportLag(ctx context.Context) {
 			return
 		case <-ticker.C:
 			stats := r.reader.Stats()
-			metrics.ConsumerLag.WithLabelValues(r.pipeline.Name, r.workerLabel).Set(float64(stats.Lag))
+			metrics.ConsumerLag.WithLabelValues(r.pipeline.Name, r.workerLabel, r.pipeline.Tenant).Set(float64(stats.Lag))
 			state := 0.0
 			if r.shared.breaker.State() == "open" {
 				state = 1.0
 			}
-			metrics.CircuitBreakerOpen.WithLabelValues(r.pipeline.Name).Set(state)
+			metrics.CircuitBreakerOpen.WithLabelValues(r.pipeline.Name, r.pipeline.Tenant).Set(state)
 			paused := 0.0
 			if r.shared.paused.Load() {
 				paused = 1.0
 			}
-			metrics.Paused.WithLabelValues(r.pipeline.Name).Set(paused)
+			metrics.Paused.WithLabelValues(r.pipeline.Name, r.pipeline.Tenant).Set(paused)
 		}
 	}
 }
@@ -423,7 +429,7 @@ func (r *Runner) process(ctx context.Context, msg kafka.Message) error {
 		if err != nil {
 			log.Error("fast_path_rules evaluation failed", "error", err)
 		} else if rule != nil {
-			metrics.FastPathMatches.WithLabelValues(r.pipeline.Name, rule.Name, string(rule.Action)).Inc()
+			metrics.FastPathMatches.WithLabelValues(r.pipeline.Name, rule.Name, string(rule.Action), r.pipeline.Tenant).Inc()
 			log.Info("fast_path_rule matched", "rule", rule.Name, "action", rule.Action)
 			return r.applyRuleAction(ctx, rule, msg.Key, msg.Value, headers, log)
 		}
@@ -435,7 +441,7 @@ func (r *Runner) process(ctx context.Context, msg kafka.Message) error {
 
 	for realAttempts < r.pipeline.Retry.MaxAttempts {
 		if !r.shared.breaker.Allow() {
-			metrics.Backpressured.WithLabelValues(r.pipeline.Name, r.workerLabel).Inc()
+			metrics.Backpressured.WithLabelValues(r.pipeline.Name, r.workerLabel, r.pipeline.Tenant).Inc()
 			log.Warn("callback blocked, circuit open, waiting for it to close before retrying this message")
 			select {
 			case <-ctx.Done():
@@ -448,7 +454,7 @@ func (r *Runner) process(ctx context.Context, msg kafka.Message) error {
 		realAttempts++
 		callStart := time.Now()
 		resp, lastErr = r.shared.client.Post(ctx, r.pipeline.Target.URL, correlationID, msg.Value)
-		metrics.CallbackDuration.WithLabelValues(r.pipeline.Name).Observe(time.Since(callStart).Seconds())
+		metrics.CallbackDuration.WithLabelValues(r.pipeline.Name, r.pipeline.Tenant).Observe(time.Since(callStart).Seconds())
 
 		if lastErr == nil && resp.StatusCode >= 400 && resp.StatusCode < 500 {
 			r.shared.breaker.RecordResult(true)
@@ -480,7 +486,7 @@ func (r *Runner) process(ctx context.Context, msg kafka.Message) error {
 		if err != nil {
 			log.Error("post_callback_rules evaluation failed", "error", err)
 		} else if rule != nil {
-			metrics.PostCallbackMatches.WithLabelValues(r.pipeline.Name, rule.Name, string(rule.Action)).Inc()
+			metrics.PostCallbackMatches.WithLabelValues(r.pipeline.Name, rule.Name, string(rule.Action), r.pipeline.Tenant).Inc()
 			log.Info("post_callback_rule matched", "rule", rule.Name, "action", rule.Action)
 			return r.applyRuleAction(ctx, rule, msg.Key, resp.Body, headers, log)
 		}
@@ -491,7 +497,7 @@ func (r *Runner) process(ctx context.Context, msg kafka.Message) error {
 	}
 
 	r.counters.processed.Add(1)
-	metrics.Processed.WithLabelValues(r.pipeline.Name, r.workerLabel).Inc()
+	metrics.Processed.WithLabelValues(r.pipeline.Name, r.workerLabel, r.pipeline.Tenant).Inc()
 	log.Info("message processed", "attempts", realAttempts, "status_code", resp.StatusCode)
 	return nil
 }
@@ -506,10 +512,10 @@ func (r *Runner) route(ctx context.Context, target *producer.Producer, key, valu
 	switch outcome {
 	case "rejected":
 		r.counters.rejected.Add(1)
-		metrics.Rejected.WithLabelValues(r.pipeline.Name, r.workerLabel).Inc()
+		metrics.Rejected.WithLabelValues(r.pipeline.Name, r.workerLabel, r.pipeline.Tenant).Inc()
 	case "dead_lettered":
 		r.counters.deadLettered.Add(1)
-		metrics.DeadLettered.WithLabelValues(r.pipeline.Name, r.workerLabel).Inc()
+		metrics.DeadLettered.WithLabelValues(r.pipeline.Name, r.workerLabel, r.pipeline.Tenant).Inc()
 	}
 	log.Info("message "+outcome, "status_code", statusCode)
 	return nil
@@ -522,7 +528,7 @@ func (r *Runner) applyRuleAction(ctx context.Context, rule *config.FastPathRule,
 			return fmt.Errorf("pass_through producing result: %w", err)
 		}
 		r.counters.processed.Add(1)
-		metrics.Processed.WithLabelValues(r.pipeline.Name, r.workerLabel).Inc()
+		metrics.Processed.WithLabelValues(r.pipeline.Name, r.workerLabel, r.pipeline.Tenant).Inc()
 		return nil
 
 	case config.ActionReject:
@@ -542,7 +548,7 @@ func (r *Runner) applyRuleAction(ctx context.Context, rule *config.FastPathRule,
 				return fmt.Errorf("routing to %s: %w", rule.DestinationOverride, err)
 			}
 			r.counters.processed.Add(1)
-			metrics.Processed.WithLabelValues(r.pipeline.Name, r.workerLabel).Inc()
+			metrics.Processed.WithLabelValues(r.pipeline.Name, r.workerLabel, r.pipeline.Tenant).Inc()
 			log.Info("message routed", "rule", rule.Name, "destination", rule.DestinationOverride)
 			return nil
 		}
@@ -550,7 +556,7 @@ func (r *Runner) applyRuleAction(ctx context.Context, rule *config.FastPathRule,
 			return fmt.Errorf("routing to webhook %s: %w", rule.WebhookOverride, err)
 		}
 		r.counters.processed.Add(1)
-		metrics.Processed.WithLabelValues(r.pipeline.Name, r.workerLabel).Inc()
+		metrics.Processed.WithLabelValues(r.pipeline.Name, r.workerLabel, r.pipeline.Tenant).Inc()
 		log.Info("message routed", "rule", rule.Name, "webhook", rule.WebhookOverride)
 		return nil
 

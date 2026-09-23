@@ -42,12 +42,12 @@ func main() {
 	var pipelineGroups [][]*consumer.Runner
 	for _, p := range cfg.Pipelines {
 		if !p.IsEnabled() {
-			logger.Info("skipping disabled pipeline", "pipeline", p.Name)
+			logger.Info("skipping disabled pipeline", "pipeline", p.Name, "tenant", p.Tenant)
 			continue
 		}
 		group, err := consumer.NewPipeline(ctx, cfg.Brokers, p, logger)
 		if err != nil {
-			logger.Error("starting pipeline failed", "pipeline", p.Name, "error", err)
+			logger.Error("starting pipeline failed", "pipeline", p.Name, "tenant", p.Tenant, "error", err)
 			os.Exit(1)
 		}
 		pipelineGroups = append(pipelineGroups, group)
@@ -95,12 +95,12 @@ func main() {
 				pwg.Add(1)
 				go func(runner *consumer.Runner) {
 					defer pwg.Done()
-					logger.Info("starting pipeline worker", "pipeline", runner.Name())
+					logger.Info("starting pipeline worker", "pipeline", runner.Name(), "tenant", runner.Tenant())
 					if err := runner.Run(ctx); err != nil {
-						logger.Error("pipeline worker stopped with error", "pipeline", runner.Name(), "error", err)
+						logger.Error("pipeline worker stopped with error", "pipeline", runner.Name(), "tenant", runner.Tenant(), "error", err)
 					}
 					if err := runner.Close(); err != nil {
-						logger.Error("closing worker resources failed", "pipeline", runner.Name(), "error", err)
+						logger.Error("closing worker resources failed", "pipeline", runner.Name(), "tenant", runner.Tenant(), "error", err)
 					}
 				}(runner)
 			}
