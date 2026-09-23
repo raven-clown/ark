@@ -15,6 +15,7 @@ open an issue to discuss it before writing code.
 cd bridge-engine
 go build ./...
 go vet ./...
+go test ./...
 ```
 
 Run the full stack locally:
@@ -35,12 +36,20 @@ for quick manual testing.
 2. Keep the change scoped to one thing: a bug fix, a config field, a
    feature. Large refactors or scope changes (see "before you start")
    go through an issue first.
-3. `go build ./...` and `go vet ./...` must pass. There's no CI yet, so
-   this is on you until Phase 5/6 tooling lands.
+3. `go build ./...`, `go vet ./...`, and `go test ./...` must pass. CI
+   (`.github/workflows/ci.yml`) runs these plus `govulncheck`, `gosec`,
+   Semgrep, OSV-Scanner, Gitleaks, and a Trivy scan of the built image
+   on every PR, so it's worth running the fast ones locally first.
 4. If you touched runtime behavior (not just docs), verify it against
    a real `docker compose up` stack, not just a successful build.
-   Several bugs in this codebase were only caught by actually running
-   the flow end to end (see PLAN.md's Phase 2 notes for an example).
+   Several bugs in this codebase, including one CI can't catch (a
+   consumer-group race that only shows up against a genuinely fresh
+   topic), were only caught by actually running the flow end to end
+   (see PLAN.md's Phase 2 and Phase 4 notes for examples). Add a unit
+   test for the logic you touched where one's practical; the
+   `internal/config`, `internal/breaker`, `internal/rules`, and
+   `internal/callback` packages have runnable examples of what "good"
+   looks like here.
 5. Open a pull request against `main` with a clear description of what
    changed and why.
 

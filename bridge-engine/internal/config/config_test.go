@@ -1,0 +1,250 @@
+package config
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func writeConfig(t *testing.T, contents string) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatalf("writing test config: %v", err)
+	}
+	return path
+}
+
+func TestLoadValidConfig(t *testing.T) {
+	path := writeConfig(t, `
+brokers:
+  - localhost:9092
+pipelines:
+  - name: order-processor
+    source_topic: orders.raw
+    destination_topic: orders.processed
+    consumer_group: order-processor-group
+    target:
+      url: http://app:8080/process
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if len(cfg.Pipelines) != 1 {
+		t.Fatalf("expected 1 pipeline, got %d", len(cfg.Pipelines))
+	}
+
+	p := cfg.Pipelines[0]
+	if p.MCPAccess != MCPAccessReadOnly {
+		t.Errorf("expected default mcp_access read_only, got %q", p.MCPAccess)
+	}
+	if p.Target.Mode != TargetModeSingleURL {
+		t.Errorf("expected default target.mode single_url, got %q", p.Target.Mode)
+	}
+	if p.Workers != 1 {
+		t.Errorf("expected default workers 1, got %d", p.Workers)
+	}
+	if p.Retry.MaxAttempts != 3 {
+		t.Errorf("expected default retry.max_attempts 3, got %d", p.Retry.MaxAttempts)
+	}
+	if p.Concurrency.MaxInFlight != 10 {
+		t.Errorf("expected default concurrency.max_in_flight 10, got %d", p.Concurrency.MaxInFlight)
+	}
+}
+
+func TestLoadMissingRequiredFields(t *testing.T) {
+	cases := []struct {
+		name   string
+		yaml   string
+		errSub string
+	}{
+		{
+			name:   "no brokers",
+			yaml:   "pipelines: []\n",
+			errSub: "brokers",
+		},
+		{
+			name: "no pipeline name",
+			yaml: `
+brokers: [localhost:9092]
+pipelines:
+  - source_topic: orders.raw
+`,
+			errSub: "name is required",
+		},
+		{
+			name: "no source_topic",
+			yaml: `
+brokers: [localhost:9092]
+pipelines:
+  - name: p1
+`,
+			errSub: "source_topic is required",
+		},
+		{
+			name: "enabled pipeline missing destination_topic",
+			yaml: `
+brokers: [localhost:9092]
+pipelines:
+  - name: p1
+    source_topic: orders.raw
+    consumer_group: g1
+    target: {url: http://app/process}
+`,
+			errSub: "destination_topic is required",
+		},
+		{
+			name: "enabled pipeline missing target.url",
+			yaml: `
+brokers: [localhost:9092]
+pipelines:
+  - name: p1
+    source_topic: orders.raw
+    destination_topic: orders.processed
+    consumer_group: g1
+`,
+			errSub: "target.url is required",
+		},
+		{
+			name: "enabled pipeline missing consumer_group",
+			yaml: `
+brokers: [localhost:9092]
+pipelines:
+  - name: p1
+    source_topic: orders.raw
+    destination_topic: orders.processed
+    target: {url: http://app/process}
+`,
+			errSub: "consumer_group is required",
+		},
+		{
+			name: "duplicate pipeline name",
+			yaml: `
+brokers: [localhost:9092]
+pipelines:
+  - name: p1
+    source_topic: a
+    enabled: false
+  - name: p1
+    source_topic: b
+    enabled: false
+`,
+			errSub: "duplicate pipeline name",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeConfig(t, tc.yaml)
+			_, err := Load(path)
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tc.errSub)
+			}
+			if !strings.Contains(err.Error(), tc.errSub) {
+				t.Errorf("expected error containing %q, got %q", tc.errSub, err.Error())
+			}
+		})
+	}
+}
+
+func TestDisabledPipelineSkipsRuntimeValidation(t *testing.T) {
+	path := writeConfig(t, `
+brokers: [localhost:9092]
+pipelines:
+  - name: draft-pipeline
+    source_topic: orders.raw
+    enabled: false
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("expected draft pipeline to load without destination_topic/target/consumer_group, got error: %v", err)
+	}
+	if cfg.Pipelines[0].IsEnabled() {
+		t.Errorf("expected pipeline to be disabled")
+	}
+}
+
+func TestTransformRouteRequiresExactlyOneOverride(t *testing.T) {
+	base := `
+brokers: [localhost:9092]
+pipelines:
+  - name: p1
+    source_topic: a
+    destination_topic: b
+    consumer_group: g1
+    target: {url: http://app/process}
+    fast_path_rules:
+      - name: r1
+        condition: "data.x == 1"
+        action: transform_route
+%s
+`
+
+	t.Run("neither override set", func(t *testing.T) {
+		path := writeConfig(t, fmt.Sprintf(base, ""))
+		_, err := Load(path)
+		if err == nil || !strings.Contains(err.Error(), "requires destination_override or webhook_override") {
+			t.Fatalf("expected requires-override error, got %v", err)
+		}
+	})
+
+	t.Run("both overrides set", func(t *testing.T) {
+		path := writeConfig(t, fmt.Sprintf(base, "        destination_override: topic.b\n        webhook_override: http://other/hook\n"))
+		_, err := Load(path)
+		if err == nil || !strings.Contains(err.Error(), "not both") {
+			t.Fatalf("expected not-both error, got %v", err)
+		}
+	})
+
+	t.Run("exactly one override set", func(t *testing.T) {
+		path := writeConfig(t, fmt.Sprintf(base, "        destination_override: topic.b\n"))
+		if _, err := Load(path); err != nil {
+			t.Fatalf("expected valid config, got error: %v", err)
+		}
+	})
+}
+
+func TestUnknownRuleActionRejected(t *testing.T) {
+	path := writeConfig(t, `
+brokers: [localhost:9092]
+pipelines:
+  - name: p1
+    source_topic: a
+    destination_topic: b
+    consumer_group: g1
+    target: {url: http://app/process}
+    fast_path_rules:
+      - name: r1
+        condition: "data.x == 1"
+        action: do_something_unsupported
+`)
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "unknown action") {
+		t.Fatalf("expected unknown action error, got %v", err)
+	}
+}
+
+func TestRuleWithoutConditionRejected(t *testing.T) {
+	path := writeConfig(t, `
+brokers: [localhost:9092]
+pipelines:
+  - name: p1
+    source_topic: a
+    destination_topic: b
+    consumer_group: g1
+    target: {url: http://app/process}
+    fast_path_rules:
+      - name: r1
+        action: drop
+`)
+	_, err := Load(path)
+	if err == nil || !strings.Contains(err.Error(), "condition is required") {
+		t.Fatalf("expected condition-required error, got %v", err)
+	}
+}

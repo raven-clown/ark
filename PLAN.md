@@ -6,8 +6,11 @@
 
 Owner: ekdanai.kk@gmail.com
 License: Apache License 2.0
-Status: Phase 1 and 2 done. Phase 4 (`workers: N`) and Phase 5
+Status: Phase 1, 2, and 3 done. Phase 4 (`workers: N`) and Phase 5
 (status/pause/resume/metrics) partially done, see checkboxes below.
+CI (`.github/workflows/ci.yml`) runs build/vet/test, govulncheck,
+gosec, Semgrep, OSV-Scanner, Gitleaks, and a Trivy image scan on
+every PR.
 
 ---
 

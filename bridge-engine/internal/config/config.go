@@ -103,7 +103,7 @@ func (p *Pipeline) IsEnabled() bool {
 }
 
 func Load(path string) (*Config, error) {
-	raw, err := os.ReadFile(path)
+	raw, err := os.ReadFile(path) // #nosec G304 -- path is an operator-supplied CLI flag, not untrusted network input
 	if err != nil {
 		return nil, fmt.Errorf("reading config %s: %w", path, err)
 	}

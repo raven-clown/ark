@@ -54,8 +54,9 @@ func main() {
 	}
 
 	apiServer := &http.Server{
-		Addr:    *apiAddr,
-		Handler: api.NewServer(api.NewRegistry(allRunners)),
+		Addr:              *apiAddr,
+		Handler:           api.NewServer(api.NewRegistry(allRunners)),
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 
 	var wg sync.WaitGroup
