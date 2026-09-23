@@ -80,7 +80,7 @@ jobs:
       - name: Build image
         run: docker build -t ark-bridge:ci ./bridge-engine
       - name: Scan image with Trivy
-        uses: aquasecurity/trivy-action@0.36.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: ark-bridge:ci
           exit-code: "1"
