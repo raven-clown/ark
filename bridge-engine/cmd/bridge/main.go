@@ -14,6 +14,7 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/api"
 	"github.com/raven-clown/ark/bridge-engine/internal/config"
 	"github.com/raven-clown/ark/bridge-engine/internal/consumer"
+	"github.com/raven-clown/ark/bridge-engine/internal/mcpserver"
 )
 
 func main() {
@@ -53,9 +54,23 @@ func main() {
 		allRunners = append(allRunners, group...)
 	}
 
+	reg := api.NewRegistry(allRunners)
+
+	rootMux := http.NewServeMux()
+	rootMux.Handle("/", api.NewServer(reg))
+
+	mcpTokens := mcpserver.LoadTokenStoreFromEnv()
+	if mcpTokens.Enabled() {
+		auditLog := logger.With("component", "mcp-audit")
+		rootMux.Handle("/mcp", mcpserver.NewHTTPHandler(reg, mcpTokens, auditLog))
+		logger.Info("mcp server enabled", "path", "/mcp")
+	} else {
+		logger.Info("mcp server disabled: no ARK_MCP_*_TOKENS set")
+	}
+
 	apiServer := &http.Server{
 		Addr:              *apiAddr,
-		Handler:           api.NewServer(api.NewRegistry(allRunners)),
+		Handler:           rootMux,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

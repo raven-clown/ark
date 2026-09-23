@@ -126,18 +126,35 @@ That's the whole config for a working pipeline. With it:
   `POST .../dlq/{id}/retry` re-enters the message into the pipeline
   from `source_topic` (fast_path_rules and all), `POST .../dlq/{id}/discard`
   removes it from the list. Same routes under `.../reject`.
+- **Point Claude, or any MCP client, at a running ARK.** Set
+  `ARK_MCP_VIEWER_TOKENS` / `ARK_MCP_OPERATOR_TOKENS` /
+  `ARK_MCP_ADMIN_TOKENS` and ARK mounts a real MCP server at `/mcp` on
+  the same port as the REST API, calling the same internal registry
+  the REST handlers use rather than a separate reimplementation. A
+  `viewer` token can ask what the error rate on order-processor is
+  right now or list what landed in the DLQ; `operator` and `admin`
+  tokens can also pause, resume, retry a DLQ entry, or discard one.
+  Every pipeline also carries its own `mcp_access`
+  (`read_only` / `read_write` / `none`), so a token's scope is a
+  ceiling, not a grant: an `operator` token still can't write to a
+  pipeline whose `mcp_access` is `read_only`. Every write call is
+  audit-logged with the scope, action, pipeline, and entry, never the
+  token itself. Verified against a scripted MCP client covering all
+  three scopes, and separately against two different local models
+  (`qwen2.5:7b`, `qwen3:8b` via Ollama) driving the server from plain
+  English with no hardcoded tool-call logic, to check the tool
+  descriptions actually explain themselves rather than only making
+  sense to one model.
 
 ## Where it's going
 
 Designed in detail in [PLAN.md](PLAN.md), not built yet:
 
-- **MCP server.** Point Claude, or any MCP client, at a running ARK
-  and ask it what the error rate on order-processor is right now, have
-  it pause a stuck pipeline, or describe a new pipeline in plain
-  language and let the agent draft it, validate it, and (once you
-  confirm) create it. Scoped by token (`viewer`, `operator`, `admin`)
-  and per-pipeline `mcp_access`, so a read-only analysis agent can
-  never accidentally touch production.
+- **MCP config tools.** `validate_pipeline_config`,
+  `apply_pipeline_config`, `create_pipeline`, `get_pipeline_schema`,
+  and `list_topics`, so an agent can draft a new pipeline from a plain
+  language description and, once you confirm, apply it. Waiting on
+  Phase 4's hot-reload, since there is no live config to apply to yet.
 - **ARK Cluster.** Run several ARK processes across machines and let
   them split a pipeline's workers automatically, with failover if one
   dies. No etcd, no separate Raft cluster to operate: it reuses

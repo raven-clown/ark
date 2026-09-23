@@ -7,7 +7,9 @@
 Owner: ekdanai.kk@gmail.com
 License: Apache License 2.0
 Status: Phase 1, 2, 3, and 5 done. Phase 4 (`workers: N` done,
-hot-reload/multi_url not yet) partially done, see checkboxes below.
+hot-reload/multi_url not yet) partially done. Phase 6 (MCP server)
+core done, config tools and get_metrics deferred to Phase 4. See
+checkboxes below.
 CI (`.github/workflows/ci.yml`) runs build/vet/test, govulncheck,
 gosec, Semgrep, OSV-Scanner, Gitleaks, and a Trivy image scan on
 every PR.
@@ -510,7 +512,7 @@ proves unreliable in practice, not preemptively.
   re-entered the pipeline rather than being faked), and a separate
   entry discarded.
 
-### Backend: Phase 6: MCP server (AI-agent interface)
+### Backend: Phase 6: MCP server (AI-agent interface), core done
 
 **Permission model, two layers, both enforced server-side (never trust
 the calling agent to self-restrict):**
@@ -547,33 +549,58 @@ the calling agent to self-restrict):**
    *agent*; pipeline `mcp_access` is a ceiling on the *pipeline*. Both
    must allow an action for it to execute.
 
-- [ ] Stand up an MCP server process (can be embedded in the Bridge
-      binary or a thin sidecar that calls the REST API, decide based
-      on how Phase 5's API turns out)
-- [ ] Define token scopes (`viewer` / `operator` / `admin`) and a token
-      issuance/revocation mechanism (reuse REST API's auth store)
-- [ ] Enforce per-pipeline `mcp_access` on every tool call server-side,
-      before touching Kafka or the callback target
-- [ ] Expose read tools (available to all scopes, filtered by each
-      pipeline's `mcp_access != none`):
-      `list_pipelines`, `get_pipeline_status`, `get_metrics`,
-      `list_dlq_messages`, `get_dlq_message`
-- [ ] Expose write tools (require `operator`/`admin` token AND pipeline
-      `mcp_access: read_write`): `pause_pipeline`, `resume_pipeline`,
-      `retry_dlq_message`, `discard_dlq_message`
-- [ ] Expose config tools (require `admin` token only, gated behind
-      explicit confirmation in the calling client):
-      `validate_pipeline_config`, `apply_pipeline_config` (hot-reload)
-- [ ] Audit log every write/config tool call (who, token id, pipeline,
-      action, timestamp), separate from the general structured log, so
-      "what did the AI agent change and when" is always answerable
+- [x] Embedded in the Bridge binary (`internal/mcpserver`), mounted at
+      `/mcp` on the same `http.Server` as the REST API, using the
+      official `github.com/modelcontextprotocol/go-sdk`. No sidecar,
+      no second port. Every tool handler calls the exact same internal
+      registry/`consumer.Runner`/`dlq.Browser` methods the REST API
+      handlers call, per the "MCP is a middleman, not a second
+      implementation" decision made while designing this.
+- [x] Token scopes (`viewer` / `operator` / `admin`) loaded from
+      `ARK_MCP_VIEWER_TOKENS` / `ARK_MCP_OPERATOR_TOKENS` /
+      `ARK_MCP_ADMIN_TOKENS` (comma-separated), not a config file, so
+      tokens don't end up committed alongside `pipelines:`. If none of
+      the three are set, the MCP endpoint isn't mounted at all, so
+      there's no accidental open MCP access by default. Dynamic
+      issuance/revocation via a tool or API (vs. edit-env-and-restart)
+      is deferred: v1 scope, same staging principle as everywhere else
+      in this plan.
+- [x] Per-pipeline `mcp_access` enforced server-side on every tool
+      call: write tools check it as a hard ceiling regardless of token
+      scope (`requireWritable`), read tools filter it via
+      `visibleToMCP` before a pipeline is even listed.
+- [x] Read tools, built and building on each other exactly as scoped:
+      `list_pipelines`, `get_pipeline_status`, `list_dlq_messages`,
+      `get_dlq_message`
+- [x] Write tools (only registered at all for `operator`/`admin`
+      scope, so a `viewer` session's `tools/list` doesn't even show
+      them, not just rejects calling them): `pause_pipeline`,
+      `resume_pipeline`, `retry_dlq_message`, `discard_dlq_message`
+- [ ] Config tools (`validate_pipeline_config`, `apply_pipeline_config`,
+      `create_pipeline`, `get_pipeline_schema`, `list_topics`): not
+      built. These need Phase 4's hot-reload (config becomes something
+      that can be changed live, not just read once at startup) to mean
+      anything, and that isn't built yet either. Revisit once Phase 4
+      lands.
+- [ ] `get_metrics`: not built. `get_pipeline_status` already surfaces
+      the same counters Prometheus does; a real time-ranged metrics
+      query tool is closer to a small PromQL client than a naming
+      exercise, and nothing has asked for it yet.
+- [x] Audit log every write tool call: `logger.With("component",
+      "mcp-audit")`, separate from the general structured log, logging
+      scope, action, pipeline, and (for dlq tools) which entry, not the
+      token itself.
 - **Exit criteria:** an analysis-only agent connected with a `viewer`
-  token (or an `operator` token on a `read_only`-flagged pipeline) can
-  answer "what's the error rate on order-processor right now?" but a
-  call to `pause_pipeline` from that same connection is rejected with
-  a clear permission error. Verified with an automated test for each
-  of the three token scopes times three `mcp_access` settings (9
-  combinations).
+  token can answer status/DLQ questions but has no write tools listed
+  at all, not just a rejected call. Verified two ways: a scripted Go
+  MCP client exercising all 8 tools across all three scopes plus an
+  invalid-token rejection, and two different local models (`qwen2.5:7b`
+  and `qwen3:8b` via Ollama) independently driving the same server
+  from natural-language questions with zero hardcoded tool-call logic
+  on my side. Both correctly chose which tools to call, and `qwen3:8b`
+  correctly explained (unprompted) that `discard_dlq_message` only
+  removes an entry from ARK's listing, not from Kafka, matching the
+  tool description's exact wording rather than guessing.
 
 ### Backend: Phase 7: Extensibility
 - [ ] `Source` and `Sink` interfaces (Kafka is one implementation of each)
