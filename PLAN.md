@@ -150,7 +150,7 @@ pipelines:
         condition: "data.amount < 1000 && data.risk_score < 0.3"
         action: pass_through
       - name: invalid-missing-field
-        condition: "data.customer_id == null"
+        condition: "data.customer_id == nil"
         action: reject
       - name: drop-test-data
         condition: "data.env == 'test'"
@@ -228,21 +228,43 @@ pipelines" without any engine changes. See §6's Phase 3 extensions for
   is a single resume pointer, not a per-message ledger. Skipping any
   offset at all silently drops it.
 
-### Backend: Phase 3: Rule engine (fast path)
-- [ ] Expression evaluator (`expr` or `cel-go`) wired to rule config
-- [ ] `pass_through` / `drop` / `reject` / `dead_letter` actions
-- [ ] Rule ordering (first match wins) and per-rule metrics
+### Backend: Phase 3: Rule engine (fast path), done
+- [x] Expression evaluator (`expr-lang/expr`) wired to rule config.
+      Conditions use `expr`'s own syntax, not JSON/JS: null checks are
+      `data.field == nil`, not `== null` (`null` fails to compile).
+      A message whose value isn't valid JSON simply matches no rule
+      and falls through to the normal callback flow rather than erroring.
+- [x] `pass_through` / `drop` / `reject` / `dead_letter` actions, plus
+      `transform_route` (either `destination_override` to a different
+      Kafka topic, or `webhook_override` to a different HTTP endpoint,
+      not both)
+- [x] Rule ordering (first match wins) and per-rule metrics
+      (`ark_fast_path_rule_matches_total`,
+      `ark_post_callback_rule_matches_total`, labeled by rule and action)
+- [x] `post_callback_rules` implemented alongside `fast_path_rules`
+      using the same evaluator, evaluated on `{data, response: {status,
+      body}}` after a successful (2xx) callback instead of on the raw
+      incoming message
 - **Exit criteria:** messages matching a rule skip the HTTP callback
-  entirely; metrics show the split between fast-path and callback traffic.
+  entirely; metrics show the split between fast-path and callback
+  traffic. Verified end to end against a live stack: `pass_through`,
+  `reject`, `drop`, and `dead_letter` all confirmed via fast_path_rules
+  on real messages, and `transform_route` confirmed via
+  post_callback_rules for both `destination_override` (routed to a
+  topic that didn't exist yet, auto-created, retried, delivered) and
+  `webhook_override` (routed to a second HTTP endpoint).
 
 #### Phase 3 extensions (post-v1, staged by real need)
 
-`fast_path_rules` starts with exactly the 4 actions above and nothing
-else. The extensions below are real and useful, and each adds real
-complexity, so they're staged rather than built all at once.
+`fast_path_rules` started with exactly the 4 actions above and
+`transform_route` shipped alongside them since it reused the same
+evaluator and was needed by `post_callback_rules` anyway. The
+extensions below (schema validation, payload transforms, dedup, rate
+limiting) are real and useful, and each adds real complexity, so
+they're staged rather than built all at once.
 
-- **v1 (Phase 3 itself):** `pass_through` / `reject` / `drop` /
-  `dead_letter` only. Covers most routing needs.
+- **v1 (Phase 3 itself, done):** `pass_through` / `reject` / `drop` /
+  `dead_letter` / `transform_route`. Covers most routing needs.
 - **v1.5, schema validation as a first-class action:**
   ```yaml
   - name: schema-check
@@ -300,7 +322,7 @@ post_callback_rules:
     action: transform_route
     webhook_override: http://fraud-alerts.internal/notify  # OR call a different HTTP API
   - name: callback-said-retry
-    condition: "response.body.retry_after != null"
+    condition: "response.body.retry_after != nil"
     action: dead_letter
 ```
 
@@ -309,11 +331,10 @@ succeeded by app-level standards (not just HTTP status), transform the
 result, decide where it goes." Still exactly one callback per message,
 just richer post-processing of its result. This is the bounded way to
 get that behavior without turning the engine into a general DAG/flow
-graph (see §11 for the explicit scope decision behind this). Same
-staging logic as `fast_path_rules`: lands after schema validation
-(v1.5), alongside `destination_override`/`transform_pass_through` (v2),
-since it's the same rule-evaluation machinery pointed at a different
-input.
+graph (see §11 for the explicit scope decision behind this). Implemented
+in Phase 3 alongside `fast_path_rules`, since it's the same
+rule-evaluation machinery pointed at a different input (`{data,
+response: {status, body}}` instead of just the raw message).
 
 **A rule's destination isn't limited to "another Kafka topic."**
 `destination_override` (produce to a topic) and `webhook_override`
@@ -585,8 +606,9 @@ the calling agent to self-restrict):**
 - Language: Go. The concurrency model fits consume/callback/produce
   well, it compiles to a single static binary, and there are strong
   Kafka client libraries (`franz-go` or `segmentio/kafka-go`).
-- Expression engine: `google/cel-go` or `expr-lang/expr` for
-  `fast_path_rules` conditions.
+- Expression engine: `expr-lang/expr`, chosen over `google/cel-go` for
+  `fast_path_rules`/`post_callback_rules` conditions. Its syntax reads
+  closer to the plain boolean expressions in this doc's examples.
 - Metrics: Prometheus client library.
 - MCP: official Go MCP SDK, or a thin JSON-RPC-over-stdio/HTTP shim if
   no mature Go SDK is available at implementation time (confirm during

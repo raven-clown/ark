@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/config"
 	"github.com/raven-clown/ark/bridge-engine/internal/metrics"
 	"github.com/raven-clown/ark/bridge-engine/internal/producer"
+	"github.com/raven-clown/ark/bridge-engine/internal/rules"
 )
 
 type counters struct {
@@ -45,19 +47,31 @@ type Status struct {
 }
 
 type shared struct {
-	dest    *producer.Producer
-	dlq     *producer.Producer
-	reject  *producer.Producer
-	client  *callback.Client
-	breaker *breaker.Breaker
-	paused  atomic.Bool
+	brokers      []string
+	dest         *producer.Producer
+	dlq          *producer.Producer
+	reject       *producer.Producer
+	client       *callback.Client
+	breaker      *breaker.Breaker
+	rules        *rules.Engine
+	paused       atomic.Bool
+	overrideMu   sync.Mutex
+	overrideDest map[string]*producer.Producer
 }
 
-func newShared(brokers []string, p config.Pipeline) *shared {
+func newShared(brokers []string, p config.Pipeline) (*shared, error) {
+	engine, err := rules.Compile(p)
+	if err != nil {
+		return nil, err
+	}
+
 	s := &shared{
-		dest:    producer.New(brokers, p.DestinationTopic),
-		client:  callback.NewClient(30 * time.Second),
-		breaker: breaker.New(5, 30*time.Second),
+		brokers:      brokers,
+		dest:         producer.New(brokers, p.DestinationTopic),
+		client:       callback.NewClient(30 * time.Second),
+		breaker:      breaker.New(5, 30*time.Second),
+		rules:        engine,
+		overrideDest: make(map[string]*producer.Producer),
 	}
 	if p.DeadLetterTopic != "" {
 		s.dlq = producer.New(brokers, p.DeadLetterTopic)
@@ -65,7 +79,18 @@ func newShared(brokers []string, p config.Pipeline) *shared {
 	if p.RejectTopic != "" {
 		s.reject = producer.New(brokers, p.RejectTopic)
 	}
-	return s
+	return s, nil
+}
+
+func (s *shared) overrideProducer(topic string) *producer.Producer {
+	s.overrideMu.Lock()
+	defer s.overrideMu.Unlock()
+	if p, ok := s.overrideDest[topic]; ok {
+		return p
+	}
+	p := producer.New(s.brokers, topic)
+	s.overrideDest[topic] = p
+	return p
 }
 
 func (s *shared) Close() error {
@@ -80,6 +105,13 @@ func (s *shared) Close() error {
 			err = closeErr
 		}
 	}
+	s.overrideMu.Lock()
+	for _, p := range s.overrideDest {
+		if closeErr := p.Close(); closeErr != nil && err == nil {
+			err = closeErr
+		}
+	}
+	s.overrideMu.Unlock()
 	return err
 }
 
@@ -93,8 +125,11 @@ type Runner struct {
 	counters    counters
 }
 
-func NewPipeline(brokers []string, p config.Pipeline, log *slog.Logger) []*Runner {
-	sh := newShared(brokers, p)
+func NewPipeline(brokers []string, p config.Pipeline, log *slog.Logger) ([]*Runner, error) {
+	sh, err := newShared(brokers, p)
+	if err != nil {
+		return nil, fmt.Errorf("pipeline %q: %w", p.Name, err)
+	}
 
 	workers := p.Workers
 	if workers < 1 {
@@ -127,7 +162,7 @@ func NewPipeline(brokers []string, p config.Pipeline, log *slog.Logger) []*Runne
 		})
 	}
 
-	return runners
+	return runners, nil
 }
 
 func (r *Runner) Name() string {
@@ -336,6 +371,17 @@ func (r *Runner) process(ctx context.Context, msg kafka.Message) error {
 	log := r.log.With("correlation_id", correlationID, "offset", msg.Offset, "partition", msg.Partition)
 	headers := map[string]string{callback.CorrelationIDHeader: correlationID}
 
+	if r.shared.rules.HasFastPath() {
+		rule, err := r.shared.rules.EvaluateFastPath(msg.Value)
+		if err != nil {
+			log.Error("fast_path_rules evaluation failed", "error", err)
+		} else if rule != nil {
+			metrics.FastPathMatches.WithLabelValues(r.pipeline.Name, rule.Name, string(rule.Action)).Inc()
+			log.Info("fast_path_rule matched", "rule", rule.Name, "action", rule.Action)
+			return r.applyRuleAction(ctx, rule, msg.Key, msg.Value, headers, log)
+		}
+	}
+
 	var resp *callback.Response
 	var lastErr error
 	realAttempts := 0
@@ -382,6 +428,17 @@ func (r *Runner) process(ctx context.Context, msg kafka.Message) error {
 		return r.route(ctx, r.shared.dlq, msg.Key, msg.Value, headers, log, "dead_lettered", 0)
 	}
 
+	if r.shared.rules.HasPostCallback() {
+		rule, err := r.shared.rules.EvaluatePostCallback(msg.Value, resp.StatusCode, resp.Body)
+		if err != nil {
+			log.Error("post_callback_rules evaluation failed", "error", err)
+		} else if rule != nil {
+			metrics.PostCallbackMatches.WithLabelValues(r.pipeline.Name, rule.Name, string(rule.Action)).Inc()
+			log.Info("post_callback_rule matched", "rule", rule.Name, "action", rule.Action)
+			return r.applyRuleAction(ctx, rule, msg.Key, resp.Body, headers, log)
+		}
+	}
+
 	if err := r.sendWithRetry(ctx, r.shared.dest, msg.Key, resp.Body, headers, log); err != nil {
 		return fmt.Errorf("producing result: %w", err)
 	}
@@ -409,6 +466,79 @@ func (r *Runner) route(ctx context.Context, target *producer.Producer, key, valu
 	}
 	log.Info("message "+outcome, "status_code", statusCode)
 	return nil
+}
+
+func (r *Runner) applyRuleAction(ctx context.Context, rule *config.FastPathRule, key, value []byte, headers map[string]string, log *slog.Logger) error {
+	switch rule.Action {
+	case config.ActionPassThrough:
+		if err := r.sendWithRetry(ctx, r.shared.dest, key, value, headers, log); err != nil {
+			return fmt.Errorf("pass_through producing result: %w", err)
+		}
+		r.counters.processed.Add(1)
+		metrics.Processed.WithLabelValues(r.pipeline.Name, r.workerLabel).Inc()
+		return nil
+
+	case config.ActionReject:
+		return r.route(ctx, r.shared.reject, key, value, headers, log, "rejected", 0)
+
+	case config.ActionDrop:
+		log.Info("message dropped", "rule", rule.Name)
+		return nil
+
+	case config.ActionDeadLetter:
+		return r.route(ctx, r.shared.dlq, key, value, headers, log, "dead_lettered", 0)
+
+	case config.ActionTransformRoute:
+		if rule.DestinationOverride != "" {
+			target := r.shared.overrideProducer(rule.DestinationOverride)
+			if err := r.sendWithRetry(ctx, target, key, value, headers, log); err != nil {
+				return fmt.Errorf("routing to %s: %w", rule.DestinationOverride, err)
+			}
+			r.counters.processed.Add(1)
+			metrics.Processed.WithLabelValues(r.pipeline.Name, r.workerLabel).Inc()
+			log.Info("message routed", "rule", rule.Name, "destination", rule.DestinationOverride)
+			return nil
+		}
+		if err := r.webhookWithRetry(ctx, rule.WebhookOverride, value, log); err != nil {
+			return fmt.Errorf("routing to webhook %s: %w", rule.WebhookOverride, err)
+		}
+		r.counters.processed.Add(1)
+		metrics.Processed.WithLabelValues(r.pipeline.Name, r.workerLabel).Inc()
+		log.Info("message routed", "rule", rule.Name, "webhook", rule.WebhookOverride)
+		return nil
+
+	default:
+		return fmt.Errorf("rule %q: unhandled action %q", rule.Name, rule.Action)
+	}
+}
+
+func (r *Runner) webhookWithRetry(ctx context.Context, url string, value []byte, log *slog.Logger) error {
+	correlationID, err := callback.NewCorrelationID()
+	if err != nil {
+		return err
+	}
+
+	var lastErr error
+	for attempt := 1; attempt <= r.pipeline.Retry.MaxAttempts; attempt++ {
+		var resp *callback.Response
+		resp, lastErr = r.shared.client.Post(ctx, url, correlationID, value)
+		if lastErr == nil && resp.Success() {
+			return nil
+		}
+		if lastErr == nil {
+			lastErr = fmt.Errorf("webhook %s returned status %d", url, resp.StatusCode)
+		}
+
+		log.Warn("webhook attempt failed", "attempt", attempt, "error", lastErr)
+		if attempt < r.pipeline.Retry.MaxAttempts {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Duration(r.pipeline.Retry.BackoffMs) * time.Millisecond):
+			}
+		}
+	}
+	return lastErr
 }
 
 func (r *Runner) sendWithRetry(ctx context.Context, target *producer.Producer, key, value []byte, headers map[string]string, log *slog.Logger) error {

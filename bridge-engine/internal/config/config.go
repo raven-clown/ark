@@ -33,10 +33,11 @@ const (
 type RuleAction string
 
 const (
-	ActionPassThrough RuleAction = "pass_through"
-	ActionReject      RuleAction = "reject"
-	ActionDrop        RuleAction = "drop"
-	ActionDeadLetter  RuleAction = "dead_letter"
+	ActionPassThrough    RuleAction = "pass_through"
+	ActionReject         RuleAction = "reject"
+	ActionDrop           RuleAction = "drop"
+	ActionDeadLetter     RuleAction = "dead_letter"
+	ActionTransformRoute RuleAction = "transform_route"
 )
 
 type Target struct {
@@ -63,27 +64,30 @@ type Retry struct {
 }
 
 type FastPathRule struct {
-	Name      string     `yaml:"name"`
-	Condition string     `yaml:"condition"`
-	Action    RuleAction `yaml:"action"`
+	Name                string     `yaml:"name"`
+	Condition           string     `yaml:"condition"`
+	Action              RuleAction `yaml:"action"`
+	DestinationOverride string     `yaml:"destination_override"`
+	WebhookOverride     string     `yaml:"webhook_override"`
 }
 
 type Pipeline struct {
-	Name             string           `yaml:"name"`
-	Tenant           string           `yaml:"tenant"`
-	MCPAccess        MCPAccess        `yaml:"mcp_access"`
-	SourceTopic      string           `yaml:"source_topic"`
-	DestinationTopic string           `yaml:"destination_topic"`
-	DeadLetterTopic  string           `yaml:"dead_letter_topic"`
-	RejectTopic      string           `yaml:"reject_topic"`
-	ConsumerGroup    string           `yaml:"consumer_group"`
-	Workers          int              `yaml:"workers"`
-	Consumer         ConsumerSettings `yaml:"consumer"`
-	Target           Target           `yaml:"target"`
-	Concurrency      Concurrency      `yaml:"concurrency"`
-	Retry            Retry            `yaml:"retry"`
-	FastPathRules    []FastPathRule   `yaml:"fast_path_rules"`
-	Enabled          *bool            `yaml:"enabled"`
+	Name              string           `yaml:"name"`
+	Tenant            string           `yaml:"tenant"`
+	MCPAccess         MCPAccess        `yaml:"mcp_access"`
+	SourceTopic       string           `yaml:"source_topic"`
+	DestinationTopic  string           `yaml:"destination_topic"`
+	DeadLetterTopic   string           `yaml:"dead_letter_topic"`
+	RejectTopic       string           `yaml:"reject_topic"`
+	ConsumerGroup     string           `yaml:"consumer_group"`
+	Workers           int              `yaml:"workers"`
+	Consumer          ConsumerSettings `yaml:"consumer"`
+	Target            Target           `yaml:"target"`
+	Concurrency       Concurrency      `yaml:"concurrency"`
+	Retry             Retry            `yaml:"retry"`
+	FastPathRules     []FastPathRule   `yaml:"fast_path_rules"`
+	PostCallbackRules []FastPathRule   `yaml:"post_callback_rules"`
+	Enabled           *bool            `yaml:"enabled"`
 }
 
 type Config struct {
@@ -195,14 +199,34 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("pipeline %q: consumer_group is required to enable this pipeline", p.Name)
 		}
 
-		for j, r := range p.FastPathRules {
-			switch r.Action {
-			case ActionPassThrough, ActionReject, ActionDrop, ActionDeadLetter:
-			default:
-				return fmt.Errorf("pipeline %q: fast_path_rules[%d]: unknown action %q", p.Name, j, r.Action)
-			}
+		if err := validateRules(p.Name, "fast_path_rules", p.FastPathRules); err != nil {
+			return err
+		}
+		if err := validateRules(p.Name, "post_callback_rules", p.PostCallbackRules); err != nil {
+			return err
 		}
 	}
 
+	return nil
+}
+
+func validateRules(pipelineName, field string, rules []FastPathRule) error {
+	for j, r := range rules {
+		if r.Condition == "" {
+			return fmt.Errorf("pipeline %q: %s[%d]: condition is required", pipelineName, field, j)
+		}
+		switch r.Action {
+		case ActionPassThrough, ActionReject, ActionDrop, ActionDeadLetter:
+		case ActionTransformRoute:
+			if r.DestinationOverride == "" && r.WebhookOverride == "" {
+				return fmt.Errorf("pipeline %q: %s[%d]: transform_route requires destination_override or webhook_override", pipelineName, field, j)
+			}
+			if r.DestinationOverride != "" && r.WebhookOverride != "" {
+				return fmt.Errorf("pipeline %q: %s[%d]: transform_route takes destination_override or webhook_override, not both", pipelineName, field, j)
+			}
+		default:
+			return fmt.Errorf("pipeline %q: %s[%d]: unknown action %q", pipelineName, field, j, r.Action)
+		}
+	}
 	return nil
 }

@@ -60,8 +60,18 @@ var (
 		Name: "ark_last_activity_timestamp_seconds",
 		Help: "Unix timestamp of the last message this worker finished handling (success, reject, or dead-letter).",
 	}, []string{"pipeline", "worker"})
+
+	FastPathMatches = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "ark_fast_path_rule_matches_total",
+		Help: "Messages matched by a fast_path_rule, skipping the HTTP callback entirely.",
+	}, []string{"pipeline", "rule", "action"})
+
+	PostCallbackMatches = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "ark_post_callback_rule_matches_total",
+		Help: "Callback responses matched by a post_callback_rule.",
+	}, []string{"pipeline", "rule", "action"})
 )
 
 func init() {
-	prometheus.MustRegister(Processed, Rejected, DeadLettered, Failed, Backpressured, CallbackDuration, ConsumerLag, CircuitBreakerOpen, Paused, WorkerUp, LastActivityTimestamp)
+	prometheus.MustRegister(Processed, Rejected, DeadLettered, Failed, Backpressured, CallbackDuration, ConsumerLag, CircuitBreakerOpen, Paused, WorkerUp, LastActivityTimestamp, FastPathMatches, PostCallbackMatches)
 }

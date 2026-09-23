@@ -34,7 +34,7 @@ pipelines:
         condition: "data.amount < 1000 && data.risk_score < 0.3"
         action: pass_through
       - name: invalid-missing-field
-        condition: "data.customer_id == null"
+        condition: "data.customer_id == nil"
         action: reject
       - name: drop-test-data
         condition: "data.env == 'test'"
@@ -42,3 +42,9 @@ pipelines:
       - name: suspicious-fraud-flag
         condition: "data.risk_score > 0.9"
         action: dead_letter
+
+    post_callback_rules:
+      - name: high-value-order-alert
+        condition: "response.status == 200 && response.body.amount > 10000"
+        action: transform_route
+        destination_override: orders.high-value

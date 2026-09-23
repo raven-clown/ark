@@ -90,17 +90,40 @@ That's the whole config for a working pipeline. With it:
   liveness, and a last-activity timestamp per pipeline and worker, so
   "is this actually flowing data right now" has a direct answer
   instead of something you have to infer.
+- **`fast_path_rules` skip the callback entirely** for messages that
+  match a condition, before ARK ever calls your app:
+
+  ```yaml
+  fast_path_rules:
+    - name: auto-approve-small-orders
+      condition: "data.amount < 1000 && data.risk_score < 0.3"
+      action: pass_through
+    - name: suspicious-fraud-flag
+      condition: "data.risk_score > 0.9"
+      action: dead_letter
+  ```
+
+  `pass_through`, `reject`, `drop`, and `dead_letter` all route
+  without a callback round trip. Conditions use
+  [`expr-lang/expr`](https://expr-lang.org) syntax (`nil`, not `null`).
+- **`post_callback_rules` branch on the callback's response instead,**
+  after it comes back: check whether it actually succeeded by
+  app-level standards (not just HTTP status), and route the result to
+  a different Kafka topic or a different HTTP endpoint entirely,
+  without a second callback:
+
+  ```yaml
+  post_callback_rules:
+    - name: high-value-order-alert
+      condition: "response.status == 200 && response.body.amount > 10000"
+      action: transform_route
+      destination_override: orders.high-value   # or webhook_override: http://...
+  ```
 
 ## Where it's going
 
 Designed in detail in [PLAN.md](PLAN.md), not built yet:
 
-- **Rule engine.** `fast_path_rules` skip the callback entirely for
-  messages that match a condition (`pass_through`, `reject`, `drop`,
-  `dead_letter`), and `post_callback_rules` branch on the callback's
-  *response* instead: check whether it actually succeeded by
-  app-level standards, transform the result, route it to a different
-  topic, all without a second callback.
 - **MCP server.** Point Claude, or any MCP client, at a running ARK
   and ask it what the error rate on order-processor is right now, have
   it pause a stuck pipeline, or describe a new pipeline in plain
