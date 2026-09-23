@@ -126,6 +126,29 @@ That's the whole config for a working pipeline. With it:
   `POST .../dlq/{id}/retry` re-enters the message into the pipeline
   from `source_topic` (fast_path_rules and all), `POST .../dlq/{id}/discard`
   removes it from the list. Same routes under `.../reject`.
+- **Spread a pipeline's callbacks across more than one backend
+  instance** with `target.mode: multi_url`:
+
+  ```yaml
+  target:
+    mode: multi_url
+    urls:
+      - http://order-app-1:8080/process
+      - http://order-app-2:8080/process
+    health_check_urls:
+      - http://order-app-1:8080/
+      - http://order-app-2:8080/
+    health_check_interval_seconds: 5
+    strategy: round_robin   # or least_inflight, sticky_partition
+  ```
+
+  Each URL is probed independently on `health_check_urls`; a message
+  only ever goes to a healthy one, and if every URL is down the
+  message blocks in place instead of getting dead-lettered, the same
+  way a single_url pipeline behaves when its circuit breaker is open.
+  `sticky_partition` keeps a given Kafka partition landing on the same
+  backend for as long as that backend stays healthy, useful when the
+  backend keeps per-partition local state.
 - **Point Claude, or any MCP client, at a running ARK.** Set
   `ARK_MCP_VIEWER_TOKENS` / `ARK_MCP_OPERATOR_TOKENS` /
   `ARK_MCP_ADMIN_TOKENS` and ARK mounts a real MCP server at `/mcp` on

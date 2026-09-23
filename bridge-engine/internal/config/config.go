@@ -46,6 +46,7 @@ type Target struct {
 	URLs            []string       `yaml:"urls"`
 	Strategy        TargetStrategy `yaml:"strategy"`
 	HealthCheckURL  string         `yaml:"health_check_url"`
+	HealthCheckURLs []string       `yaml:"health_check_urls"`
 	HealthCheckSecs int            `yaml:"health_check_interval_seconds"`
 }
 
@@ -131,7 +132,13 @@ func applyDefaults(cfg *Config) {
 		if p.Target.Mode == "" {
 			p.Target.Mode = TargetModeSingleURL
 		}
+		if p.Target.Mode == TargetModeMultiURL && p.Target.Strategy == "" {
+			p.Target.Strategy = StrategyRoundRobin
+		}
 		if p.Target.HealthCheckURL != "" && p.Target.HealthCheckSecs == 0 {
+			p.Target.HealthCheckSecs = 10
+		}
+		if len(p.Target.HealthCheckURLs) > 0 && p.Target.HealthCheckSecs == 0 {
 			p.Target.HealthCheckSecs = 10
 		}
 		if p.Workers < 1 {
@@ -190,6 +197,14 @@ func (c *Config) Validate() error {
 		case TargetModeMultiURL:
 			if len(p.Target.URLs) == 0 {
 				return fmt.Errorf("pipeline %q: target.urls is required for target.mode multi_url to enable this pipeline", p.Name)
+			}
+			switch p.Target.Strategy {
+			case StrategyRoundRobin, StrategyLeastInFlight, StrategyStickyPartition:
+			default:
+				return fmt.Errorf("pipeline %q: unknown target.strategy %q", p.Name, p.Target.Strategy)
+			}
+			if n := len(p.Target.HealthCheckURLs); n > 0 && n != len(p.Target.URLs) {
+				return fmt.Errorf("pipeline %q: target.health_check_urls must have the same length as target.urls (%d) if set, got %d", p.Name, len(p.Target.URLs), n)
 			}
 		default:
 			return fmt.Errorf("pipeline %q: unknown target.mode %q", p.Name, p.Target.Mode)

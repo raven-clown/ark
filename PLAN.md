@@ -368,8 +368,22 @@ succeeds but the webhook call fails?).
       alongside `pipeline`, sourced from the config's optional
       `tenant:` field.
 - [ ] Hot-reload config without downtime (file watch or reload endpoint)
-- [ ] `multi_url` target mode: round-robin, least-in-flight, sticky-partition
-- [ ] Health-checked worker pool for multi_url targets
+- [x] `multi_url` target mode: round-robin, least-in-flight, sticky-partition,
+      implemented in `internal/targetpool`. `target.strategy` picks the
+      algorithm; `sticky_partition` maps a message's Kafka partition to an
+      endpoint with a stable index so it keeps landing on the same backend
+      while that backend is healthy, falling back to the next healthy one
+      otherwise.
+- [x] Health-checked worker pool for multi_url targets: an optional
+      `target.health_check_urls` list (parallel to `target.urls`) is probed
+      on `health_check_interval_seconds`; `Pick()` only ever returns a
+      healthy endpoint, and if every endpoint is down the message blocks in
+      place the same way a single_url pipeline blocks on an open circuit
+      breaker, rather than getting dead-lettered. Verified live: two mock
+      backends behind a round_robin pool split 6 messages 3/3, marking one
+      backend down rerouted the next 6 messages entirely to the survivor
+      with zero failed attempts, and bringing it back up folded it straight
+      back into the rotation.
 - **Exit criteria:** two independent teams' pipelines run in one Bridge
   process without interfering with each other's throughput or config.
 

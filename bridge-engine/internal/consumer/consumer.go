@@ -19,6 +19,7 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/metrics"
 	"github.com/raven-clown/ark/bridge-engine/internal/producer"
 	"github.com/raven-clown/ark/bridge-engine/internal/rules"
+	"github.com/raven-clown/ark/bridge-engine/internal/targetpool"
 )
 
 type counters struct {
@@ -55,6 +56,7 @@ type shared struct {
 	reject        *producer.Producer
 	client        *callback.Client
 	breaker       *breaker.Breaker
+	targetPool    *targetpool.Pool
 	rules         *rules.Engine
 	paused        atomic.Bool
 	overrideMu    sync.Mutex
@@ -71,11 +73,13 @@ func newShared(ctx context.Context, brokers []string, p config.Pipeline, log *sl
 		return nil, err
 	}
 
+	client := callback.NewClient(30 * time.Second)
 	s := &shared{
 		brokers:      brokers,
 		dest:         producer.New(brokers, p.DestinationTopic),
-		client:       callback.NewClient(30 * time.Second),
+		client:       client,
 		breaker:      breaker.New(5, 30*time.Second),
+		targetPool:   targetpool.New(p.Target, client),
 		rules:        engine,
 		overrideDest: make(map[string]*producer.Producer),
 	}
@@ -169,6 +173,8 @@ func NewPipeline(ctx context.Context, brokers []string, p config.Pipeline, log *
 	if err != nil {
 		return nil, fmt.Errorf("pipeline %q: %w", p.Name, err)
 	}
+
+	go sh.targetPool.Run(ctx)
 
 	if sh.dlqBrowser != nil {
 		go sh.dlqBrowser.Run(ctx)
@@ -451,9 +457,22 @@ func (r *Runner) process(ctx context.Context, msg kafka.Message) error {
 			continue
 		}
 
+		url, release, ok := r.shared.targetPool.Pick(msg.Partition)
+		if !ok {
+			metrics.Backpressured.WithLabelValues(r.pipeline.Name, r.workerLabel, r.pipeline.Tenant).Inc()
+			log.Warn("callback blocked, every target.urls endpoint is unhealthy, waiting before retrying this message")
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(time.Second):
+			}
+			continue
+		}
+
 		realAttempts++
 		callStart := time.Now()
-		resp, lastErr = r.shared.client.Post(ctx, r.pipeline.Target.URL, correlationID, msg.Value)
+		resp, lastErr = r.shared.client.Post(ctx, url, correlationID, msg.Value)
+		release()
 		metrics.CallbackDuration.WithLabelValues(r.pipeline.Name, r.pipeline.Tenant).Observe(time.Since(callStart).Seconds())
 
 		if lastErr == nil && resp.StatusCode >= 400 && resp.StatusCode < 500 {
