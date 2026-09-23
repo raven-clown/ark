@@ -14,6 +14,7 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/breaker"
 	"github.com/raven-clown/ark/bridge-engine/internal/callback"
 	"github.com/raven-clown/ark/bridge-engine/internal/config"
+	"github.com/raven-clown/ark/bridge-engine/internal/kafkaadmin"
 	"github.com/raven-clown/ark/bridge-engine/internal/metrics"
 	"github.com/raven-clown/ark/bridge-engine/internal/producer"
 	"github.com/raven-clown/ark/bridge-engine/internal/rules"
@@ -125,7 +126,7 @@ type Runner struct {
 	counters    counters
 }
 
-func NewPipeline(brokers []string, p config.Pipeline, log *slog.Logger) ([]*Runner, error) {
+func NewPipeline(ctx context.Context, brokers []string, p config.Pipeline, log *slog.Logger) ([]*Runner, error) {
 	sh, err := newShared(brokers, p)
 	if err != nil {
 		return nil, fmt.Errorf("pipeline %q: %w", p.Name, err)
@@ -134,6 +135,10 @@ func NewPipeline(brokers []string, p config.Pipeline, log *slog.Logger) ([]*Runn
 	workers := p.Workers
 	if workers < 1 {
 		workers = 1
+	}
+
+	if err := kafkaadmin.EnsureTopic(ctx, brokers, p.SourceTopic, workers); err != nil {
+		return nil, fmt.Errorf("pipeline %q: ensuring source_topic %s exists: %w", p.Name, p.SourceTopic, err)
 	}
 
 	runners := make([]*Runner, 0, workers)

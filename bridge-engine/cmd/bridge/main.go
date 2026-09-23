@@ -44,7 +44,7 @@ func main() {
 			logger.Info("skipping disabled pipeline", "pipeline", p.Name)
 			continue
 		}
-		group, err := consumer.NewPipeline(cfg.Brokers, p, logger)
+		group, err := consumer.NewPipeline(ctx, cfg.Brokers, p, logger)
 		if err != nil {
 			logger.Error("starting pipeline failed", "pipeline", p.Name, "error", err)
 			os.Exit(1)
