@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="ARK">
+  <defs>
+    <linearGradient id="ark-flow" gradientUnits="userSpaceOnUse" x1="48" y1="0" x2="464" y2="0">
+      <stop offset="0" stop-color="#2EE6A6" stop-opacity="0"/>
+      <stop offset="0.22" stop-color="#2EE6A6"/>
+      <stop offset="0.78" stop-color="#2EE6A6"/>
+      <stop offset="1" stop-color="#2EE6A6" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="#0B0D10"/>
+  <rect x="2" y="2" width="508" height="508" rx="110" fill="none" stroke="#1F252D" stroke-width="4"/>
+  <path d="M140 414 C140 262 190 160 256 100 C322 160 372 262 372 414" fill="none" stroke="#E8EDF2" stroke-width="62" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="48" y="296" width="416" height="26" rx="13" fill="url(#ark-flow)"/>
+  <circle cx="256" cy="309" r="42" fill="#2EE6A6" opacity="0.16"/>
+  <circle cx="256" cy="309" r="24" fill="#2EE6A6"/>
+</svg>

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="ARK">
+  <rect width="512" height="512" rx="112" fill="#0B0D10"/>
+  <rect x="2" y="2" width="508" height="508" rx="110" fill="none" stroke="#1F252D" stroke-width="4"/>
+  <path d="M130 418 L256 98 L382 418" fill="none" stroke="#E8EDF2" stroke-width="62" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M96 318 H400 M356 272 L404 318 L356 364" fill="none" stroke="#2EE6A6" stroke-width="30" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
