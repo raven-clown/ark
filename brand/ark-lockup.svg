@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 200" role="img" aria-label="ARK">
+  <rect width="640" height="200" rx="28" fill="#0B0D10"/>
+  <g transform="translate(24 20) scale(0.3125)">
+    <path d="M146 404 C146 262 196 164 256 110 C316 164 366 262 366 404" fill="none" stroke="#E8EDF2" stroke-width="46" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="256" cy="308" r="31" fill="#2EE6A6" opacity="0.18"/>
+    <circle cx="256" cy="308" r="17" fill="#2EE6A6"/>
+  </g>
+  <text x="210" y="128" fill="#E8EDF2" font-family="Inter, 'Helvetica Neue', Arial, sans-serif" font-weight="700" font-size="92" letter-spacing="14">ARK</text>
+</svg>
