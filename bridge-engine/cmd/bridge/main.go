@@ -191,6 +191,12 @@ func main() {
 		}
 	}
 
+	redriveGate := func() bool { return true }
+	if clusterNode != nil {
+		redriveGate = clusterNode.IsLeader
+	}
+	go mgr.RunRedrive(ctx, redriveGate)
+
 	reload := &configReloader{path: *configPath, reconcile: reconcile, log: logger}
 	go watchFile(ctx, *configPath, 5*time.Second, reload, logger)
 

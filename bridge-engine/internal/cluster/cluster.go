@@ -349,6 +349,8 @@ func (n *Node) AssignedElsewhere(name string) bool {
 	return false
 }
 
+func (n *Node) IsLeader() bool { return n.elector != nil && n.elector.IsLeader() }
+
 func (n *Node) StatusSnapshot() Status {
 	live := n.hbView.liveNodes(n.nodeTimeout())
 	sort.Strings(live)

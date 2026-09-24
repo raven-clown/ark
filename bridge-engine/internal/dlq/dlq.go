@@ -15,8 +15,13 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/producer"
 )
 
+// RedriveCountHeader counts how many times a message has been resent from
+// a dead-letter topic, so automatic redrive can stop after max_times.
+const RedriveCountHeader = "X-Ark-Redrive-Count"
+
 type Entry struct {
 	ID        string    `json:"id"`
+	Redrives  int       `json:"redrives"`
 	Key       string    `json:"key,omitempty"`
 	Value     string    `json:"value"`
 	Timestamp time.Time `json:"timestamp"`
@@ -137,8 +142,15 @@ func (b *Browser) tail(ctx context.Context, partition int) {
 func (b *Browser) Close() error { return nil }
 
 func (b *Browser) add(msg kafka.Message) {
+	redrives := 0
+	for _, h := range msg.Headers {
+		if h.Key == RedriveCountHeader {
+			redrives, _ = strconv.Atoi(string(h.Value))
+		}
+	}
 	entry := Entry{
 		ID:        entryID(msg.Partition, msg.Offset),
+		Redrives:  redrives,
 		Key:       string(msg.Key),
 		Value:     string(msg.Value),
 		Timestamp: msg.Time,
@@ -220,7 +232,8 @@ func (b *Browser) Retry(ctx context.Context, id string) error {
 	if b.state == nil {
 		return fmt.Errorf("dlq state store not configured")
 	}
-	if err := b.retryTo.Send(ctx, []byte(entry.Key), []byte(entry.Value), nil); err != nil {
+	headers := map[string]string{RedriveCountHeader: strconv.Itoa(entry.Redrives + 1)}
+	if err := b.retryTo.Send(ctx, []byte(entry.Key), []byte(entry.Value), headers); err != nil {
 		return fmt.Errorf("retrying %s: %w", id, err)
 	}
 	if err := b.state.Mark(ctx, b.topic, id, StateRetried); err != nil {

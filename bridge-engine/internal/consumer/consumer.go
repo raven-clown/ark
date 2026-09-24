@@ -172,6 +172,7 @@ type Runner struct {
 	shared      *shared
 	log         *slog.Logger
 	counters    counters
+	headSince   atomic.Int64
 }
 
 func NewPipeline(ctx context.Context, deps Deps, p config.Pipeline, log *slog.Logger) ([]*Runner, error) {
@@ -309,8 +310,9 @@ func Resume(runners []*Runner) {
 }
 
 type job struct {
-	msg  kafka.Message
-	done chan error
+	msg       kafka.Message
+	done      chan error
+	fetchedAt time.Time
 }
 
 // finalCommitTimeout bounds the commits made while a worker drains after
@@ -372,7 +374,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			return fmt.Errorf("fetching message: %w", err)
 		}
 
-		j := &job{msg: msg, done: make(chan error, 1)}
+		j := &job{msg: msg, done: make(chan error, 1), fetchedAt: time.Now()}
 
 		select {
 		case sem <- struct{}{}:
@@ -460,7 +462,9 @@ func (r *Runner) processUntilDone(ctx context.Context, msg kafka.Message) error 
 func (r *Runner) commitInOrder(queue chan *job, done chan<- error) {
 	halted := false
 	for j := range queue {
+		r.headSince.Store(j.fetchedAt.UnixNano())
 		err := <-j.done
+		r.headSince.Store(0)
 
 		now := time.Now()
 		r.counters.lastActivityUnix.Store(now.Unix())
@@ -518,6 +522,11 @@ func (r *Runner) reportLag(ctx context.Context) {
 		case <-ticker.C:
 			stats := r.reader.Stats()
 			metrics.ConsumerLag.WithLabelValues(r.pipeline.Name, r.workerLabel, r.pipeline.Tenant).Set(float64(stats.Lag))
+			age := 0.0
+			if since := r.headSince.Load(); since != 0 {
+				age = time.Since(time.Unix(0, since)).Seconds()
+			}
+			metrics.OldestUncommittedAge.WithLabelValues(r.pipeline.Name, r.workerLabel, r.pipeline.Tenant).Set(age)
 			state := 0.0
 			if r.shared.breaker.State() == "open" {
 				state = 1.0
@@ -541,6 +550,11 @@ func (r *Runner) process(ctx context.Context, msg kafka.Message) error {
 
 	log := r.log.With("correlation_id", correlationID, "offset", msg.Offset, "partition", msg.Partition)
 	headers := map[string]string{callback.CorrelationIDHeader: correlationID}
+	for _, h := range msg.Headers {
+		if h.Key == dlq.RedriveCountHeader {
+			headers[h.Key] = string(h.Value)
+		}
+	}
 
 	if r.shared.rules.HasFastPath() {
 		rule, err := r.shared.rules.EvaluateFastPath(msg.Value)

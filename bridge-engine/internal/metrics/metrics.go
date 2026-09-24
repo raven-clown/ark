@@ -36,6 +36,11 @@ var (
 		Buckets: prometheus.DefBuckets,
 	}, []string{"pipeline", "tenant"})
 
+	OldestUncommittedAge = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "ark_oldest_uncommitted_age_seconds",
+		Help: "How long the oldest fetched-but-uncommitted message on a worker has been waiting. Everything fetched after it is also held back from commit, so a high value means a crash now would redeliver a large batch.",
+	}, []string{"pipeline", "worker", "tenant"})
+
 	ConsumerLag = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "ark_consumer_lag",
 		Help: "Messages waiting in source_topic that this worker hasn't consumed yet.",
@@ -73,5 +78,5 @@ var (
 )
 
 func init() {
-	prometheus.MustRegister(Processed, Rejected, DeadLettered, Failed, Backpressured, CallbackDuration, ConsumerLag, CircuitBreakerOpen, Paused, WorkerUp, LastActivityTimestamp, FastPathMatches, PostCallbackMatches)
+	prometheus.MustRegister(Processed, Rejected, DeadLettered, Failed, Backpressured, CallbackDuration, ConsumerLag, OldestUncommittedAge, CircuitBreakerOpen, Paused, WorkerUp, LastActivityTimestamp, FastPathMatches, PostCallbackMatches)
 }

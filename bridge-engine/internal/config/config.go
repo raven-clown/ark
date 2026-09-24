@@ -119,6 +119,7 @@ type Pipeline struct {
 	FastPathRules     []FastPathRule   `yaml:"fast_path_rules"`
 	PostCallbackRules []FastPathRule   `yaml:"post_callback_rules"`
 	Placement         Placement        `yaml:"placement"`
+	DeadLetterRedrive Redrive          `yaml:"dead_letter_redrive"`
 	Enabled           *bool            `yaml:"enabled"`
 }
 
@@ -131,6 +132,15 @@ type Cluster struct {
 	PlacementIntervalSeconds int               `yaml:"placement_interval_seconds"`
 	Labels                   map[string]string `yaml:"labels"`
 }
+
+// Redrive automatically resends dead-lettered messages to source_topic
+// once they are AfterSeconds old, at most MaxTimes per original message.
+type Redrive struct {
+	AfterSeconds int `yaml:"after_seconds"`
+	MaxTimes     int `yaml:"max_times"`
+}
+
+func (r Redrive) Enabled() bool { return r.AfterSeconds > 0 }
 
 // Placement restricts which cluster nodes may run a pipeline: only nodes
 // whose cluster.labels contain every key/value in NodeSelector.
@@ -322,6 +332,15 @@ func ValidatePipelines(pipelines []Pipeline) error {
 
 		if p.ConsumerGroup == "" {
 			return fmt.Errorf("pipeline %q: consumer_group is required to enable this pipeline", p.Name)
+		}
+
+		if rd := p.DeadLetterRedrive; rd != (Redrive{}) {
+			if p.DeadLetterTopic == "" {
+				return fmt.Errorf("pipeline %q: dead_letter_redrive needs a dead_letter_topic", p.Name)
+			}
+			if rd.AfterSeconds < 1 || rd.MaxTimes < 1 {
+				return fmt.Errorf("pipeline %q: dead_letter_redrive needs after_seconds and max_times of at least 1", p.Name)
+			}
 		}
 
 		switch p.Ordering {

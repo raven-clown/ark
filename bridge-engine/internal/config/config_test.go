@@ -388,3 +388,26 @@ cluster:
 		t.Fatalf("expected a cluster.name validation error, got %v", err)
 	}
 }
+
+func TestRedriveNeedsDLQAndPositiveValues(t *testing.T) {
+	base := `
+brokers: [localhost:9092]
+pipelines:
+  - name: p
+    source_topic: a
+    destination_topic: b
+    consumer_group: g
+    target: {url: http://x}
+`
+	for _, extra := range []string{
+		"    dead_letter_redrive: {after_seconds: 60, max_times: 3}\n",
+		"    dead_letter_topic: d\n    dead_letter_redrive: {after_seconds: 0, max_times: 3}\n",
+	} {
+		if _, err := Load(writeConfig(t, base+extra)); err == nil || !strings.Contains(err.Error(), "dead_letter_redrive") {
+			t.Errorf("expected a dead_letter_redrive error for %q, got %v", extra, err)
+		}
+	}
+	if _, err := Load(writeConfig(t, base+"    dead_letter_topic: d\n    dead_letter_redrive: {after_seconds: 60, max_times: 3}\n")); err != nil {
+		t.Errorf("valid redrive config rejected: %v", err)
+	}
+}
