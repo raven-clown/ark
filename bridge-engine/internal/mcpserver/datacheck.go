@@ -347,7 +347,16 @@ func checkData(ctx context.Context, d Deps, p config.Pipeline, n int, from strin
 	sort.Slice(out.Fields, func(i, j int) bool { return out.Fields[i].Path < out.Fields[j].Path })
 
 	if len(out.RuleViolations) > 0 {
-		add(SeverityWarning, fmt.Sprintf("Messages in this sample break the pipeline's data rules: %v.", out.RuleViolations), "See violation_examples.")
+		kinds := make([]string, 0, len(out.RuleViolations))
+		for k := range out.RuleViolations {
+			kinds = append(kinds, k)
+		}
+		sort.Strings(kinds)
+		parts := make([]string, len(kinds))
+		for i, k := range kinds {
+			parts[i] = fmt.Sprintf("%s (%d)", k, out.RuleViolations[k])
+		}
+		add(SeverityWarning, "Messages in this sample break the pipeline's data rules: "+strings.Join(parts, ", ")+".", "See violation_examples.")
 	}
 	if len(out.Anomalies) == 0 {
 		add(SeverityOK, fmt.Sprintf("Nothing unusual in %d recent messages.", out.Sampled), "")

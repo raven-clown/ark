@@ -1,0 +1,33 @@
+# The config `docker compose up` runs: one pipeline from orders.raw to the
+# demo app and back to orders.processed. See config.example.yaml for every
+# option.
+brokers:
+  - kafka:9092
+
+timezone: UTC
+
+topics:
+  replication_factor: 1   # the compose setup has a single broker
+
+pipelines:
+  - name: orders
+    tenant: demo
+    mcp_access: read_write
+    source_topic: orders.raw
+    destination_topic: orders.processed
+    dead_letter_topic: orders.dlq
+    reject_topic: orders.rejected
+    consumer_group: ark-demo-orders
+    workers: 1
+    target:
+      url: http://demo-echo:8081/process
+      health_check_url: http://demo-echo:8081/health
+      timeout_ms: 5000
+    retry:
+      max_attempts: 3
+      backoff_ms: 500
+    data_rules:
+      on_violation: reject
+      fields:
+        - {path: order_id, required: true, type: string}
+        - {path: amount, required: true, type: number, min: 0}

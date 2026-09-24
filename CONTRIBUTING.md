@@ -24,11 +24,11 @@ Run the full stack locally:
 docker compose up
 ```
 
-This starts a single-node Kafka broker and the bridge engine wired to
-`bridge-engine/config.example.yaml`. There's no downstream app in the
-base compose file, so bring your own, or point `target.url` at
-something like [`hashicorp/http-echo`](https://github.com/hashicorp/http-echo)
-for quick manual testing.
+This starts a single-node Kafka broker, the bridge engine wired to
+`bridge-engine/config.demo.yaml`, and `demo-echo`, a small callback target
+that echoes what it receives (400 for `"invalid": true`, 500 for
+`"fail": true`). The README's Quick start walks through it. To run your
+own config, set `ARK_CONFIG=path/to/config.yaml`.
 
 ## Making a change
 

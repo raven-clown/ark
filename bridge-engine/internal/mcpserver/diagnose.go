@@ -215,9 +215,9 @@ func diagnose(d Deps, p config.Pipeline) Diagnosis {
 	}
 	if n.PendingRejects > 0 {
 		add(Finding{Severity: SeverityInfo,
-			What:    fmt.Sprintf("%d message(s) were rejected by the target as invalid.", n.PendingRejects),
+			What:    fmt.Sprintf("%d message(s) were rejected as invalid (by data rules, reject rules or the target).", n.PendingRejects),
 			Why:     "Most common reasons: " + topReasons(rejectEntries, 3),
-			Actions: []string{"These usually need the producer of the data fixed, not a retry."}})
+			Actions: []string{"These usually need the producer of the data fixed, not a retry.", "check_data on the reject topic shows which fields and values are the problem."}})
 	}
 
 	if restarts := log.Recent(p.Name, since, 100, events.WorkerRestarted); len(restarts) > 0 {

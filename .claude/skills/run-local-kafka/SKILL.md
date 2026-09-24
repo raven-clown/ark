@@ -7,8 +7,10 @@ description: Bring up a local Kafka broker plus ARK for real end-to-end verifica
 
 ARK's own rule: verify against real infrastructure, not just `go test`.
 `docker-compose.yml` at the repo root defines `kafka` (apache/kafka:3.8.0,
-KRaft mode, single node, port 9092) and `bridge` (builds from
-`./bridge-engine`, mounts `bridge-engine/config.example.yaml`).
+KRaft mode, single node, port 9092), `bridge` (builds from
+`./bridge-engine`, mounts `bridge-engine/config.demo.yaml` or `$ARK_CONFIG`,
+API on 8080) and `demo-echo` (a callback target on 8081 that answers 400
+for `"invalid": true` and 500 for `"fail": true`).
 
 On Windows/Git Bash, prefix every docker command with `MSYS_NO_PATHCONV=1`.
 On this cloud container, no prefix is needed.
@@ -37,5 +39,5 @@ remaining nodes react (rebalance, placement reassignment, resumed
 consumption), then bring it back with `docker compose start <service>` and
 confirm it rejoins correctly.
 
-Tear down: `docker compose down -v` (drops the `kafka-data` volume too —
+Tear down: `docker compose down -v` (drops the `kafka-data` volume too;
 only do this between unrelated test runs, not mid-test).

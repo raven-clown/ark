@@ -38,9 +38,22 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
+    ports:
+      - "8080:8080"
+    environment:
+      # Demo tokens. Change them (or unset them to allow only localhost)
+      # before exposing this anywhere.
+      ARK_API_ADMIN_TOKENS: ${ARK_API_ADMIN_TOKENS:-demo-admin-token}
+      ARK_MCP_ADMIN_TOKENS: ${ARK_MCP_ADMIN_TOKENS:-demo-mcp-token}
     volumes:
-      - ./bridge-engine/config.example.yaml:/etc/bridge/config.yaml:ro
+      - ${ARK_CONFIG:-./bridge-engine/config.demo.yaml}:/etc/bridge/config.yaml:ro
     restart: on-failure:5
+
+  demo-echo:
+    build:
+      context: ./bridge-engine
+    entrypoint: ["demo-echo"]
+    command: []
 
 volumes:
   kafka-data:
