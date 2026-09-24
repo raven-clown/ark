@@ -7,10 +7,10 @@
 Owner: ekdanai.kk@gmail.com
 License: Apache License 2.0
 Status: Phases 1 to 5 and 4b (cluster v1) done, Phase 6 core done.
-**Not production-ready yet:** a full review on 2026-09-24 found
-message-loss and auth gaps, tracked in "Phase 0: Hardening" at the top
-of §6. Those block any production use and come before every other
-phase. See checkboxes below.
+A full review on 2026-09-24 found message-loss and auth gaps, tracked in
+"Phase 0: Hardening" at the top of §6. The data-correctness and security
+items are fixed and verified live; B4, B6 and T1 remain, plus cluster
+v2 (Phase 4c). See checkboxes below.
 CI (`.github/workflows/ci.yml`) runs build/vet/test, govulncheck,
 gosec, Semgrep, OSV-Scanner, Gitleaks, and a Trivy image scan on
 every PR.
@@ -53,11 +53,11 @@ for that message was never committed (commit only happens after a
 successful produce), so it's simply redelivered to whichever Bridge
 node picks up that partition next.
 
-That guarantee is the design intent, but the current code does not
-fully meet it yet: a message whose processing ends in an error can be
-committed past by the next successful message on its partition, and is
-then lost. See Phase 0, item H1. Until H1 ships, the accurate claim is
-"no loss on crash, possible loss on a hard processing failure".
+An earlier version did not fully meet that guarantee: a message whose
+processing ended in an error could be committed past by the next
+successful message on its partition and lost. Fixed in Phase 0, H1: a
+message that can't be completed is now retried in place, and nothing
+after it on its partition is committed until it is.
 
 ## 2. Non-goals (v1)
 
@@ -199,7 +199,7 @@ each is cross-referenced here. Every item needs a regression test
 and a live check against docker-compose Kafka before it is ticked.
 
 **Data correctness (H, ship first):**
-- [ ] **H1. Failed messages are committed past and lost.**
+- [x] **H1. Failed messages are committed past and lost.**
       `commitInOrder` skips a failed job and then commits the next
       successful one, which moves the partition offset past the
       failure. Fix: a failed job must stop that partition from
@@ -209,26 +209,26 @@ and a live check against docker-compose Kafka before it is ticked.
       `dead_letter_topic` unless it sets `on_exhausted: block`, so
       "exhausted retries with nowhere to put the message" is never a
       silent path.
-- [ ] **H2. Final commits use an already-cancelled context.** On
+- [x] **H2. Final commits use an already-cancelled context.** On
       stop, reload or shutdown, `CommitMessages(ctx)` fails instantly,
       so every in-flight message that already reached the destination
       is redelivered. Fix: drain with a separate bounded shutdown
       context (for example 10s) so completed work gets committed.
-- [ ] **H3. `Reconcile` is not serialized.** The file watcher, `POST
+- [x] **H3. `Reconcile` is not serialized.** The file watcher, `POST
       /config/reload` and cluster placement updates can call it at the
       same time. Two concurrent starts orphan a full set of consumers
       that nothing can stop (duplicate processing until the process
       exits). Fix: one mutex held across the whole reconcile, and
       cluster placement goes through the same serialized path.
-- [ ] **H4. A failed restart leaves the pipeline stopped.** A changed
+- [x] **H4. A failed restart leaves the pipeline stopped.** A changed
       pipeline is stopped before its new version is started; if the
       start fails (Kafka briefly unreachable), the pipeline stays down
       until someone edits the file again. Fix: start the new version
       first, or keep the old config and retry the start with backoff.
-- [ ] **H5. A fetch error kills a worker permanently.** `Run` returns
+- [x] **H5. A fetch error kills a worker permanently.** `Run` returns
       and nothing restarts it, so the pipeline silently runs with fewer
       workers. Fix: supervise each runner and restart it with backoff.
-- [ ] **H6. Every topic ARK creates has replication factor 1.** DLQ,
+- [x] **H6. Every topic ARK creates has replication factor 1.** DLQ,
       reject, source topics and all `__ark_*` cluster topics. One broker
       loss loses them. Fix: `topics.replication_factor` config (default
       3, capped at broker count), `min.insync.replicas` set to match,
@@ -236,7 +236,7 @@ and a live check against docker-compose Kafka before it is ticked.
       by whoever produces to it).
 
 **Security (S, ship with H):**
-- [ ] **S1. The REST API has no authentication.** Pause, resume,
+- [x] **S1. The REST API has no authentication.** Pause, resume,
       reload and DLQ retry/discard/read are open to anyone who can
       reach port 8080. That is also the port MCP agents are pointed
       at, so it bypasses both token scopes and per-pipeline
@@ -245,27 +245,27 @@ and a live check against docker-compose Kafka before it is ticked.
       for GET, operator for POST), apply `mcp_access` to REST too,
       default the listen address to `127.0.0.1`, and optionally a
       separate admin listener.
-- [ ] **S2. An MCP session is not bound to the token that opened it.**
+- [x] **S2. An MCP session is not bound to the token that opened it.**
       The scoped server is chosen only when a session is created, so a
       viewer token plus a leaked operator session ID gets operator
       tools. Fix: set `auth.TokenInfo` with a per-token user ID so the
       SDK rejects mismatched sessions.
 
 **Behavior (B, before 1.0):**
-- [ ] **B1. 408, 425 and 429 are treated as permanent rejects.** A
+- [x] **B1. 408, 425 and 429 are treated as permanent rejects.** A
       target that rate-limits during a burst sends messages straight to
       `reject_topic`. Fix: treat 408/425/429 like 5xx (retry with
       backoff, honor `Retry-After`), and make the reject status set
       configurable (`target.reject_statuses`, default 400, 404, 409,
       410, 422).
-- [ ] **B2. Per-key ordering is not preserved.** With `max_in_flight`
+- [x] **B2. Per-key ordering is not preserved.** With `max_in_flight`
       above 1, messages from one partition run concurrently and can
       reach the destination out of order, which breaks the usual
       "created before paid" expectation. §3 even advertises ordering.
       Fix: `ordering: per_key` (default; messages sharing a key run one
       at a time, different keys in parallel), `per_partition`, or
       `none`.
-- [ ] **B3. Pause is lost on restart.** The pause flag lives in
+- [x] **B3. Pause is lost on restart.** The pause flag lives in
       per-run state, so any reload or placement change resumes a
       pipeline an operator deliberately paused during an outage. Fix:
       persist pause state (see cluster v2 control topic, C1).
@@ -274,13 +274,37 @@ and a live check against docker-compose Kafka before it is ticked.
       discarded entries come back and can be retried twice. Fix: keep
       entry state (retried/discarded) in a compacted topic and skip
       those on reload.
-- [ ] **B5. Callback timeout is hardcoded to 30s.** Make it
+- [x] **B5. Callback timeout is hardcoded to 30s.** Make it
       `target.timeout_ms`.
 - [ ] **B6. Head-of-line blocking on commit.** One message stuck in
       retry holds back commits of every later message on the
       partition, so a crash at that moment redelivers a large batch.
       Document it, expose "oldest uncommitted age" as a metric, and let
       B2's per-key lanes limit the blast radius.
+
+**Found while fixing the above (done):**
+- [x] **H7. Correlation ID changed on every attempt.** It was random per
+      call, so a redelivered message reached the target with a new ID and
+      could not be de-duplicated by it, which is the whole point of
+      sending one. It is now derived from topic, partition and offset, so
+      every retry and every redelivery carries the same ID.
+- [x] **T0. Every produce waited up to 1s.** kafka-go's default
+      `BatchTimeout` is 1s and every `Send` is synchronous, so each
+      produce waited for the batch timer. Lowered to 5ms. Measured live:
+      300 messages drained in about 1s instead of about 30s.
+- [x] **Destination partitioning broke per-key order.** The producer
+      used `LeastBytes`, so one key could land on different destination
+      partitions. It now hashes by key.
+
+Verification: every item above was checked against docker-compose Kafka,
+not only unit tests. H1 was reproduced on the old binary first (a failed
+message was committed past with lag 0 and never redelivered, even after
+the target recovered and the process restarted), then shown fixed on the
+new one, including a `kill -9` while the message was mid-retry. B1: the
+old binary sent a 429'd message to `reject_topic`, the new one honored
+`Retry-After` and delivered it. S1/S2: remote requests without a token get
+401, a viewer can't pause, an MCP token is refused on REST, and an
+operator session replayed with a viewer token gets 403.
 
 **Throughput (T, when a real deployment needs it):**
 - [ ] **T1. One HTTP call per message caps throughput.** Ceiling is
@@ -341,7 +365,7 @@ and a live check against docker-compose Kafka before it is ticked.
   offset at all silently drops it. **Only partly fixed:** the breaker
   path blocks correctly, but `commitInOrder` still `continue`s past a
   failed job, so a failure from a missing DLQ, exhausted produce
-  retries, or a webhook override still gets committed past. Tracked as
+  retries, or a webhook override still got committed past. Fixed as
   Phase 0, H1.
 
 ### Backend: Phase 3: Rule engine (fast path), done
@@ -754,7 +778,7 @@ partitions pause during a rebalance. Placement is published only when
 the computed result differs from the last one, and all records go out
 in one batched write.
 
-**C6. Correctness fixes carried from v1:**
+**C6. Correctness fixes carried from v1 (done):**
 - placement records carry the leader epoch (election generation ID);
   nodes ignore any record with an epoch lower than one already seen;
 - liveness uses the broker timestamp (`msg.Time`) or local receive
@@ -768,7 +792,9 @@ in one batched write.
   `group.min.session.timeout.ms`;
 - placement reconcile errors are logged and exposed as a metric.
 
-**C7. Graceful drain for rolling deploys.** On SIGTERM a node marks
+**C7. Graceful drain for rolling deploys (partly done: shutdown
+tombstone plus bounded final commits already hand a stopping node's work
+over in about 1s, measured live).** On SIGTERM a node marks
 itself `draining` in its heartbeat, the leader moves its share
 immediately instead of waiting for the timeout, the node commits its
 in-flight work (Phase 0 H2) and then writes a heartbeat tombstone and
