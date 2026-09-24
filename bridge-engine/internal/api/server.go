@@ -94,11 +94,13 @@ func NewServer(reg Registry, reload Reloader, clusterNode *cluster.Node, tokens 
 		}
 		status := clusterNode.StatusSnapshot()
 		writeJSON(w, http.StatusOK, map[string]any{
-			"enabled":    true,
-			"cluster":    status.Cluster,
-			"node_id":    status.NodeID,
-			"leader":     status.Leader,
-			"live_nodes": status.LiveNodes,
+			"enabled":              true,
+			"cluster":              status.Cluster,
+			"node_id":              status.NodeID,
+			"leader":               status.Leader,
+			"live_nodes":           status.LiveNodes,
+			"config_version":       status.ConfigVersion,
+			"node_config_versions": status.NodeVersions,
 		})
 	})
 

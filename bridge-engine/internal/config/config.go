@@ -271,8 +271,14 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	return ValidatePipelines(c.Pipelines)
+}
+
+// ValidatePipelines checks a pipeline set on its own, for config that
+// arrives from somewhere other than a full file (the cluster config topic).
+func ValidatePipelines(pipelines []Pipeline) error {
 	seen := map[string]bool{}
-	for i, p := range c.Pipelines {
+	for i, p := range pipelines {
 		if p.Name == "" {
 			return fmt.Errorf("pipelines[%d]: name is required", i)
 		}

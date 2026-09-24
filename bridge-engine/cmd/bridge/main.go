@@ -158,22 +158,37 @@ func main() {
 		clusterNode = cluster.New(cfg.Brokers, cfg.Cluster, cfg.Topics.ReplicationFactor, mgr.Reconcile, logger)
 		clusterNode.SetStatsProvider(func() map[string]cluster.PipelineStats { return localStats(mgr) })
 		clusterNode.SetPauseHandler(func(name string, paused bool) { mgr.SetPaused(name, paused) })
-		if err := clusterNode.Start(ctx); err != nil {
+		clusterNode.SetConfigHandler(func(pipelines []config.Pipeline) {
+			mgr.SyncStandbyBrowsers(pipelines)
+			for _, err := range clusterNode.ApplyConfig(pipelines) {
+				logger.Error("applying cluster pipeline config failed to start a pipeline", "error", err)
+			}
+		})
+		if err := clusterNode.Start(ctx, cfg.Pipelines); err != nil {
 			logger.Error("starting cluster node failed", "error", err)
 			os.Exit(1)
 		}
+		// In cluster mode a reload publishes the file's pipelines to the
+		// cluster; every node, this one included, applies them from there.
 		reconcile = func(pipelines []config.Pipeline) []error {
-			mgr.SyncStandbyBrowsers(pipelines)
-			return clusterNode.ApplyConfig(pipelines)
+			pubCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			defer cancel()
+			if err := clusterNode.PublishConfig(pubCtx, pipelines); err != nil {
+				return []error{err}
+			}
+			return nil
 		}
 		logger.Info("cluster mode enabled", "cluster", cfg.Cluster.Name, "node_id", clusterNode.ID())
 	}
 
-	if errs := reconcile(cfg.Pipelines); len(errs) > 0 {
-		for _, e := range errs {
-			logger.Error("starting pipeline failed", "error", e)
+	// In cluster mode Start already applied the cluster's config.
+	if clusterNode == nil {
+		if errs := reconcile(cfg.Pipelines); len(errs) > 0 {
+			for _, e := range errs {
+				logger.Error("starting pipeline failed", "error", e)
+			}
+			os.Exit(1)
 		}
-		os.Exit(1)
 	}
 
 	reload := &configReloader{path: *configPath, reconcile: reconcile, log: logger}

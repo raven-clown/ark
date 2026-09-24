@@ -28,6 +28,9 @@ type heartbeatRecord struct {
 	LastSeen  time.Time                `json:"last_seen"`
 	Labels    map[string]string        `json:"labels,omitempty"`
 	Pipelines map[string]PipelineStats `json:"pipelines,omitempty"`
+	// ConfigVersion lets any node see which nodes haven't applied the
+	// latest cluster config yet.
+	ConfigVersion int64 `json:"config_version"`
 }
 
 // runHeartbeatProducer produces one heartbeat record for this node on every

@@ -13,6 +13,7 @@ import (
 	"os"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/raven-clown/ark/bridge-engine/internal/config"
@@ -28,6 +29,7 @@ type Topics struct {
 	Election  string
 	Placement string
 	Control   string
+	Config    string
 }
 
 func TopicsFor(clusterName string) Topics {
@@ -37,6 +39,7 @@ func TopicsFor(clusterName string) Topics {
 		Election:  prefix + "leader_election",
 		Placement: prefix + "placements",
 		Control:   prefix + "control",
+		Config:    prefix + "pipeline_config",
 	}
 }
 
@@ -45,10 +48,12 @@ func TopicsFor(clusterName string) Topics {
 type ReconcileFunc func(pipelines []config.Pipeline) []error
 
 type Status struct {
-	NodeID    string   `json:"node_id"`
-	Cluster   string   `json:"cluster"`
-	Leader    bool     `json:"leader"`
-	LiveNodes []string `json:"live_nodes"`
+	NodeID        string           `json:"node_id"`
+	Cluster       string           `json:"cluster"`
+	Leader        bool             `json:"leader"`
+	LiveNodes     []string         `json:"live_nodes"`
+	ConfigVersion int64            `json:"config_version"`
+	NodeVersions  map[string]int64 `json:"node_config_versions"`
 }
 
 // Node coordinates this process's participation in an ARK cluster: it
@@ -69,8 +74,15 @@ type Node struct {
 	placer  *placer
 	control *producer.Producer
 
-	statsFn func() map[string]PipelineStats
-	onPause func(pipeline string, paused bool)
+	statsFn  func() map[string]PipelineStats
+	onPause  func(pipeline string, paused bool)
+	onConfig func(pipelines []config.Pipeline)
+
+	configWriter   *producer.Producer
+	configCaughtUp atomic.Bool
+	configVersion  atomic.Int64
+	cfgMu          sync.Mutex
+	distributed    map[string]config.Pipeline
 
 	mu         sync.Mutex
 	base       []config.Pipeline // last config seen via ApplyConfig
@@ -85,7 +97,7 @@ func New(brokers []string, cfg config.Cluster, replicationFactor int, reconcile 
 	}
 	log = log.With("component", "cluster", "cluster", cfg.Name, "node_id", id)
 
-	return &Node{
+	n := &Node{
 		id:                id,
 		brokers:           brokers,
 		cfg:               cfg,
@@ -94,7 +106,10 @@ func New(brokers []string, cfg config.Cluster, replicationFactor int, reconcile 
 		reconcile:         reconcile,
 		log:               log,
 		hbView:            newHeartbeatView(),
+		distributed:       make(map[string]config.Pipeline),
 	}
+	n.configVersion.Store(-1)
+	return n
 }
 
 func defaultNodeID() string {
@@ -120,9 +135,11 @@ func (n *Node) SetStatsProvider(fn func() map[string]PipelineStats) { n.statsFn 
 func (n *Node) SetPauseHandler(fn func(pipeline string, paused bool)) { n.onPause = fn }
 
 // Start ensures the internal cluster topics exist and launches every
-// background loop (heartbeat, election, placement). It returns once setup
-// succeeds; the loops keep running until ctx is cancelled.
-func (n *Node) Start(ctx context.Context) error {
+// background loop (heartbeat, election, placement, control, config). seed
+// is this node's local pipeline config, used only if the cluster has no
+// config yet. It returns once this node has applied the cluster's config;
+// the loops keep running until ctx is cancelled.
+func (n *Node) Start(ctx context.Context, seed []config.Pipeline) error {
 	if err := kafkaadmin.EnsureCompactedTopic(ctx, n.brokers, n.topics.Heartbeat, 1, n.replicationFactor); err != nil {
 		return fmt.Errorf("ensuring %s exists: %w", n.topics.Heartbeat, err)
 	}
@@ -136,6 +153,10 @@ func (n *Node) Start(ctx context.Context) error {
 	if err := kafkaadmin.EnsureCompactedTopic(ctx, n.brokers, n.topics.Control, 1, n.replicationFactor); err != nil {
 		return fmt.Errorf("ensuring %s exists: %w", n.topics.Control, err)
 	}
+	if err := kafkaadmin.EnsureCompactedTopic(ctx, n.brokers, n.topics.Config, 1, n.replicationFactor); err != nil {
+		return fmt.Errorf("ensuring %s exists: %w", n.topics.Config, err)
+	}
+	n.configWriter = producer.New(n.brokers, n.topics.Config)
 	n.control = producer.New(n.brokers, n.topics.Control)
 	go n.watchControl(ctx)
 
@@ -157,6 +178,10 @@ func (n *Node) Start(ctx context.Context) error {
 		}
 	}
 
+	if err := n.startConfig(ctx, seed); err != nil {
+		return err
+	}
+
 	el, err := newElector(n.brokers, n.topics.Election, n.nodeTimeout(), n.log)
 	if err != nil {
 		return fmt.Errorf("starting leader election: %w", err)
@@ -170,7 +195,7 @@ func (n *Node) Start(ctx context.Context) error {
 const placementCatchUpTimeout = 10 * time.Second
 
 func (n *Node) heartbeatSnapshot() heartbeatRecord {
-	rec := heartbeatRecord{Labels: n.cfg.Labels}
+	rec := heartbeatRecord{Labels: n.cfg.Labels, ConfigVersion: n.configVersion.Load()}
 	if n.statsFn != nil {
 		rec.Pipelines = n.statsFn()
 	}
@@ -328,5 +353,9 @@ func (n *Node) StatusSnapshot() Status {
 	live := n.hbView.liveNodes(n.nodeTimeout())
 	sort.Strings(live)
 	leader := n.elector != nil && n.elector.IsLeader()
-	return Status{NodeID: n.id, Cluster: n.cfg.Name, Leader: leader, LiveNodes: live}
+	versions := make(map[string]int64)
+	for id, rec := range n.hbView.liveInfo(n.nodeTimeout()) {
+		versions[id] = rec.ConfigVersion
+	}
+	return Status{NodeID: n.id, Cluster: n.cfg.Name, Leader: leader, LiveNodes: live, ConfigVersion: n.configVersion.Load(), NodeVersions: versions}
 }
