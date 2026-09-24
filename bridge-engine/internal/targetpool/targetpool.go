@@ -123,7 +123,7 @@ func (p *Pool) Pick(partitionKey int) (url string, release func(), ok bool) {
 			}
 		}
 	default: // round_robin
-		start := int(p.rrCounter.Add(1) - 1)
+		start := int((p.rrCounter.Add(1) - 1) % uint64(n)) // #nosec G115 -- bounded to [0,n) by the modulo, n is a small pool size
 		for i := 0; i < n; i++ {
 			ep := p.endpoints[(start+i)%n]
 			if ep.healthy.Load() {
