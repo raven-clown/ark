@@ -6,10 +6,11 @@
 
 Owner: ekdanai.kk@gmail.com
 License: Apache License 2.0
-Status: Phase 1, 2, 3, and 5 done. Phase 4 (`workers: N` done,
-hot-reload/multi_url not yet) partially done. Phase 6 (MCP server)
-core done, config tools and get_metrics deferred to Phase 4. See
-checkboxes below.
+Status: Phases 1 to 5 and 4b (cluster v1) done, Phase 6 core done.
+**Not production-ready yet:** a full review on 2026-09-24 found
+message-loss and auth gaps, tracked in "Phase 0: Hardening" at the top
+of §6. Those block any production use and come before every other
+phase. See checkboxes below.
 CI (`.github/workflows/ci.yml`) runs build/vet/test, govulncheck,
 gosec, Semgrep, OSV-Scanner, Gitleaks, and a Trivy image scan on
 every PR.
@@ -51,6 +52,12 @@ Bridge node crashing mid-message doesn't touch it either. The offset
 for that message was never committed (commit only happens after a
 successful produce), so it's simply redelivered to whichever Bridge
 node picks up that partition next.
+
+That guarantee is the design intent, but the current code does not
+fully meet it yet: a message whose processing ends in an error can be
+committed past by the next successful message on its partition, and is
+then lost. See Phase 0, item H1. Until H1 ships, the accurate claim is
+"no loss on crash, possible loss on a hard processing failure".
 
 ## 2. Non-goals (v1)
 
@@ -182,6 +189,106 @@ pipelines" without any engine changes. See §6's Phase 3 extensions for
 
 ## 6. Phased roadmap
 
+### Backend: Phase 0: Hardening (blocks production use)
+
+Found by a full review of the code at HEAD on 2026-09-24 (code-review
+on the cluster commit, code-review on the data path, security-review on
+the whole engine), read against the code rather than this document.
+Several earlier "done" claims below turned out to be only partly true;
+each is cross-referenced here. Every item needs a regression test
+and a live check against docker-compose Kafka before it is ticked.
+
+**Data correctness (H, ship first):**
+- [ ] **H1. Failed messages are committed past and lost.**
+      `commitInOrder` skips a failed job and then commits the next
+      successful one, which moves the partition offset past the
+      failure. Fix: a failed job must stop that partition from
+      committing. Either rewind the reader to the failed offset and
+      retry with backoff, or end the worker so it restarts from the
+      last commit. Also refuse to start a pipeline without a
+      `dead_letter_topic` unless it sets `on_exhausted: block`, so
+      "exhausted retries with nowhere to put the message" is never a
+      silent path.
+- [ ] **H2. Final commits use an already-cancelled context.** On
+      stop, reload or shutdown, `CommitMessages(ctx)` fails instantly,
+      so every in-flight message that already reached the destination
+      is redelivered. Fix: drain with a separate bounded shutdown
+      context (for example 10s) so completed work gets committed.
+- [ ] **H3. `Reconcile` is not serialized.** The file watcher, `POST
+      /config/reload` and cluster placement updates can call it at the
+      same time. Two concurrent starts orphan a full set of consumers
+      that nothing can stop (duplicate processing until the process
+      exits). Fix: one mutex held across the whole reconcile, and
+      cluster placement goes through the same serialized path.
+- [ ] **H4. A failed restart leaves the pipeline stopped.** A changed
+      pipeline is stopped before its new version is started; if the
+      start fails (Kafka briefly unreachable), the pipeline stays down
+      until someone edits the file again. Fix: start the new version
+      first, or keep the old config and retry the start with backoff.
+- [ ] **H5. A fetch error kills a worker permanently.** `Run` returns
+      and nothing restarts it, so the pipeline silently runs with fewer
+      workers. Fix: supervise each runner and restart it with backoff.
+- [ ] **H6. Every topic ARK creates has replication factor 1.** DLQ,
+      reject, source topics and all `__ark_*` cluster topics. One broker
+      loss loses them. Fix: `topics.replication_factor` config (default
+      3, capped at broker count), `min.insync.replicas` set to match,
+      and stop auto-creating `source_topic` (in production it is owned
+      by whoever produces to it).
+
+**Security (S, ship with H):**
+- [ ] **S1. The REST API has no authentication.** Pause, resume,
+      reload and DLQ retry/discard/read are open to anyone who can
+      reach port 8080. That is also the port MCP agents are pointed
+      at, so it bypasses both token scopes and per-pipeline
+      `mcp_access` (a `none` pipeline's raw DLQ payloads are readable
+      over REST). Fix: the same bearer-token middleware on REST (viewer
+      for GET, operator for POST), apply `mcp_access` to REST too,
+      default the listen address to `127.0.0.1`, and optionally a
+      separate admin listener.
+- [ ] **S2. An MCP session is not bound to the token that opened it.**
+      The scoped server is chosen only when a session is created, so a
+      viewer token plus a leaked operator session ID gets operator
+      tools. Fix: set `auth.TokenInfo` with a per-token user ID so the
+      SDK rejects mismatched sessions.
+
+**Behavior (B, before 1.0):**
+- [ ] **B1. 408, 425 and 429 are treated as permanent rejects.** A
+      target that rate-limits during a burst sends messages straight to
+      `reject_topic`. Fix: treat 408/425/429 like 5xx (retry with
+      backoff, honor `Retry-After`), and make the reject status set
+      configurable (`target.reject_statuses`, default 400, 404, 409,
+      410, 422).
+- [ ] **B2. Per-key ordering is not preserved.** With `max_in_flight`
+      above 1, messages from one partition run concurrently and can
+      reach the destination out of order, which breaks the usual
+      "created before paid" expectation. §3 even advertises ordering.
+      Fix: `ordering: per_key` (default; messages sharing a key run one
+      at a time, different keys in parallel), `per_partition`, or
+      `none`.
+- [ ] **B3. Pause is lost on restart.** The pause flag lives in
+      per-run state, so any reload or placement change resumes a
+      pipeline an operator deliberately paused during an outage. Fix:
+      persist pause state (see cluster v2 control topic, C1).
+- [ ] **B4. The DLQ browser forgets retries and discards.** It never
+      commits and keeps state in memory, so after a restart retried or
+      discarded entries come back and can be retried twice. Fix: keep
+      entry state (retried/discarded) in a compacted topic and skip
+      those on reload.
+- [ ] **B5. Callback timeout is hardcoded to 30s.** Make it
+      `target.timeout_ms`.
+- [ ] **B6. Head-of-line blocking on commit.** One message stuck in
+      retry holds back commits of every later message on the
+      partition, so a crash at that moment redelivers a large batch.
+      Document it, expose "oldest uncommitted age" as a metric, and let
+      B2's per-key lanes limit the blast radius.
+
+**Throughput (T, when a real deployment needs it):**
+- [ ] **T1. One HTTP call per message caps throughput.** Ceiling is
+      roughly `workers x max_in_flight / callback latency` (4 x 10 /
+      50ms is about 800 msg/s). Add an optional batch mode
+      (`target.batch_size`, `target.batch_linger_ms`) that posts an
+      array and maps a per-item result array back.
+
 ### Backend: Phase 1: Core engine (MVP), done
 - [x] Go module scaffold (`cmd/bridge`, `internal/...`)
 - [x] Config loader (YAML to typed struct, validation)
@@ -231,7 +338,11 @@ pipelines" without any engine changes. See §6's Phase 3 extensions for
   here: an earlier version let a later message on the same partition
   commit past an unresolved earlier one, since Kafka's offset commit
   is a single resume pointer, not a per-message ledger. Skipping any
-  offset at all silently drops it.
+  offset at all silently drops it. **Only partly fixed:** the breaker
+  path blocks correctly, but `commitInOrder` still `continue`s past a
+  failed job, so a failure from a missing DLQ, exhausted produce
+  retries, or a webhook override still gets committed past. Tracked as
+  Phase 0, H1.
 
 ### Backend: Phase 3: Rule engine (fast path), done
 - [x] Expression evaluator (`expr-lang/expr`) wired to rule config.
@@ -406,7 +517,7 @@ succeeds but the webhook call fails?).
 - **Exit criteria:** two independent teams' pipelines run in one Bridge
   process without interfering with each other's throughput or config.
 
-#### Phase 4b: ARK Cluster (multi-node, opt-in), done
+#### Phase 4b: ARK Cluster v1 (multi-node, opt-in), shipped with known issues
 
 - [x] `cluster.enabled` opt-in config, with `node_id`,
   `heartbeat_interval_seconds`, `node_timeout_seconds`,
@@ -428,6 +539,47 @@ succeeds but the webhook call fails?).
   zero message loss and zero duplication (checked via consumer group
   offsets and exactly-once delivery to the destination topic); restarting
   the killed node rejoined it and rebalanced back to 2/2.
+
+**Honest assessment after review.** v1 works on the happy path, but it
+earns very little. Running N copies of ARK with the same
+`consumer_group` and no cluster mode at all already spreads partitions
+across machines, because Kafka's group coordinator does that by
+itself. All v1 adds on top is deciding how many consumers each node
+runs, which only matters when `workers` is below the node count. In
+exchange it adds three internal topics and these problems:
+
+- Any node joining or leaving changes every node's share, and every
+  share change restarts the whole pipeline on every node. That is a
+  cluster-wide stop plus a consumer-group rebalance per membership
+  change, so a rolling deploy of 10 nodes means about 10 stalls. A new
+  node also starts at full `workers` before its first placement
+  arrives, so it restarts twice on join.
+- The split-brain claim in the table below was wrong. A rebalance
+  generation fences offset commits, not produces, so an old and a new
+  leader can both write placements during a handoff (seen in testing as
+  `consumer group generation has ended`). Records carry no epoch, so
+  nodes cannot ignore the stale one.
+- Liveness compares the sender's wall clock with the leader's. Clock
+  skew beyond `node_timeout_seconds` marks a live node dead or a dead
+  node alive.
+- Topic names and the election group are global, so two ARK
+  deployments (staging and prod) on one Kafka cluster join the same
+  election and overwrite each other's placements.
+- Placement is published every interval even when nothing changed, one
+  synchronous write per pipeline (about 1s each with the default writer
+  batching), so 20 pipelines take about 20s per publish.
+- A node assigned 0 workers for a pipeline drops it from its registry,
+  so REST/MCP calls that land on that node answer "not found" for a
+  pipeline that is running elsewhere. Pause, DLQ and status are all
+  per-node, with no cluster-wide view.
+- Heartbeat records are never tombstoned; with random default node IDs,
+  every restart adds a permanent entry that every node replays.
+- Reconcile errors from placement changes are dropped, and negative or
+  too-small timeouts pass validation (panic, or an election that never
+  succeeds because the broker rejects the session timeout).
+
+These are all addressed by cluster v2 below, which also changes what
+the cluster is for.
 
 Config distribution (pipeline config as a compacted
 `__ark_pipeline_config` topic instead of each node's local YAML) is not
@@ -530,7 +682,7 @@ quorum (embedded `hashicorp/raft`, or an external etcd/Consul):**
 | Extra infra | None, reuses Kafka, which ARK already requires | A separate etcd/Consul cluster, or an embedded Raft log/snapshot implementation |
 | Code size | Roughly 200 to 400 lines: heartbeat, consume a topic, react to rebalance | A full consensus implementation or another dependency to operate |
 | Node count | Any N ≥ 1, no wasted nodes | Must stay odd for full fault tolerance (majority = ⌊N/2⌋+1, so N=2 tolerates zero failures) |
-| Split-brain protection | Kafka's own rebalance `generation` ID fences stale members, same idea as Raft's term number | Purpose-built for this, more battle-tested at the edges |
+| Split-brain protection | Only partial: the rebalance `generation` fences offset commits, not produces. Placement writes need their own epoch (the election generation ID) that readers compare, see cluster v2, C6 | Purpose-built for this, more battle-tested at the edges |
 | Failure-detection speed | Timeout-based (session timeout, roughly 10 to 45 seconds), tied to Kafka's settings | Also timeout-based, but tunable independently and typically faster |
 | Operator familiarity | A repurposed mechanism, less standard mental model to debug against | Very standard ("3-node Raft, need 2 up"), widely recognized |
 | Fits ARK's positioning (§3) | Yes, one binary, minutes to deploy | No, reintroduces the exact heavyweight-dependency problem §3 differentiates against |
@@ -544,6 +696,92 @@ harder problem than ARK actually has, at a cost (extra infra, more
 code, odd-node-count constraint) that directly contradicts §3's
 differentiation bet. Revisit only if the Kafka-coordinator approach
 proves unreliable in practice, not preemptively.
+
+#### Phase 4c: ARK Cluster v2 (make the cluster worth running)
+
+**What changes in purpose.** v1 treated the cluster as a way to spread
+workers, which Kafka already does. v2 treats it as one logical ARK
+made of many processes: one config, one control surface, one view,
+with the leader doing the few jobs that must happen exactly once.
+Capacity scaling stays Kafka's job. The rule of thumb for operators:
+if all you need is more throughput, run more copies with the same
+`consumer_group` and skip cluster mode; turn it on when you want the
+features below.
+
+**C1. One control plane from any node.** Every write operation (pause,
+resume, DLQ retry/discard, config apply) becomes a record on a
+compacted `__ark_<cluster>_control` topic, keyed by pipeline. Every
+node applies it, so pausing through any node pauses the pipeline
+everywhere, and the state survives restarts (fixes Phase 0 B3). Every
+node also includes per-pipeline counters in its heartbeat, so `GET
+/api/v1/pipelines` and MCP `get_pipeline_status` on any node return the
+whole cluster's numbers, with a per-node breakdown. The Dashboard UI
+and agents talk to one address behind a load balancer.
+
+**C2. Config distribution** (designed above, now scheduled): pipeline
+config lives in the compacted `__ark_<cluster>_pipeline_config` topic
+with a monotonically increasing version. The local YAML only seeds an
+empty topic. Every node reports the config version it runs in its
+heartbeat, the leader places work only on nodes running the current
+version, and `GET /api/v1/cluster` flags any node that is behind. This
+removes the "every node must have the same file" requirement and is
+what MCP `apply_pipeline_config` / `create_pipeline` write to.
+
+**C3. Leader-only singleton jobs.** Some jobs must run once in the
+cluster, not once per node, and that is where leader election actually
+pays off:
+- owning the DLQ and reject browsers, so every node's API shows the
+  same entries (fixes v1 per-node DLQ views and Phase 0 B4);
+- scheduled DLQ redrive (`dlq.redrive_after`, for example retry
+  dead-lettered messages once an hour, up to N times);
+- target health probing, published to the control topic so every node
+  uses the same healthy/unhealthy view instead of each probing
+  separately.
+
+**C4. Placement that respects labels, not just counts.** Nodes declare
+`cluster.labels` (for example `zone: dmz`, `tenant: team-a`,
+`egress: partner-net`). Pipelines declare `placement.node_selector`.
+The leader only places a pipeline on matching nodes. Real uses: a
+pipeline whose target is only reachable from one network segment,
+hard tenant isolation, or keeping a heavy pipeline off nodes that
+serve latency-sensitive ones. Worker counts are capped at the source
+topic's partition count so no idle consumers are placed.
+
+**C5. Scale in place, no stop-the-world.** Changing a node's share
+adds or removes individual runners instead of restarting the pipeline,
+and consumers use the cooperative-sticky assignor so only the moved
+partitions pause during a rebalance. Placement is published only when
+the computed result differs from the last one, and all records go out
+in one batched write.
+
+**C6. Correctness fixes carried from v1:**
+- placement records carry the leader epoch (election generation ID);
+  nodes ignore any record with an epoch lower than one already seen;
+- liveness uses the broker timestamp (`msg.Time`) or local receive
+  time, never the sender's clock;
+- `cluster.name` namespaces every internal topic and the election
+  group, so deployments sharing a Kafka cluster stay separate;
+- a pipeline with 0 local workers stays in the registry as "running on
+  other nodes", so no node ever answers "not found" for it;
+- config validation rejects non-positive intervals and a
+  `node_timeout_seconds` below the broker's
+  `group.min.session.timeout.ms`;
+- placement reconcile errors are logged and exposed as a metric.
+
+**C7. Graceful drain for rolling deploys.** On SIGTERM a node marks
+itself `draining` in its heartbeat, the leader moves its share
+immediately instead of waiting for the timeout, the node commits its
+in-flight work (Phase 0 H2) and then writes a heartbeat tombstone and
+exits. A rolling deploy then causes no duplicate bursts and no
+`node_timeout` gap.
+
+**Order:** C6 and C5 first (fix what v1 already exposes), then C1 and
+C2 (the reason to run a cluster), then C3, C7, C4. Exit criteria for
+v2: live test with three nodes on docker-compose Kafka covering a
+pause through node A that holds on B and C and survives a restart, a
+config applied through B reaching all nodes, a rolling restart of all
+three with zero duplicated destination messages, and a label-selected
+pipeline that only ever runs on the labeled node.
 
 ### Backend: Phase 5: Observability, done
 - [x] Prometheus metrics endpoint: per-pipeline/worker throughput
@@ -864,6 +1102,22 @@ plumbing. Treat it as **Phase 6b**, not a separate later phase.
 | `apply_pipeline_config` | `admin` | n/a (acts on whichever pipeline the new config names) | audit-logged, requires explicit confirmation step in the client |
 
 ## 11. Open decisions to revisit
+
+- A local storage engine / write-ahead log inside ARK (NiFi-style
+  repository) was requested so in-flight data survives a crash.
+  Decision: don't build it. The source topic already is the durable
+  queue, and an uncommitted message is redelivered after a crash. The
+  real loss path found in review is a commit bug (Phase 0, H1), which
+  a local store would not fix. The remaining risk, a target that
+  processed a request whose response never arrived, is a duplicate,
+  not a loss, and only the target can de-duplicate it (by the
+  `X-Correlation-ID` header ARK already sends). Revisit only if a
+  deployment must keep processing while Kafka itself is down, which
+  would be a positioning change, not a fix.
+- Cluster v1 vs. v2: keep v1 as is until v2's C5/C6 land, and
+  document "same `consumer_group`, no cluster mode" as the default way
+  to scale. Decide whether to delete v1's worker-count placement once
+  C1 to C4 exist, since by then it adds little on its own.
 
 - Embed MCP server in the engine binary vs. a separate sidecar
   process. Decide once Phase 5's REST API shape is settled.
