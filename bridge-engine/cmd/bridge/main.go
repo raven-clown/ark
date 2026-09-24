@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/raven-clown/ark/bridge-engine/internal/api"
+	"github.com/raven-clown/ark/bridge-engine/internal/authz"
 	"github.com/raven-clown/ark/bridge-engine/internal/cluster"
 	"github.com/raven-clown/ark/bridge-engine/internal/config"
 	"github.com/raven-clown/ark/bridge-engine/internal/mcpserver"
@@ -122,7 +123,11 @@ func main() {
 	go watchFile(ctx, *configPath, 5*time.Second, reload, logger)
 
 	rootMux := http.NewServeMux()
-	rootMux.Handle("/", api.NewServer(mgr, reload, clusterNode))
+	apiTokens := authz.LoadFromEnv("ARK_API")
+	if !apiTokens.Enabled() {
+		logger.Warn("no ARK_API_*_TOKENS set: the REST API only accepts requests from localhost")
+	}
+	rootMux.Handle("/", api.NewServer(mgr, reload, clusterNode, apiTokens))
 
 	mcpTokens := mcpserver.LoadTokenStoreFromEnv()
 	if mcpTokens.Enabled() {

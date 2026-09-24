@@ -6,6 +6,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/raven-clown/ark/bridge-engine/internal/authz"
 	"github.com/raven-clown/ark/bridge-engine/internal/cluster"
 	"github.com/raven-clown/ark/bridge-engine/internal/consumer"
 	"github.com/raven-clown/ark/bridge-engine/internal/dlq"
@@ -64,8 +65,13 @@ type Reloader interface {
 
 // NewServer builds the REST API. clusterNode is nil when cluster mode is
 // off; GET /api/v1/cluster then reports that explicitly instead of a
-// snapshot.
-func NewServer(reg Registry, reload Reloader, clusterNode *cluster.Node) http.Handler {
+// snapshot. Every route except /healthz and /metrics requires a token from
+// tokens (see guard); with no tokens configured, only requests from this
+// host are served.
+func NewServer(reg Registry, reload Reloader, clusterNode *cluster.Node, tokens *authz.TokenStore) http.Handler {
+	if tokens == nil {
+		tokens = &authz.TokenStore{}
+	}
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -152,7 +158,55 @@ func NewServer(reg Registry, reload Reloader, clusterNode *cluster.Node) http.Ha
 	registerDLQRoutes(mux, reg, "dlq", func(run *consumer.Runner) *dlq.Browser { return run.DLQBrowser() })
 	registerDLQRoutes(mux, reg, "reject", func(run *consumer.Runner) *dlq.Browser { return run.RejectBrowser() })
 
-	return mux
+	return guard(tokens, mux)
+}
+
+// requiredScope maps a request to the scope it needs. It is deliberately
+// path-agnostic apart from the public probes and the reload endpoint, so a
+// newly added route is protected by default rather than open by default.
+func requiredScope(r *http.Request) (scope authz.Scope, public bool) {
+	switch {
+	case r.Method == http.MethodGet && (r.URL.Path == "/healthz" || r.URL.Path == "/metrics"):
+		return "", true
+	case r.Method == http.MethodPost && r.URL.Path == "/api/v1/config/reload":
+		return authz.ScopeAdmin, false
+	case r.Method == http.MethodGet || r.Method == http.MethodHead:
+		return authz.ScopeViewer, false
+	default:
+		return authz.ScopeOperator, false
+	}
+}
+
+func guard(tokens *authz.TokenStore, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		min, public := requiredScope(r)
+		if public {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		if !tokens.Enabled() {
+			if authz.IsLoopback(r) {
+				next.ServeHTTP(w, r)
+				return
+			}
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "REST API tokens are not configured (ARK_API_VIEWER_TOKENS / ARK_API_OPERATOR_TOKENS / ARK_API_ADMIN_TOKENS), so only requests from localhost are accepted"})
+			return
+		}
+
+		token, ok := authz.BearerToken(r)
+		scope, known := tokens.Lookup(token)
+		if !ok || !known {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="ark-api"`)
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid or missing bearer token"})
+			return
+		}
+		if !scope.AtLeast(min) {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "this action needs the " + string(min) + " scope, token has " + string(scope)})
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func registerDLQRoutes(mux *http.ServeMux, reg Registry, kind string, pick func(*consumer.Runner) *dlq.Browser) {

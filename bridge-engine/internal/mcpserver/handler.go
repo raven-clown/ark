@@ -1,15 +1,22 @@
 package mcpserver
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
-	"strings"
 
+	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/raven-clown/ark/bridge-engine/internal/api"
+	"github.com/raven-clown/ark/bridge-engine/internal/authz"
 )
 
+// NewHTTPHandler serves MCP behind bearer-token auth. Each request's
+// TokenInfo carries a UserID derived from its token, which the SDK checks
+// on every request that reuses a session: a session opened with an
+// operator token can't be driven by a request holding a different token,
+// even if the session ID leaks.
 func NewHTTPHandler(reg api.Registry, tokens *TokenStore, auditLog *slog.Logger) http.Handler {
 	servers := map[Scope]*mcp.Server{
 		ScopeViewer:   buildServer(ScopeViewer, reg, auditLog),
@@ -18,28 +25,20 @@ func NewHTTPHandler(reg api.Registry, tokens *TokenStore, auditLog *slog.Logger)
 	}
 
 	mcpHandler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
-		scope, ok := authenticate(r, tokens)
-		if !ok {
+		info := auth.TokenInfoFromContext(r.Context())
+		if info == nil || len(info.Scopes) != 1 {
 			return nil
 		}
-		return servers[scope]
+		return servers[Scope(info.Scopes[0])]
 	}, nil)
 
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if _, ok := authenticate(r, tokens); !ok {
-			w.Header().Set("WWW-Authenticate", `Bearer realm="ark-mcp"`)
-			http.Error(w, "invalid or missing bearer token", http.StatusUnauthorized)
-			return
+	verify := func(_ context.Context, token string, _ *http.Request) (*auth.TokenInfo, error) {
+		scope, ok := tokens.Lookup(token)
+		if !ok {
+			return nil, auth.ErrInvalidToken
 		}
-		mcpHandler.ServeHTTP(w, r)
-	})
-}
-
-func authenticate(r *http.Request, tokens *TokenStore) (Scope, bool) {
-	header := r.Header.Get("Authorization")
-	token, found := strings.CutPrefix(header, "Bearer ")
-	if !found || token == "" {
-		return "", false
+		return &auth.TokenInfo{Scopes: []string{string(scope)}, UserID: authz.UserID(token)}, nil
 	}
-	return tokens.Lookup(token)
+
+	return auth.RequireBearerToken(verify, &auth.RequireBearerTokenOptions{AllowMissingExpiration: true})(mcpHandler)
 }

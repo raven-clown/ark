@@ -1,44 +1,17 @@
 package mcpserver
 
-import (
-	"os"
-	"strings"
-)
+import "github.com/raven-clown/ark/bridge-engine/internal/authz"
 
-type Scope string
+type Scope = authz.Scope
 
 const (
-	ScopeViewer   Scope = "viewer"
-	ScopeOperator Scope = "operator"
-	ScopeAdmin    Scope = "admin"
+	ScopeViewer   = authz.ScopeViewer
+	ScopeOperator = authz.ScopeOperator
+	ScopeAdmin    = authz.ScopeAdmin
 )
 
-type TokenStore struct {
-	tokens map[string]Scope
-}
+type TokenStore = authz.TokenStore
 
 func LoadTokenStoreFromEnv() *TokenStore {
-	store := &TokenStore{tokens: make(map[string]Scope)}
-	store.load(os.Getenv("ARK_MCP_VIEWER_TOKENS"), ScopeViewer)
-	store.load(os.Getenv("ARK_MCP_OPERATOR_TOKENS"), ScopeOperator)
-	store.load(os.Getenv("ARK_MCP_ADMIN_TOKENS"), ScopeAdmin)
-	return store
-}
-
-func (t *TokenStore) load(csv string, scope Scope) {
-	for _, tok := range strings.Split(csv, ",") {
-		tok = strings.TrimSpace(tok)
-		if tok != "" {
-			t.tokens[tok] = scope
-		}
-	}
-}
-
-func (t *TokenStore) Lookup(token string) (Scope, bool) {
-	scope, ok := t.tokens[token]
-	return scope, ok
-}
-
-func (t *TokenStore) Enabled() bool {
-	return len(t.tokens) > 0
+	return authz.LoadFromEnv("ARK_MCP")
 }
