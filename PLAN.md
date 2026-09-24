@@ -988,25 +988,71 @@ the calling agent to self-restrict):**
 - [ ] Revisit: CDC source, RabbitMQ/NATS, schedule trigger, only if
       real demand shows up after Phase 1 through 6 are solid
 
-### Frontend: Phase A: Read-only metrics (fastest path)
-- [ ] Ensure Prometheus metrics are scrape-ready
-- [ ] Ship a starter Grafana dashboard JSON (no custom UI code needed)
-- **Exit criteria:** `docker-compose up` gives Bridge, Prometheus, and
-  Grafana with a working dashboard out of the box.
+### Frontend: ARK Console (one place to see and control everything)
 
-### Frontend: Phase B: Dashboard UI (separate deployable service)
-- [ ] Separate repo/binary (`bridge-ui`), own Docker image
-- [ ] Calls Bridge REST API only (never touches Kafka directly)
-- [ ] Views: pipeline list and status, pipeline detail and live
-      metrics, DLQ browser with retry/discard actions
-- [ ] Own auth/login, versioned API client (`/api/v1/...`)
-- **Exit criteria:** an operator manages pipelines and DLQ entirely
-  from the web UI, deployed and released independently from the engine.
+Direction set on 2026-09-24, replacing the earlier "Grafana first, own UI
+later, rule builder deferred" plan: ARK gets its own console that does
+everything, with no Grafana or Kafka tooling needed alongside it.
 
-### Frontend: Phase C: Visual rule builder (deferred)
-- On hold. Only revisit if Phase A/B in production reveals real demand
-  for editing rules without touching YAML, and even then, re-evaluate
-  against adopting n8n instead of building a visual builder from scratch.
+**Look and feel.** Minimal, black, easy on the eyes for long sessions:
+near-black background, low-contrast borders, one accent color for "data
+is flowing", amber and red only for things that need attention.
+Monospace for data, a clean sans for everything else. Motion is used to
+show data moving, never as decoration.
+
+**Views:**
+- **Pipeline canvas.** Each pipeline drawn as connected blocks: source
+  topic, fast-path rules, callback target, post-callback rules,
+  destination, reject and DLQ. Lines between blocks animate with the
+  real message rate (dots flowing faster or slower, a line going amber
+  when the breaker opens or red when it's down). Chained pipelines
+  (one's destination is another's source) connect into one graph.
+- **Visual editor.** Drag blocks from a palette, wire them together,
+  click a block to edit it in a side panel, and get the same validation
+  as `validate_pipeline_config` as you type. A diff preview and an
+  explicit confirm before anything is applied, exactly like the MCP
+  config tools. The YAML view stays one click away and in sync.
+- **Visual rule builder.** Build `fast_path_rules` /
+  `post_callback_rules` conditions from fields of a sample message, with
+  a live "which recent messages would this match" preview.
+- **Live tail.** Click any line on the canvas to watch the messages
+  crossing it right now (key, headers, payload, correlation ID,
+  outcome), pause the stream, search it, and follow one correlation ID
+  end to end through every stage.
+- **Operate.** Pause/resume, restart, scale workers, browse DLQ and
+  rejects with their reasons, retry/discard in bulk, redrive settings.
+- **Cluster.** Nodes, leader, labels, where each pipeline's workers
+  run, config version per node.
+- **History.** The event log ("what happened, when, and why") next to
+  charts of throughput, lag, latency and errors.
+- **AI assistant panel.** A chat that uses the same MCP tools (overview,
+  diagnose, explain_error, recommend_tuning, config tools), so "why is
+  orders stuck?" or "add a pipeline that sends high-value orders to the
+  fraud service" works from inside the console, with the same confirm
+  step before any change.
+
+**Backend work this needs (engine side):**
+- [ ] Live tail stream: an SSE or WebSocket endpoint per pipeline stage,
+      sampled and rate-limited so tailing never slows the pipeline, and
+      token-scoped like the rest of the API.
+- [ ] Config CRUD over REST (validate, preview diff, apply with a
+      confirm token), sharing code with the MCP config tools.
+- [ ] Restart and scale endpoints; events over REST
+      (`GET /api/v1/events`); topology endpoint describing how pipelines
+      connect.
+- [ ] An AI chat endpoint (or a documented way for the console to run an
+      MCP client against ARK) so the assistant panel has no separate
+      logic of its own.
+
+**Frontend work:**
+- [ ] `bridge-ui` as its own deployable (own image, talks to the engine
+      REST/stream API only, never to Kafka directly), with login.
+- [ ] Canvas with animated flows, editor, rule builder, live tail,
+      operate, cluster, history and assistant views as above.
+- **Exit criteria:** an operator can create, change, watch, debug and
+  control every pipeline from the console alone, and the flow animation
+  and live tail reflect real traffic, verified against docker-compose
+  Kafka.
 
 ## 7. Tech stack
 
