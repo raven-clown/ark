@@ -1,0 +1,516 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ARK · Kafka to HTTP bridge</title>
+<meta name="description" content="ARK connects any Kafka topic to any HTTP app. It consumes, checks, calls your endpoint and produces the answer, with retries, ordering, dead letters, a cluster mode and a built-in AI assistant.">
+<meta property="og:title" content="ARK · Connect any Kafka topic to any HTTP app">
+<meta property="og:description" content="No Kafka client code. Nothing lost. One binary, one YAML file.">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root {
+  color-scheme: dark;
+  --night: #0B0D10;
+  --panel: #12161B;
+  --panel-2: #0F1216;
+  --edge: #1F252D;
+  --edge-2: #2A323C;
+  --frost: #E8EDF2;
+  --muted: #8B96A3;
+  --dim: #5E6873;
+  --flow: #2EE6A6;
+  --flow-soft: rgba(46, 230, 166, .12);
+  --amber: #F5B84B;
+  --coral: #FF6B6B;
+  --sans: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --radius: 14px;
+  --max: 1120px;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0;
+  overflow-x: hidden;
+  background: var(--night);
+  color: var(--frost);
+  font: 16px/1.6 var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+a { color: inherit; }
+.wrap { max-width: var(--max); margin: 0 auto; padding: 0 24px; }
+@media (max-width: 640px) { .wrap { padding: 0 16px; } }
+
+nav { position: sticky; top: 0; z-index: 10; background: rgba(11, 13, 16, .82); backdrop-filter: blur(10px); border-bottom: 1px solid var(--edge); }
+nav .wrap { display: flex; align-items: center; justify-content: space-between; height: 64px; }
+nav .brand { display: flex; align-items: center; text-decoration: none; }
+nav .brand svg { height: 26px; width: auto; }
+nav .links { display: flex; gap: 28px; align-items: center; font-size: 14px; }
+nav .links a { color: var(--muted); text-decoration: none; transition: color .15s; }
+nav .links a:hover { color: var(--frost); }
+nav .links a.gh { color: var(--frost); border: 1px solid var(--edge-2); padding: 7px 14px; border-radius: 999px; }
+@media (max-width: 760px) { nav .links a:not(.gh) { display: none; } }
+
+.hero { padding: 88px 0 40px; text-align: center; position: relative; }
+.hero::before {
+  content: ""; position: absolute; inset: -80px 0 auto; height: 520px; pointer-events: none;
+  background: radial-gradient(600px 280px at 50% 30%, rgba(46, 230, 166, .08), transparent 70%);
+}
+.eyebrow { display: inline-flex; gap: 8px; align-items: center; font: 500 12px/1 var(--mono); letter-spacing: .08em; color: var(--muted); border: 1px solid var(--edge-2); border-radius: 999px; padding: 8px 14px; }
+.eyebrow i { width: 7px; height: 7px; border-radius: 50%; background: var(--flow); box-shadow: 0 0 0 4px var(--flow-soft); }
+h1 { font-size: clamp(36px, 6vw, 64px); line-height: 1.06; letter-spacing: -.035em; margin: 26px auto 18px; max-width: 14ch; font-weight: 700; }
+h1 em { font-style: normal; color: var(--flow); }
+.lead { font-size: clamp(17px, 2vw, 19px); color: var(--muted); max-width: 640px; margin: 0 auto; }
+.cta { display: flex; gap: 12px; justify-content: center; margin: 34px 0 0; flex-wrap: wrap; }
+.btn { display: inline-flex; align-items: center; gap: 8px; padding: 12px 20px; border-radius: 10px; font-weight: 600; font-size: 15px; text-decoration: none; transition: transform .15s, background .15s, border-color .15s; }
+.btn:hover { transform: translateY(-1px); }
+.btn.primary { background: var(--flow); color: #06110C; }
+.btn.ghost { border: 1px solid var(--edge-2); color: var(--frost); }
+.btn.ghost:hover { border-color: var(--muted); }
+.install { margin: 26px auto 0; display: inline-flex; align-items: center; gap: 12px; font: 14px var(--mono); color: var(--muted); background: var(--panel-2); border: 1px solid var(--edge); border-radius: 10px; padding: 10px 10px 10px 16px; max-width: 100%; }
+.install code { white-space: nowrap; overflow-x: auto; }
+.install code b { color: var(--flow); font-weight: 400; }
+
+.flow { margin: 56px auto 0; max-width: 980px; padding: 18px 18px 8px; border: 1px solid var(--edge); border-radius: 20px; background: linear-gradient(180deg, var(--panel-2), transparent); }
+.flow svg { width: 100%; height: auto; display: block; }
+
+.facts { display: grid; grid-template-columns: repeat(4, 1fr); border: 1px solid var(--edge); border-radius: var(--radius); margin: 56px 0 0; overflow: hidden; }
+.facts div { padding: 22px 24px; border-right: 1px solid var(--edge); }
+.facts div:last-child { border-right: 0; }
+.facts b { display: block; font-size: 22px; letter-spacing: -.02em; }
+.facts span { color: var(--muted); font-size: 14px; }
+@media (max-width: 760px) {
+  .facts { grid-template-columns: 1fr 1fr; }
+  .facts div:nth-child(2) { border-right: 0; }
+  .facts div:nth-child(-n+2) { border-bottom: 1px solid var(--edge); }
+}
+
+section { padding: 96px 0 0; }
+.kicker { font: 500 12px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--flow); }
+h2 { font-size: clamp(28px, 4vw, 40px); letter-spacing: -.03em; line-height: 1.15; margin: 14px 0 12px; }
+.sub { color: var(--muted); max-width: 640px; margin: 0; font-size: 17px; }
+
+.steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 40px; counter-reset: s; }
+.step { border: 1px solid var(--edge); border-radius: var(--radius); padding: 24px; background: var(--panel-2); }
+.step::before { counter-increment: s; content: "0" counter(s); font: 500 13px var(--mono); color: var(--flow); }
+.step h3 { margin: 12px 0 6px; font-size: 18px; letter-spacing: -.01em; }
+.step p { margin: 0; color: var(--muted); font-size: 15px; }
+@media (max-width: 860px) { .steps { grid-template-columns: 1fr; } }
+
+.outcomes { margin-top: 28px; border: 1px solid var(--edge); border-radius: var(--radius); overflow: hidden; }
+.outcomes .row { display: grid; grid-template-columns: 280px 1fr; border-top: 1px solid var(--edge); }
+.outcomes .row:first-child { border-top: 0; }
+.outcomes .row > div { padding: 15px 20px; font-size: 15px; }
+.outcomes .row > div:first-child { color: var(--frost); font-weight: 500; display: flex; gap: 10px; align-items: baseline; background: var(--panel-2); }
+.outcomes .row > div:last-child { color: var(--muted); }
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; transform: translateY(-1px); }
+.dot.ok { background: var(--flow); } .dot.warn { background: var(--amber); } .dot.bad { background: var(--coral); } .dot.info { background: var(--muted); }
+@media (max-width: 760px) { .outcomes .row { grid-template-columns: 1fr; } .outcomes .row > div:last-child { padding-top: 0; background: var(--panel-2); } }
+
+.grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 40px; }
+.card { border: 1px solid var(--edge); border-radius: var(--radius); padding: 24px; background: var(--panel-2); transition: border-color .2s, transform .2s; }
+.card:hover { border-color: var(--edge-2); transform: translateY(-2px); }
+.card svg { width: 22px; height: 22px; stroke: var(--flow); fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.card h3 { margin: 14px 0 6px; font-size: 17px; letter-spacing: -.01em; }
+.card p { margin: 0; color: var(--muted); font-size: 15px; }
+@media (max-width: 960px) { .grid { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 620px) { .grid { grid-template-columns: 1fr; } }
+
+.split { display: grid; grid-template-columns: 1fr 1.15fr; gap: 48px; align-items: start; margin-top: 40px; }
+@media (max-width: 920px) { .split { grid-template-columns: 1fr; gap: 28px; } }
+
+.code { position: relative; border: 1px solid var(--edge); border-radius: var(--radius); background: var(--panel-2); overflow: hidden; }
+.code .bar { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--edge); font: 12px var(--mono); color: var(--dim); }
+.code pre { margin: 0; padding: 18px; overflow-x: auto; font: 13.5px/1.7 var(--mono); color: var(--frost); }
+.copy { font: 12px var(--mono); color: var(--muted); background: transparent; border: 1px solid var(--edge-2); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+.copy:hover { color: var(--frost); border-color: var(--muted); }
+.c { color: var(--dim); } .k { color: #9CC3FF; } .s { color: var(--flow); } .n { color: var(--amber); } .p { color: var(--muted); }
+
+.quick { display: grid; gap: 14px; margin-top: 40px; }
+.qs { display: grid; grid-template-columns: 240px 1fr; gap: 24px; align-items: start; }
+.qs h3 { margin: 10px 0 4px; font-size: 17px; }
+.qs p { margin: 0; color: var(--muted); font-size: 15px; }
+.qs .num { font: 500 13px var(--mono); color: var(--flow); }
+@media (max-width: 860px) { .qs { grid-template-columns: 1fr; gap: 10px; } }
+
+.chat { border: 1px solid var(--edge); border-radius: 18px; background: var(--panel-2); padding: 22px; display: grid; gap: 14px; }
+.msg { max-width: 92%; padding: 12px 16px; border-radius: 14px; font-size: 15px; }
+.msg.you { justify-self: end; background: var(--edge); border-bottom-right-radius: 4px; }
+.msg.ark { border: 1px solid var(--edge-2); border-bottom-left-radius: 4px; }
+.msg.ark .who { display: flex; align-items: center; gap: 8px; font: 500 12px var(--mono); color: var(--muted); margin-bottom: 6px; }
+.msg.ark .who svg { height: 14px; width: auto; }
+.msg ul { margin: 6px 0 0; padding-left: 18px; color: var(--muted); }
+.msg ul li { margin: 3px 0; }
+.msg b { color: var(--frost); font-weight: 600; }
+.tool { font: 12px var(--mono); color: var(--dim); display: flex; gap: 8px; flex-wrap: wrap; }
+.tool span { border: 1px dashed var(--edge-2); border-radius: 6px; padding: 3px 8px; }
+.langs { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 20px; }
+.langs span { font-size: 13px; border: 1px solid var(--edge-2); border-radius: 999px; padding: 5px 12px; color: var(--muted); }
+.bullets { list-style: none; padding: 0; margin: 24px 0 0; display: grid; gap: 14px; }
+.bullets li { display: grid; grid-template-columns: 22px 1fr; gap: 10px; color: var(--muted); font-size: 15px; }
+.bullets li::before { content: ""; width: 8px; height: 8px; margin-top: 8px; border-radius: 50%; background: var(--flow); box-shadow: 0 0 0 4px var(--flow-soft); }
+.bullets b { color: var(--frost); font-weight: 600; }
+
+.final { margin: 110px 0 0; text-align: center; border: 1px solid var(--edge); border-radius: 24px; padding: 64px 24px; background: radial-gradient(500px 220px at 50% 0%, rgba(46, 230, 166, .09), transparent 70%), var(--panel-2); }
+.final svg.mark { height: 64px; width: auto; }
+.final h2 { margin-top: 20px; }
+.final .sub { margin: 0 auto; }
+
+footer { margin-top: 80px; border-top: 1px solid var(--edge); padding: 28px 0 40px; color: var(--dim); font-size: 14px; }
+footer .wrap { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+footer a { color: var(--muted); text-decoration: none; }
+footer a:hover { color: var(--frost); }
+
+.split > *, .qs > *, .steps > *, .grid > * { min-width: 0; }
+code { font-family: var(--mono); font-size: .92em; }
+@media (max-width: 640px) {
+  .eyebrow { font-size: 10.5px; letter-spacing: .04em; padding: 7px 12px; }
+  .install { display: flex; width: 100%; }
+  .install code { min-width: 0; }
+  .flow { overflow-x: auto; padding: 12px 12px 4px; -webkit-overflow-scrolling: touch; }
+  .flow svg { min-width: 560px; }
+  .facts div { padding: 18px; }
+  .facts b { font-size: 18px; }
+  .btn { flex: 1 1 auto; justify-content: center; }
+}
+.reveal { opacity: 0; transform: translateY(14px); transition: opacity .6s ease, transform .6s ease; }
+.reveal.in { opacity: 1; transform: none; }
+@media (prefers-reduced-motion: reduce) { .reveal { opacity: 1; transform: none; transition: none; } html { scroll-behavior: auto; } }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="wrap">
+    <a class="brand" href="#" aria-label="ARK home"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 492 196" role="img" aria-label="ARK">
+  <g fill="none" stroke="#E8EDF2" stroke-width="26" stroke-linecap="round" stroke-linejoin="round">
+    <g transform="translate(-41.5 -27.96) scale(0.49)">
+      <path d="M146 404 C146 262 196 164 256 110 C316 164 366 262 366 404" stroke-width="53"/>
+    </g>
+    <path d="M212 170 V30 H270 C318 30 318 104 270 104 H212 M272 104 L318 170"/>
+    <path d="M380 30 V170 M456 30 L382 116 M416 76 L462 170"/>
+  </g>
+  <circle cx="83.9" cy="122.9" r="16" fill="#2EE6A6" opacity="0.18"/>
+  <circle cx="83.9" cy="122.9" r="9" fill="#2EE6A6"/>
+</svg>
+</a>
+    <div class="links">
+      <a href="#how">How it works</a>
+      <a href="#features">Features</a>
+      <a href="#start">Quick start</a>
+      <a href="#assistant">AI assistant</a>
+      <a class="gh" href="https://github.com/raven-clown/ark">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap">
+    <span class="eyebrow"><i></i>OPEN SOURCE · APACHE 2.0 · ONE GO BINARY</span>
+    <h1>Kafka in. Your app. <em>Kafka out.</em></h1>
+    <p class="lead">ARK connects any Kafka topic to any HTTP endpoint. It consumes, checks, calls your app and produces the answer, with retries, ordering, dead letters and an AI assistant built in. Your app never touches a Kafka client.</p>
+    <div class="cta">
+      <a class="btn primary" href="#start">Get started in 2 minutes</a>
+      <a class="btn ghost" href="https://github.com/raven-clown/ark">View on GitHub</a>
+    </div>
+    <div class="install"><code><b>$</b> git clone https://github.com/raven-clown/ark && cd ark && docker compose up -d</code><button class="copy" data-copy="git clone https://github.com/raven-clown/ark.git && cd ark && docker compose up -d --build">copy</button></div>
+    <div class="flow"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 290" role="img" aria-label="Messages flow from a Kafka topic through ARK to your app, and the results land in Kafka topics">
+  <g fill="none" stroke="#2A323C" stroke-width="2" stroke-linecap="round">
+    <path d="M250 152 C340 152 380 170 480 170"/>
+    <path d="M480 170 C580 170 600 60 700 60 L700 76"/>
+    <path d="M700 76 C610 76 590 170 480 170" stroke-dasharray="4 6"/>
+    <path d="M480 170 C590 170 610 156 700 156"/>
+    <path d="M480 170 C590 170 610 204 700 204"/>
+    <path d="M480 170 C590 170 610 252 700 252"/>
+  </g>
+  <g opacity="0">
+    <animateMotion dur="12s" begin="0s" repeatCount="indefinite" calcMode="linear" keyPoints="0;1;1" keyTimes="0;0.3000;1" path="M250 152 C340 152 380 170 480 170 C580 170 600 60 700 60 L700 76 C610 76 590 170 480 170 C590 170 610 156 700 156"/>
+    <animate attributeName="opacity" dur="12s" begin="0s" repeatCount="indefinite" values="0;1;1;0;0" keyTimes="0;0.01;0.2900;0.3000;1"/>
+    <circle r="10" fill="#2EE6A6" opacity="0.22"></circle>
+    <circle r="4.5" fill="#2EE6A6"></circle>
+  </g>
+  <g opacity="0">
+    <animateMotion dur="12s" begin="-10s" repeatCount="indefinite" calcMode="linear" keyPoints="0;1;1" keyTimes="0;0.3000;1" path="M250 152 C340 152 380 170 480 170 C580 170 600 60 700 60 L700 76 C610 76 590 170 480 170 C590 170 610 156 700 156"/>
+    <animate attributeName="opacity" dur="12s" begin="-10s" repeatCount="indefinite" values="0;1;1;0;0" keyTimes="0;0.01;0.2900;0.3000;1"/>
+    <circle r="10" fill="#2EE6A6" opacity="0.22"></circle>
+    <circle r="4.5" fill="#2EE6A6"></circle>
+  </g>
+  <g opacity="0">
+    <animateMotion dur="12s" begin="-8s" repeatCount="indefinite" calcMode="linear" keyPoints="0;1;1" keyTimes="0;0.1500;1" path="M250 152 C340 152 380 170 480 170 C590 170 610 204 700 204"/>
+    <animate attributeName="opacity" dur="12s" begin="-8s" repeatCount="indefinite" values="0;1;1;0;0" keyTimes="0;0.01;0.1400;0.1500;1"/>
+    <circle r="10" fill="#2EE6A6" opacity="0.22"><animate attributeName="fill" dur="12s" begin="-8s" repeatCount="indefinite" calcMode="discrete" values="#2EE6A6;#F5B84B;#2EE6A6" keyTimes="0;0.0750;0.1500"/></circle>
+    <circle r="4.5" fill="#2EE6A6"><animate attributeName="fill" dur="12s" begin="-8s" repeatCount="indefinite" calcMode="discrete" values="#2EE6A6;#F5B84B;#2EE6A6" keyTimes="0;0.0750;0.1500"/></circle>
+  </g>
+  <g opacity="0">
+    <animateMotion dur="12s" begin="-6s" repeatCount="indefinite" calcMode="linear" keyPoints="0;1;1" keyTimes="0;0.3000;1" path="M250 152 C340 152 380 170 480 170 C580 170 600 60 700 60 L700 76 C610 76 590 170 480 170 C590 170 610 156 700 156"/>
+    <animate attributeName="opacity" dur="12s" begin="-6s" repeatCount="indefinite" values="0;1;1;0;0" keyTimes="0;0.01;0.2900;0.3000;1"/>
+    <circle r="10" fill="#2EE6A6" opacity="0.22"></circle>
+    <circle r="4.5" fill="#2EE6A6"></circle>
+  </g>
+  <g opacity="0">
+    <animateMotion dur="12s" begin="-4s" repeatCount="indefinite" calcMode="linear" keyPoints="0;1;1" keyTimes="0;0.3000;1" path="M250 152 C340 152 380 170 480 170 C580 170 600 60 700 60 L700 76 C610 76 590 170 480 170 C590 170 610 156 700 156"/>
+    <animate attributeName="opacity" dur="12s" begin="-4s" repeatCount="indefinite" values="0;1;1;0;0" keyTimes="0;0.01;0.2900;0.3000;1"/>
+    <circle r="10" fill="#2EE6A6" opacity="0.22"></circle>
+    <circle r="4.5" fill="#2EE6A6"></circle>
+  </g>
+  <g opacity="0">
+    <animateMotion dur="12s" begin="-2s" repeatCount="indefinite" calcMode="linear" keyPoints="0;1;1" keyTimes="0;0.3083;1" path="M250 152 C340 152 380 170 480 170 C580 170 600 60 700 60 L700 76 C610 76 590 170 480 170 C590 170 610 252 700 252"/>
+    <animate attributeName="opacity" dur="12s" begin="-2s" repeatCount="indefinite" values="0;1;1;0;0" keyTimes="0;0.01;0.2983;0.3083;1"/>
+    <circle r="10" fill="#2EE6A6" opacity="0.22"><animate attributeName="fill" dur="12s" begin="-2s" repeatCount="indefinite" calcMode="discrete" values="#2EE6A6;#FF6B6B;#2EE6A6" keyTimes="0;0.2374;0.3083"/></circle>
+    <circle r="4.5" fill="#2EE6A6"><animate attributeName="fill" dur="12s" begin="-2s" repeatCount="indefinite" calcMode="discrete" values="#2EE6A6;#FF6B6B;#2EE6A6" keyTimes="0;0.2374;0.3083"/></circle>
+  </g>
+
+  <text x="30" y="118" font-family="Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" letter-spacing="2" fill="#8B96A3">KAFKA TOPIC</text>
+  <rect x="30" y="132" width="220" height="40" rx="20" fill="#12161B" stroke="#2A323C"/>
+  <text x="54" y="157" font-family="'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" fill="#E8EDF2">orders.raw</text>
+
+  <text x="700" y="30" font-family="Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" letter-spacing="2" fill="#8B96A3">YOUR APP, OVER HTTP</text>
+  <rect x="700" y="42" width="230" height="52" rx="12" fill="#12161B" stroke="#2A323C"/>
+  <text x="720" y="73" font-family="'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" fill="#E8EDF2">POST /process</text>
+  <text x="918" y="72" font-family="Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#8B96A3" text-anchor="end">your code</text>
+  <rect x="700" y="140" width="230" height="32" rx="16" fill="#12161B" stroke="#2A323C"/>
+  <circle cx="720" cy="156" r="5" fill="#2EE6A6"/>
+  <text x="734" y="161" font-family="'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" fill="#E8EDF2">orders.processed</text>
+  <text x="918" y="160.5" font-family="Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#8B96A3" text-anchor="end">result</text>
+  <rect x="700" y="188" width="230" height="32" rx="16" fill="#12161B" stroke="#2A323C"/>
+  <circle cx="720" cy="204" r="5" fill="#F5B84B"/>
+  <text x="734" y="209" font-family="'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" fill="#E8EDF2">orders.rejected</text>
+  <text x="918" y="208.5" font-family="Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#8B96A3" text-anchor="end">bad data</text>
+  <rect x="700" y="236" width="230" height="32" rx="16" fill="#12161B" stroke="#2A323C"/>
+  <circle cx="720" cy="252" r="5" fill="#FF6B6B"/>
+  <text x="734" y="257" font-family="'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" fill="#E8EDF2">orders.dlq</text>
+  <text x="918" y="256.5" font-family="Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#8B96A3" text-anchor="end">failed</text>
+
+  <g transform="translate(372.5 40.6) scale(0.42)">
+    <path d="M146 404 C146 262 196 164 256 110 C316 164 366 262 366 404" fill="none" stroke="#E8EDF2" stroke-width="46" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle cx="256" cy="308" r="31" fill="#2EE6A6" opacity="0.2"/>
+    <circle cx="256" cy="308" r="17" fill="#2EE6A6"/>
+  </g>
+  <text x="480" y="250" font-family="Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="13" font-weight="700" letter-spacing="5" fill="#E8EDF2" text-anchor="middle">ARK</text>
+  <text x="480" y="270" font-family="Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="11" fill="#8B96A3" text-anchor="middle">rules · retries · ordering · DLQ</text>
+</svg>
+</div>
+  </div>
+</header>
+
+<main class="wrap">
+  <div class="facts reveal">
+    <div><b>0 lines</b><span>of Kafka code in your app</span></div>
+    <div><b>At-least-once</b><span>in-order commits, nothing skipped</span></div>
+    <div><b>1 binary</b><span>one YAML file, no extra cluster</span></div>
+    <div><b>MCP built in</b><span>ask it anything, in your language</span></div>
+  </div>
+
+  <section id="how">
+    <div class="kicker">How it works</div>
+    <h2>Your app answers HTTP. ARK does the rest.</h2>
+    <p class="sub">Every message takes the same path, and every step has one clear outcome you can see.</p>
+    <div class="steps">
+      <div class="step reveal"><h3>Point it at a topic</h3><p>Describe a pipeline in YAML: source topic, your endpoint, where results and failures go.</p></div>
+      <div class="step reveal"><h3>ARK checks and calls</h3><p>Data rules validate each message, routing rules can skip the call, and ARK POSTs the rest with a stable correlation ID.</p></div>
+      <div class="step reveal"><h3>Results land in Kafka</h3><p>Answers go to the result topic, bad data to the reject topic, failures to the dead-letter topic, each with the reason.</p></div>
+    </div>
+    <div class="outcomes reveal">
+      <div class="row"><div><i class="dot ok"></i>Your app answers 2xx</div><div>The answer is produced to the destination topic, then the offset is committed.</div></div>
+      <div class="row"><div><i class="dot warn"></i>Your app answers 4xx</div><div>The message is the problem, not the app: it goes to the reject topic with the reason, no retry.</div></div>
+      <div class="row"><div><i class="dot info"></i>429, 425 or 408</div><div>"Come back later": ARK waits, honoring Retry-After, and tries again without spending a retry.</div></div>
+      <div class="row"><div><i class="dot bad"></i>5xx or a timeout</div><div>Retried with backoff, then dead-lettered with the reason. You can browse and retry it later.</div></div>
+      <div class="row"><div><i class="dot info"></i>Your app is down</div><div>The circuit breaker opens, messages wait safely in Kafka, and ARK resumes the moment the health check passes.</div></div>
+      <div class="row"><div><i class="dot info"></i>ARK crashes mid-message</div><div>Nothing was committed past it, so it is delivered again with the same correlation ID.</div></div>
+    </div>
+  </section>
+
+  <section id="features">
+    <div class="kicker">Features</div>
+    <h2>Everything a Kafka consumer should have, already done.</h2>
+    <p class="sub">Built and tested against a real broker: crashes, rebalances, dead apps, bad data.</p>
+    <div class="grid">
+      <div class="card reveal"><svg viewBox="0 0 24 24"><path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7l8-4z"/><path d="M8.5 12l2.5 2.5 4.5-5"/></svg><h3>Delivery you can trust</h3><p>At-least-once with in-order commits. A stuck message is retried in place, never skipped. Order is kept per key.</p></div>
+      <div class="card reveal"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h10M4 18h6"/><circle cx="18" cy="16" r="3"/><path d="M20.2 18.2L22 20"/></svg><h3>Data rules</h3><p>Required fields, types, ranges, patterns, enums, formats, size, unknown fields, keys and headers. Bad data never reaches your app.</p></div>
+      <div class="card reveal"><svg viewBox="0 0 24 24"><path d="M5 12h6l3-6h5M14 18h5M11 12l3 6"/><circle cx="4" cy="12" r="1.5"/></svg><h3>Rules without code</h3><p>Route before or after the callback with simple conditions: auto-approve small orders, send big ones elsewhere.</p></div>
+      <div class="card reveal"><svg viewBox="0 0 24 24"><path d="M4 7h16v12H4z"/><path d="M4 7l3-3h10l3 3M9 12h6"/></svg><h3>Dead letters you can act on</h3><p>Browse, retry or discard with the reason attached. Redrive on a schedule. Handled stays handled across restarts.</p></div>
+      <div class="card reveal"><svg viewBox="0 0 24 24"><path d="M4 17c2-6 5-10 8-12 3 2 6 6 8 12"/><circle cx="12" cy="14" r="1.8"/><path d="M3 21h18"/></svg><h3>Protects your app</h3><p>Concurrency limits, a circuit breaker with health probes, backpressure on 429, and load balancing across backends.</p></div>
+      <div class="card reveal"><svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M8 7.5l3 8M16 7.5l-3 8M8.5 6h7"/></svg><h3>Cluster on Kafka itself</h3><p>Shared config, cluster-wide pause, label-based placement and fast failover. No etcd, no ZooKeeper, nothing new to run.</p></div>
+      <div class="card reveal"><svg viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/><path d="M8 10h8M8 13h5"/></svg><h3>AI assistant over MCP</h3><p>Ask what is happening and why, explain an error, find weird data, tune throughput, draft pipelines you approve first.</p></div>
+      <div class="card reveal"><svg viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 018 0v3"/></svg><h3>Secure by default</h3><p>Viewer, operator and admin tokens for the API and for MCP, per-pipeline AI access, and an audit log for every change.</p></div>
+      <div class="card reveal"><svg viewBox="0 0 24 24"><path d="M4 19V9M10 19V5M16 19v-7M22 19H2"/></svg><h3>See everything</h3><p>Prometheus metrics for throughput, latency, lag, oldest uncommitted age, breaker state and every rule match.</p></div>
+    </div>
+  </section>
+
+  <section id="start">
+    <div class="kicker">Quick start</div>
+    <h2>From zero to flowing in two minutes.</h2>
+    <p class="sub">All you need is Docker. The demo starts Kafka, ARK, and a tiny app that echoes what it receives.</p>
+    <div class="quick">
+      <div class="qs reveal">
+        <div><span class="num">01</span><h3>Start it</h3><p>Kafka, ARK and the demo app, with one pipeline from <code>orders.raw</code> to <code>orders.processed</code>.</p></div>
+        <div class="code"><div class="bar"><span>shell</span><button class="copy">copy</button></div><pre>git clone https://github.com/raven-clown/ark.git && cd ark
+docker compose up -d --build</pre></div>
+      </div>
+      <div class="qs reveal">
+        <div><span class="num">02</span><h3>Send three orders</h3><p>A good one, one that breaks a data rule, and one the app fails on.</p></div>
+        <div class="code"><div class="bar"><span>shell</span><button class="copy">copy</button></div><pre>printf '%s\n' \
+  '{"order_id":"A1","amount":10}' \
+  '{"order_id":"A2","amount":-5}' \
+  '{"order_id":"A3","amount":7,"fail":true}' \
+| docker compose exec -T kafka /opt/kafka/bin/kafka-console-producer.sh \
+    --bootstrap-server localhost:9092 --topic orders.raw</pre></div>
+      </div>
+      <div class="qs reveal">
+        <div><span class="num">03</span><h3>See where each went</h3><p>A1 is processed, A2 is rejected with the broken rule, A3 is dead-lettered after 3 tries. Every one carries its reason.</p></div>
+        <div class="code"><div class="bar"><span>shell</span><button class="copy">copy</button></div><pre>topic() { docker compose exec -T kafka /opt/kafka/bin/kafka-console-consumer.sh \
+  --bootstrap-server localhost:9092 --from-beginning --timeout-ms 5000 \
+  --property print.headers=true --topic "$1" 2>/dev/null; }
+
+topic orders.processed   <span class="c"># A1, with the app's answer</span>
+topic orders.rejected    <span class="c"># A2: amount is -5, below the minimum 0</span>
+topic orders.dlq         <span class="c"># A3: answered status 500, 3 attempts</span></pre></div>
+      </div>
+      <div class="qs reveal">
+        <div><span class="num">04</span><h3>Ask ARK</h3><p>Over the REST API, or from any MCP client in plain language.</p></div>
+        <div class="code"><div class="bar"><span>shell</span><button class="copy">copy</button></div><pre>curl -s localhost:8080/api/v1/pipelines/orders/dlq \
+  -H 'Authorization: Bearer demo-admin-token'
+
+claude mcp add --transport http ark http://localhost:8080/mcp \
+  --header "Authorization: Bearer demo-mcp-token"</pre></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="config">
+    <div class="split">
+      <div>
+        <div class="kicker">Configuration</div>
+        <h2>One pipeline, one block of YAML.</h2>
+        <p class="sub">No code, no framework. Change it and reload: an invalid config is refused before it touches anything running.</p>
+        <ul class="bullets">
+          <li><div><b>Required dead-letter topic.</b> A message always ends up somewhere you can see it.</div></li>
+          <li><div><b>Scale with one number.</b> <code>workers</code> splits partitions inside one process, or across a cluster.</div></li>
+          <li><div><b>Your timezone.</b> Every time ARK shows you is ISO 8601 in the zone you set.</div></li>
+        </ul>
+      </div>
+      <div class="code reveal"><div class="bar"><span>config.yaml</span><button class="copy">copy</button></div><pre><span class="k">brokers</span>: <span class="p">[</span><span class="s">kafka:9092</span><span class="p">]</span>
+<span class="k">timezone</span>: <span class="s">Asia/Bangkok</span>
+
+<span class="k">pipelines</span>:
+  - <span class="k">name</span>: <span class="s">order-processor</span>
+    <span class="k">source_topic</span>: <span class="s">orders.raw</span>
+    <span class="k">destination_topic</span>: <span class="s">orders.processed</span>
+    <span class="k">dead_letter_topic</span>: <span class="s">orders.dlq</span>
+    <span class="k">reject_topic</span>: <span class="s">orders.rejected</span>
+    <span class="k">consumer_group</span>: <span class="s">order-processor</span>
+    <span class="k">workers</span>: <span class="n">3</span>
+
+    <span class="k">target</span>:
+      <span class="k">url</span>: <span class="s">http://order-app:8080/process</span>
+      <span class="k">health_check_url</span>: <span class="s">http://order-app:8080/health</span>
+    <span class="k">retry</span>: <span class="p">{</span><span class="k">max_attempts</span>: <span class="n">3</span>, <span class="k">backoff_ms</span>: <span class="n">1000</span><span class="p">}</span>
+
+    <span class="k">data_rules</span>:
+      <span class="k">on_violation</span>: <span class="s">reject</span>
+      <span class="k">fields</span>:
+        - <span class="p">{</span><span class="k">path</span>: <span class="s">order_id</span>, <span class="k">required</span>: <span class="n">true</span>, <span class="k">type</span>: <span class="s">string</span><span class="p">}</span>
+        - <span class="p">{</span><span class="k">path</span>: <span class="s">amount</span>, <span class="k">type</span>: <span class="s">number</span>, <span class="k">min</span>: <span class="n">0</span><span class="p">}</span>
+
+    <span class="k">fast_path_rules</span>:
+      - <span class="k">name</span>: <span class="s">auto-approve-small</span>
+        <span class="k">condition</span>: <span class="s">"data.amount &lt; 100"</span>
+        <span class="k">action</span>: <span class="s">pass_through</span></pre></div>
+    </div>
+  </section>
+
+  <section id="assistant">
+    <div class="split">
+      <div>
+        <div class="kicker">AI assistant</div>
+        <h2>Ask your pipelines what's wrong.</h2>
+        <p class="sub">ARK speaks MCP, so any AI client and any model can operate it. It works out what you mean first, asks back when something is unclear, and answers from real data, never guesses.</p>
+        <ul class="bullets">
+          <li><div><b>What, why, what to do.</b> Diagnoses come with the evidence and the next step.</div></li>
+          <li><div><b>Finds weird data.</b> Samples real messages, spots odd fields and outliers, and drafts rules to catch them.</div></li>
+          <li><div><b>Changes need your OK.</b> Every config change is a preview and a diff first, applied only after you confirm.</div></li>
+          <li><div><b>Least privilege.</b> Read-only, operator or admin tokens, and a per-pipeline limit on top.</div></li>
+        </ul>
+        <div class="langs"><span>English</span><span>ไทย</span><span>简体中文</span><span>繁體中文</span><span>+ your own words</span></div>
+      </div>
+      <div class="chat reveal">
+        <div class="msg you">How is the orders pipeline doing?</div>
+        <div class="tool"><span>interpret_request</span><span>diagnose_pipeline</span></div>
+        <div class="msg ark">
+          <div class="who"><svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="100 80 312 350">
+  <path d="M146 404 C146 262 196 164 256 110 C316 164 366 262 366 404" fill="none" stroke="#E8EDF2" stroke-width="46" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="256" cy="308" r="31" fill="#2EE6A6" opacity="0.18"/>
+  <circle cx="256" cy="308" r="17" fill="#2EE6A6"/>
+</svg>
+ARK</div>
+          <b>orders is running, with two things to look at:</b>
+          <ul>
+            <li><b>1 message in the DLQ.</b> Your app answered 500 on all 3 attempts for order A3.</li>
+            <li><b>1 message rejected.</b> A2 had amount -5, below the minimum 0.</li>
+          </ul>
+          Lag is 0 and callbacks average 2 ms. Want me to show the DLQ entry, or retry it once the app is fixed?
+        </div>
+        <div class="msg you">Is any other weird data coming in?</div>
+        <div class="tool"><span>check_data</span></div>
+        <div class="msg ark">
+          <div class="who"><svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" viewBox="100 80 312 350">
+  <path d="M146 404 C146 262 196 164 256 110 C316 164 366 262 366 404" fill="none" stroke="#E8EDF2" stroke-width="46" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="256" cy="308" r="31" fill="#2EE6A6" opacity="0.18"/>
+  <circle cx="256" cy="308" r="17" fill="#2EE6A6"/>
+</svg>
+ARK</div>
+          I sampled the latest 3 messages. <b>amount</b> is usually positive, but one is -5, which your <b>min: 0</b> rule already catches. A field called <b>fail</b> shows up in 1 of 3 messages and no rule mentions it. I drafted rules that tag such messages without blocking them. Want to see the preview?
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <div class="final reveal">
+    <svg class="mark" xmlns="http://www.w3.org/2000/svg" viewBox="100 80 312 350" role="img" aria-label="ARK">
+  <path d="M146 404 C146 262 196 164 256 110 C316 164 366 262 366 404" fill="none" stroke="#E8EDF2" stroke-width="46" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="256" cy="308" r="31" fill="#2EE6A6" opacity="0.18"/>
+  <circle cx="256" cy="308" r="17" fill="#2EE6A6"/>
+</svg>
+
+    <h2>Stop writing Kafka glue.</h2>
+    <p class="sub">Point ARK at a topic and an endpoint. Everything else is already done.</p>
+    <div class="cta">
+      <a class="btn primary" href="#start">Get started</a>
+      <a class="btn ghost" href="https://github.com/raven-clown/ark#reference">Read the reference</a>
+    </div>
+  </div>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>ARK · Apache License 2.0</span>
+    <span><a href="https://github.com/raven-clown/ark">GitHub</a> · <a href="https://github.com/raven-clown/ark/blob/main/PLAN.md">Roadmap</a> · <a href="https://github.com/raven-clown/ark/blob/main/CONTRIBUTING.md">Contributing</a></span>
+  </div>
+</footer>
+
+<script>
+document.querySelectorAll('.copy').forEach(function (b) {
+  b.addEventListener('click', function () {
+    var text = b.dataset.copy || b.closest('.code').querySelector('pre').innerText;
+    var done = function () { b.textContent = 'copied'; setTimeout(function () { b.textContent = 'copy'; }, 1400); };
+    if (navigator.clipboard) { navigator.clipboard.writeText(text).then(done, function () {}); }
+  });
+});
+document.querySelectorAll('.flow').forEach(function (f) { if (f.scrollWidth > f.clientWidth) { f.scrollLeft = (f.scrollWidth - f.clientWidth) / 2; } });
+var reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+if (reduce) { document.querySelectorAll('.flow svg').forEach(function (s) { s.pauseAnimations && s.pauseAnimations(); }); }
+if ('IntersectionObserver' in window && !reduce) {
+  var io = new IntersectionObserver(function (es) {
+    es.forEach(function (e) { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); } });
+  }, { rootMargin: '0px 0px -8% 0px' });
+  document.querySelectorAll('.reveal').forEach(function (el) { io.observe(el); });
+} else {
+  document.querySelectorAll('.reveal').forEach(function (el) { el.classList.add('in'); });
+}
+</script>
+</body>
+</html>

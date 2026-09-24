@@ -1,303 +1,558 @@
-# ARK
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="brand/ark-wordmark.svg">
+    <img src="brand/ark-wordmark-light.svg" alt="ARK" height="88">
+  </picture>
+</p>
 
-**Connect any Kafka topic to any HTTP app, without writing a Kafka
-client.** ARK sits between Kafka and your app's existing endpoint. It
-consumes, calls your app, and produces the result, with retries, dead
-lettering, a circuit breaker, and horizontal scaling built in. One Go
-binary, minutes to deploy.
+<h3 align="center">Connect any Kafka topic to any HTTP app.<br>No Kafka client code. Nothing lost.</h3>
+
+<p align="center">
+  <a href="https://github.com/raven-clown/ark/actions/workflows/ci.yml"><img src="https://github.com/raven-clown/ark/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <img src="https://img.shields.io/badge/go-1.26-00ADD8?logo=go&logoColor=white" alt="Go 1.26">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-2EE6A6" alt="Apache 2.0"></a>
+  <img src="https://img.shields.io/badge/MCP-ready-8B96A3" alt="MCP ready">
+</p>
+
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#how-it-works">How it works</a> ·
+  <a href="#features">Features</a> ·
+  <a href="#your-first-pipeline">First pipeline</a> ·
+  <a href="#reference">Reference</a> ·
+  <a href="https://raven-clown.github.io/ark/">Website</a>
+</p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="brand/ark-flow-dark.svg">
+    <img src="brand/ark-flow-light.svg" alt="Messages flow from a Kafka topic through ARK to your app; results land in a result topic, bad data in a reject topic, failures in a dead-letter topic" width="860">
+  </picture>
+</p>
+
+ARK sits between Kafka and an HTTP endpoint your app already has. It
+consumes each message, checks it, calls your app, and produces the answer
+to another topic. Retries, ordering, dead letters, a circuit breaker,
+scaling and an AI assistant come built in. One Go binary, one YAML file.
+
+Your app stays a plain web service. It never sees a consumer group, an
+offset or a rebalance.
+
+## Why ARK
+
+- **Every team writes the same Kafka glue.** Consume, retry, dead-letter,
+  commit offsets carefully, survive rebalances, add metrics. ARK is that
+  glue, done once and tested against a real broker.
+- **Small on purpose.** ARK does one job: *consume, validate or route,
+  call back, produce*. It is not a general orchestrator like Kafka
+  Connect, NiFi or Camel, so there is no framework to learn and no extra
+  cluster to run.
+- **Safe by default.** At-least-once delivery, in-order commits, a stable
+  correlation ID for idempotency, and a dead-letter topic that is
+  required, so a message always ends up somewhere you can see it.
+- **Easy to operate.** Ask it questions in plain language over MCP, browse
+  and retry dead letters from the API, and scale by adding nodes that
+  coordinate through Kafka itself.
+
+## Quick start
+
+You need Docker. This starts Kafka, ARK, and a tiny demo app that echoes
+what it receives.
+
+```bash
+git clone https://github.com/raven-clown/ark.git && cd ark
+docker compose up -d --build
+```
+
+The demo pipeline (`bridge-engine/config.demo.yaml`) reads `orders.raw`,
+calls the demo app, and writes the answer to `orders.processed`. It also
+has a data rule: `order_id` must be a string and `amount` a number of at
+least 0.
+
+**1. Send three orders:** a good one, one that breaks the rule, and one
+the app fails on.
+
+```bash
+printf '%s\n' \
+  '{"order_id":"A1","amount":10}' \
+  '{"order_id":"A2","amount":-5}' \
+  '{"order_id":"A3","amount":7,"fail":true}' \
+| docker compose exec -T kafka /opt/kafka/bin/kafka-console-producer.sh \
+    --bootstrap-server localhost:9092 --topic orders.raw
+```
+
+**2. See where each one went.**
+
+```bash
+topic() { docker compose exec -T kafka /opt/kafka/bin/kafka-console-consumer.sh \
+  --bootstrap-server localhost:9092 --from-beginning --timeout-ms 5000 \
+  --property print.headers=true --topic "$1" 2>/dev/null; }
+
+topic orders.processed   # A1, with the app's answer
+topic orders.rejected    # A2, X-Ark-Reason: data rules: amount is -5, below the minimum 0
+topic orders.dlq         # A3, X-Ark-Reason: callback failed 3 time(s) ... answered status 500
+```
+
+**3. Ask ARK about it.**
+
+```bash
+curl -s localhost:8080/api/v1/pipelines -H 'Authorization: Bearer demo-admin-token'
+curl -s localhost:8080/api/v1/pipelines/orders/dlq -H 'Authorization: Bearer demo-admin-token'
+```
+
+**4. Or ask in plain language.** Connect any MCP client to
+`http://localhost:8080/mcp` with the token `demo-mcp-token`. For example,
+with Claude Code:
+
+```bash
+claude mcp add --transport http ark http://localhost:8080/mcp \
+  --header "Authorization: Bearer demo-mcp-token"
+```
+
+Then ask *"how is the orders pipeline doing?"* or *"is there any weird
+data in orders?"* in English, Thai, or Chinese. ARK answers with what is
+happening, why, and what to do.
+
+> The demo tokens are for trying ARK on your machine. Set your own with
+> `ARK_API_ADMIN_TOKENS` and `ARK_MCP_ADMIN_TOKENS` before running it
+> anywhere else, and point `ARK_CONFIG` at your own config file.
+
+## How it works
+
+Every message takes the same path, and each step has one clear outcome:
 
 ```mermaid
 flowchart LR
-    A[("Kafka topic A")] -->|consume| ARK["ARK"]
-    ARK -->|"HTTP POST"| App["Your app"]
-    App -->|"HTTP response"| ARK
-    ARK -->|produce| B[("Kafka topic B")]
-    ARK -.->|"on failure"| D[("reject / DLQ topic")]
-
-    style ARK fill:#5b8def,stroke:#3a63c2,color:#fff
-    style A fill:#2d3748,stroke:#4a5568,color:#fff
-    style B fill:#2d3748,stroke:#4a5568,color:#fff
-    style D fill:#742a2a,stroke:#9b2c2c,color:#fff
-    style App fill:#276749,stroke:#2f855a,color:#fff
+    K[(source topic)] --> D{data rules}
+    D -- breaks a rule --> R[(reject topic)]
+    D -- ok --> F{fast path rules}
+    F -- matched --> O
+    F -- no match --> C[call your app]
+    C -- 2xx --> P{post callback rules}
+    P --> O[(destination topic)]
+    C -- 4xx --> R
+    C -- 5xx, timeout --> X{retries left?}
+    X -- yes --> C
+    X -- no --> Q[(dead letter topic)]
 ```
 
-## Why
+1. **Consume.** Each pipeline is a Kafka consumer group. `workers` members
+   share the source topic's partitions.
+2. **Check.** `data_rules` validate the message (types, ranges, formats,
+   required fields, key and headers) before anything else runs.
+3. **Route early.** `fast_path_rules` can pass, reject, drop or
+   dead-letter a message on a condition, without calling your app.
+4. **Call back.** ARK POSTs the message to your app with a stable
+   `X-Correlation-ID`, keeping order per key while different keys run in
+   parallel.
+5. **Route late.** `post_callback_rules` look at your app's answer and can
+   send it to a different topic or webhook.
+6. **Produce and commit.** The answer goes to the destination topic, and
+   only then is the offset committed, in order.
 
-Teams that already have a working app want to plug it into Kafka
-without every team writing its own consumer/producer code and handling
-retries, dead lettering, offset commits, and rebalances by hand. With
-ARK, your app just implements one HTTP endpoint it already knows how
-to build, and ARK does the rest.
+### What happens when...
 
-**The bet:** be the smallest, most opinionated tool that does exactly
-"consume, validate or route, call back, produce," rather than a
-general-purpose orchestrator like Kafka Connect, NiFi, n8n, or Camel
-that needs a cluster of its own just to move messages between a topic
-and an endpoint. The full reasoning and comparison live in
-[PLAN.md](PLAN.md).
+| Situation | What ARK does |
+|---|---|
+| Your app answers 2xx | The answer is produced to `destination_topic` |
+| Your app answers 4xx | The message is bad, not the app: it goes to `reject_topic` with the reason, no retry |
+| Your app answers 408, 425 or 429 | "Come back later": ARK waits (honoring `Retry-After`) and tries again without using a retry |
+| Your app answers 5xx or times out | Retried with backoff, then dead-lettered with the reason |
+| Your app is down | The circuit breaker opens, messages wait in Kafka, and ARK resumes the moment the health check passes |
+| A message breaks a data rule | Rejected, dead-lettered, or tagged and let through, your choice |
+| ARK crashes mid-message | Nothing was committed past it, so it is delivered again with the same correlation ID |
+| A node joins or leaves the cluster | Workers move to the live nodes in place, without restarting pipelines |
 
-## What works today
+## Features
 
-Everything below is implemented and verified against a live
-docker-compose Kafka, not just designed on paper.
+<table>
+<tr>
+<td width="50%" valign="top">
+
+**Delivery you can trust**<br>
+At-least-once with in-order commits. A message that can't finish is
+retried in place, never skipped. Stable correlation IDs make your app
+idempotent in one line.
+
+</td>
+<td width="50%" valign="top">
+
+**Data rules**<br>
+Declare what a valid message looks like: required fields, types, ranges,
+lengths, patterns, enums, formats (email, uuid, date-time, url, ipv4),
+size, unknown fields, key and headers.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+**Rules without code**<br>
+Route before or after the callback with
+[expr](https://expr-lang.org) conditions: auto-approve small orders,
+dead-letter obvious fraud, send big orders to another topic.
+
+</td>
+<td valign="top">
+
+**Dead letters you can act on**<br>
+Browse, retry or discard DLQ and reject entries over the API, each with
+its reason and time. Redrive them on a schedule with a limit. What was
+handled stays handled across restarts.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+**Built-in AI assistant (MCP)**<br>
+Any MCP client can ask what is happening and why, explain an error, find
+weird data, suggest tuning, and draft a pipeline that is applied only
+after you confirm a preview.
+
+</td>
+<td valign="top">
+
+**Cluster without a new dependency**<br>
+Run more nodes and they act as one: shared config, cluster-wide pause, a
+leader that places workers by label, fast failover. Coordination runs on
+Kafka itself. No etcd, no ZooKeeper.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+**Protects your app**<br>
+Per-pipeline concurrency limits, a circuit breaker with health probes,
+backpressure on 429, and load balancing over several backends
+(round robin, least in flight, sticky partition).
+
+</td>
+<td valign="top">
+
+**Secure and observable**<br>
+Viewer, operator and admin tokens for the API and separately for MCP,
+per-pipeline AI access, audit logs. Prometheus metrics for throughput,
+latency, lag, oldest uncommitted age, breaker state and rule matches.
+
+</td>
+</tr>
+</table>
+
+## Your first pipeline
+
+Point ARK at your own topic and endpoint. This is a complete, working
+config:
 
 ```yaml
+brokers: [kafka:9092]
+timezone: Asia/Bangkok           # every time ARK shows you is ISO 8601 in this zone
+
 pipelines:
   - name: order-processor
     source_topic: orders.raw
     destination_topic: orders.processed
-    dead_letter_topic: orders.dlq
-    reject_topic: orders.rejected
-    consumer_group: order-processor-group
-    workers: 3                     # 3 consumer-group members in one process
+    dead_letter_topic: orders.dlq  # required: failures always land somewhere visible
+    reject_topic: orders.rejected  # optional: bad data goes here instead of the DLQ
+    consumer_group: order-processor
+    workers: 3                     # 3 consumers sharing the topic's partitions
 
     target:
       url: http://order-app:8080/process
-      health_check_url: http://order-app:8080/
-      health_check_interval_seconds: 5
+      health_check_url: http://order-app:8080/health
 
     retry:
       max_attempts: 3
       backoff_ms: 1000
+
+    data_rules:
+      on_violation: reject         # or dead_letter, or tag
+      fields:
+        - {path: order_id, required: true, type: string}
+        - {path: amount, required: true, type: number, min: 0}
+        - {path: email, format: email}
+
+    fast_path_rules:
+      - name: auto-approve-small
+        condition: "data.amount < 100"
+        action: pass_through
 ```
 
-That's the whole config for a working pipeline. With it:
+Run it:
 
-- **Nothing is lost on a crash or a failure.** Offsets only commit
-  after a successful produce, so killing the process mid-message just
-  means the next worker to pick up that partition redelivers it. A
-  message that can't be completed is retried in place, and nothing after
-  it on its partition is committed until it is. That's why
-  `dead_letter_topic` is required: a message always ends up somewhere
-  you can see it, never skipped. (`on_exhausted: block` opts out and
-  keeps retrying instead.)
-- **Every message carries a stable `X-Correlation-ID`,** derived from its
-  topic, partition and offset, so a retry or a redelivery after a crash
-  reaches your app with the same ID. Use it as an idempotency key:
-  delivery is at-least-once, and this is how your app spots a repeat.
-- **Order per key is kept** (`ordering: per_key`, the default): messages
-  with the same key reach your app one at a time and in order, while
-  different keys run in parallel. `per_partition` and `none` are also
-  available.
-- **A callback that returns 4xx** (the message itself is the problem,
-  not the app) routes to `reject_topic` with no retry, or to the DLQ if
-  there is no `reject_topic`. 408, 425 and 429 are the exception: they
-  mean "come back later", so ARK waits (honoring `Retry-After`) and
-  tries again without spending a retry. `target.reject_statuses`
-  overrides which codes count as rejects.
-- **Retries that fail past `max_attempts`** (5xx, timeout, a network
-  error) don't flood `dead_letter_topic` forever once the destination
-  is genuinely down. The circuit breaker opens, ARK stops hammering
-  your app, and the message just blocks in place instead of getting
-  dead-lettered. It's still sitting in `orders.raw`, right where it
-  was, waiting.
-- **Your app coming back is all it takes to unstick things.** Set
-  `health_check_url` and ARK probes it while the breaker is open,
-  closing the breaker the moment it responds. No need to wait for new
-  traffic to trigger a retry. This was tested directly: 3 messages
-  queued up behind a dead endpoint, nothing lost, and all three were
-  genuinely retried and delivered the moment the app came back.
-- **`workers: 3`** means Kafka's own consumer-group protocol splits
-  `orders.raw`'s partitions across 3 goroutines in this one process.
-  Scale a single pipeline up without deploying anything new.
-- **Pause it without killing the process:**
-  `POST /api/v1/pipelines/order-processor/pause` (and `/resume`). A
-  pause holds across config reloads and restarts of the pipeline.
-- **See it live.** `GET /metrics` (Prometheus) exposes throughput,
-  callback latency, consumer lag, circuit breaker state, worker
-  liveness, and a last-activity timestamp per pipeline and worker, so
-  "is this actually flowing data right now" has a direct answer
-  instead of something you have to infer.
-- **`fast_path_rules` skip the callback entirely** for messages that
-  match a condition, before ARK ever calls your app:
+```bash
+docker run -v $PWD/config.yaml:/etc/bridge/config.yaml -p 8080:8080 \
+  -e ARK_API_ADMIN_TOKENS=change-me ark   # built from bridge-engine/Dockerfile
+# or: cd bridge-engine && go run ./cmd/bridge -config config.yaml
+```
 
-  ```yaml
-  fast_path_rules:
-    - name: auto-approve-small-orders
-      condition: "data.amount < 1000 && data.risk_score < 0.3"
-      action: pass_through
-    - name: suspicious-fraud-flag
-      condition: "data.risk_score > 0.9"
-      action: dead_letter
-  ```
+ARK creates the source, dead-letter and reject topics if they are missing,
+hot-reloads the file when you call
+`POST /api/v1/config/reload`, and refuses an invalid config before it
+touches a running pipeline. Every option is documented in
+[`config.example.yaml`](bridge-engine/config.example.yaml).
 
-  `pass_through`, `reject`, `drop`, and `dead_letter` all route
-  without a callback round trip. Conditions use
-  [`expr-lang/expr`](https://expr-lang.org) syntax (`nil`, not `null`).
-- **`post_callback_rules` branch on the callback's response instead,**
-  after it comes back: check whether it actually succeeded by
-  app-level standards (not just HTTP status), and route the result to
-  a different Kafka topic or a different HTTP endpoint entirely,
-  without a second callback:
+Your app receives a normal HTTP POST:
 
-  ```yaml
-  post_callback_rules:
-    - name: high-value-order-alert
-      condition: "response.status == 200 && response.body.amount > 10000"
-      action: transform_route
-      destination_override: orders.high-value   # or webhook_override: http://...
-  ```
+```http
+POST /process HTTP/1.1
+Content-Type: application/json
+X-Correlation-ID: 30176dd15e71f315051f562780bb548d
 
-- **Browse, retry, or discard what landed in `dead_letter_topic` or
-  `reject_topic`,** without a separate Kafka console tool:
-  `GET /api/v1/pipelines/order-processor/dlq` lists recent entries,
-  `POST .../dlq/{id}/retry` re-enters the message into the pipeline
-  from `source_topic` (fast_path_rules and all), `POST .../dlq/{id}/discard`
-  removes it from the list. Same routes under `.../reject`. What was
-  retried or discarded is recorded in Kafka, so it stays handled after a
-  restart and can't be retried twice. `dead_letter_redrive:
-  {after_seconds: 3600, max_times: 3}` retries dead letters on a
-  schedule and stops after `max_times`, leaving the rest for a human.
-- **Spread a pipeline's callbacks across more than one backend
-  instance** with `target.mode: multi_url`:
+{"order_id":"A1","amount":10}
+```
 
-  ```yaml
-  target:
-    mode: multi_url
-    urls:
-      - http://order-app-1:8080/process
-      - http://order-app-2:8080/process
-    health_check_urls:
-      - http://order-app-1:8080/
-      - http://order-app-2:8080/
-    health_check_interval_seconds: 5
-    strategy: round_robin   # or least_inflight, sticky_partition
-  ```
+Whatever it returns with a 2xx becomes the message on
+`destination_topic`.
 
-  Each URL is probed independently on `health_check_urls`; a message
-  only ever goes to a healthy one, and if every URL is down the
-  message blocks in place instead of getting dead-lettered, the same
-  way a single_url pipeline behaves when its circuit breaker is open.
-  `sticky_partition` keeps a given Kafka partition landing on the same
-  backend for as long as that backend stays healthy, useful when the
-  backend keeps per-partition local state.
-- **Point Claude, or any MCP client, at a running ARK.** Set
-  `ARK_MCP_VIEWER_TOKENS` / `ARK_MCP_OPERATOR_TOKENS` /
-  `ARK_MCP_ADMIN_TOKENS` and ARK mounts a real MCP server at `/mcp` on
-  the same port as the REST API, calling the same internal registry
-  the REST handlers use rather than a separate reimplementation. A
-  `viewer` token can ask what the error rate on order-processor is
-  right now or list what landed in the DLQ; `operator` and `admin`
-  tokens can also pause, resume, retry a DLQ entry, or discard one.
-  Every pipeline also carries its own `mcp_access`
-  (`read_only` / `read_write` / `none`), so a token's scope is a
-  ceiling, not a grant: an `operator` token still can't write to a
-  pipeline whose `mcp_access` is `read_only`. Every write call is
-  audit-logged with the scope, action, pipeline, and entry, never the
-  token itself. Verified against a scripted MCP client covering all
-  three scopes, and separately against two different local models
-  (`qwen2.5:7b`, `qwen3:8b` via Ollama) driving the server from plain
-  English with no hardcoded tool-call logic, to check the tool
-  descriptions actually explain themselves rather than only making
-  sense to one model.
+## Reference
 
-## Running more than one ARK
+<details>
+<summary><b>Delivery guarantees in detail</b></summary>
 
-To add capacity, you don't need anything special: run more copies with
-the same `consumer_group` and Kafka splits the partitions between them.
+- **Offsets commit only after the result is produced**, and in order. A
+  message that can't be completed blocks the commits behind it on its
+  partition until it is, so a crash can never skip it. Killing ARK
+  mid-message means it is delivered again.
+- **`X-Correlation-ID`** is derived from topic, partition and offset, so a
+  retry or a redelivery after a crash carries the same ID. Delivery is
+  at-least-once; use the ID as an idempotency key.
+- **Ordering.** `ordering: per_key` (default) sends messages with the same
+  key one at a time and in order, while different keys run in parallel.
+  `per_partition` and `none` are also available.
+- **Status codes.** 4xx means the message is the problem: it goes to
+  `reject_topic` (or the DLQ without one) with no retry. 408, 425 and 429
+  mean "later": ARK waits, honoring `Retry-After`, without spending a
+  retry. `target.reject_statuses` overrides which codes are rejects.
+- **When the app is down,** the circuit breaker opens after
+  `circuit_breaker.failure_threshold` failures in a row and messages wait
+  in Kafka instead of flooding the DLQ. With `health_check_url` set, ARK
+  resumes as soon as the app answers.
+- **`on_exhausted: block`** keeps retrying forever instead of
+  dead-lettering, for pipelines where order matters more than progress.
+- Every routed message carries `X-Ark-Reason`, `X-Ark-Pipeline` and
+  `X-Ark-Failed-At` headers so you can see why it ended up there.
 
-Turn on cluster mode when you want the copies to act as one ARK:
+</details>
+
+<details>
+<summary><b>Data rules</b></summary>
+
+```yaml
+data_rules:
+  on_violation: tag              # reject (default) | dead_letter | tag
+  allow_unknown_fields: false    # flag top-level fields no rule mentions
+  max_bytes: 65536
+  key: {required: true, pattern: "^[A-Z]{2}-\\d+$"}
+  headers:
+    - {name: source, enum: [web, mobile, pos]}
+  fields:
+    - {path: order_id, required: true, type: string, max_length: 32}
+    - {path: amount, type: number, min: 0, max: 1000000}
+    - {path: currency, enum: [THB, USD, EUR]}
+    - {path: customer.email, format: email}
+    - {path: created_at, format: date-time}
+```
+
+Types: `string`, `number`, `integer`, `boolean`, `object`, `array`,
+`null`. Formats: `email`, `uuid`, `date-time`, `date`, `url`, `ipv4`.
+With `on_violation: tag` the message goes through with an
+`X-Ark-Violations` header, a safe way to start. Not sure what to write?
+Ask the assistant to `check_data` on a pipeline: it samples real
+messages, reports odd fields, mixed types, outliers and bad keys, and
+drafts the rules for you.
+
+</details>
+
+<details>
+<summary><b>Fast path and post-callback rules</b></summary>
+
+```yaml
+fast_path_rules:                  # before the callback
+  - name: auto-approve-small-orders
+    condition: "data.amount < 1000 && data.risk_score < 0.3"
+    action: pass_through          # pass_through | reject | drop | dead_letter
+  - name: obvious-fraud
+    condition: "data.risk_score > 0.9"
+    action: dead_letter
+
+post_callback_rules:              # after the callback, on its answer
+  - name: high-value-order-alert
+    condition: "response.status == 200 && response.body.amount > 10000"
+    action: transform_route
+    destination_override: orders.high-value   # or webhook_override: http://...
+```
+
+Conditions use [expr](https://expr-lang.org) syntax (`nil`, not `null`).
+
+</details>
+
+<details>
+<summary><b>Dead letters and redrive</b></summary>
+
+- `GET /api/v1/pipelines/{name}/dlq` lists recent entries with reason,
+  time, correlation ID and redrive count.
+- `POST .../dlq/{id}/retry` sends the message through the pipeline again
+  (rules and all); `POST .../dlq/{id}/discard` removes it from the list.
+- The same routes exist under `.../reject`.
+- What was retried or discarded is recorded in Kafka, so it stays handled
+  after a restart and can't be retried twice.
+- `dead_letter_redrive: {after_seconds: 3600, max_times: 3}` retries dead
+  letters on a schedule and leaves the rest for a human.
+
+</details>
+
+<details>
+<summary><b>Several backends for one pipeline</b></summary>
+
+```yaml
+target:
+  mode: multi_url
+  urls:
+    - http://order-app-1:8080/process
+    - http://order-app-2:8080/process
+  health_check_urls:
+    - http://order-app-1:8080/health
+    - http://order-app-2:8080/health
+  strategy: round_robin   # or least_inflight, sticky_partition
+```
+
+Each URL is probed on its own and only healthy ones get traffic. If every
+URL is down, messages wait in Kafka. `sticky_partition` keeps a partition
+on the same backend while it stays healthy.
+
+</details>
+
+<details>
+<summary><b>AI assistant over MCP</b></summary>
+
+Set `ARK_MCP_VIEWER_TOKENS`, `ARK_MCP_OPERATOR_TOKENS` or
+`ARK_MCP_ADMIN_TOKENS` (comma-separated) and ARK serves MCP at `/mcp` on
+the API port. Any MCP client and any model can use it.
+
+| Ask | Tool the assistant uses |
+|---|---|
+| "Hi, what can you do?" | `get_help`, `get_overview` |
+| "Why is orders slow?" | `diagnose_pipeline`: what, why, what to do |
+| "What does this error mean?" | `explain_error`: where it comes from and the fix |
+| "What happened at 3am?" | `get_recent_events` |
+| "Any weird data coming in?" | `check_data`, `test_message` |
+| "How do I handle 2000 msg/s?" | `recommend_tuning` |
+| "Create a pipeline from A to B" | `get_pipeline_schema`, `validate_pipeline_config`, `create_pipeline` |
+
+Every conversation starts with `interpret_request`, which works out what
+you mean (Thai, English, simplified and traditional Chinese, plus your
+own words through `assistant.lexicon`) and which pipeline you are talking
+about, and asks back when something is unclear.
+
+Access is layered. A token's scope is a ceiling: `viewer` reads,
+`operator` also pauses, resumes, retries and discards, `admin` also
+creates and changes pipelines. Each pipeline's `mcp_access`
+(`read_only`, `read_write`, `none`) is a second limit. Config changes are
+two steps: the first call returns a preview and a diff, and only a second
+call with the confirm token applies it. Every write is audit-logged.
+
+</details>
+
+<details>
+<summary><b>Running more than one ARK</b></summary>
+
+Without anything special, more copies with the same `consumer_group`
+already split the work. Turn on cluster mode to make them act as one:
 
 ```yaml
 cluster:
   enabled: true
   name: prod            # namespaces ARK's internal topics
-  labels: {zone: dmz}   # optional, used by node_selector below
+  labels: {zone: dmz}   # used by placement.node_selector
 ```
 
-- **One config.** Pipeline config lives in a compacted Kafka topic. The
-  first node seeds it from its file; after that, a reload on any node
-  publishes to every node, and an invalid config is refused before it
-  spreads. `GET /api/v1/cluster` shows which config version each node
-  runs.
-- **One control surface.** Pause through any node and the pipeline
-  pauses everywhere, including on nodes that start it later.
-  `GET /api/v1/cluster/pipelines` returns cluster-wide numbers with a
-  per-node breakdown, and every node can browse, retry and discard any
-  pipeline's DLQ.
-- **Placement.** An elected leader spreads each pipeline's `workers`
-  across live nodes, never more than the source topic has partitions,
-  and only onto nodes matching the pipeline's
-  `placement.node_selector` (for a target only reachable from one
-  network zone, or to keep tenants apart). Membership changes add or
-  remove workers in place instead of restarting pipelines.
-- **Failover.** A node that stops cleanly hands its work over in about
-  a second; one that crashes is replaced after `node_timeout_seconds`.
-  Scheduled DLQ redrive runs on the leader only.
+- **One config.** Pipeline config lives in a compacted Kafka topic. A
+  reload on any node reaches every node, and an invalid config is
+  refused before it spreads.
+- **One control surface.** Pause through any node and the pipeline pauses
+  everywhere. `GET /api/v1/cluster/pipelines` returns cluster-wide
+  numbers with a per-node breakdown, and any node can browse and retry
+  any pipeline's DLQ.
+- **Placement.** An elected leader spreads each pipeline's workers across
+  live nodes matching `placement.node_selector`, never more than the topic
+  has partitions, and adds or removes workers in place.
+- **Failover.** A node that stops cleanly hands over in about a second; one
+  that crashes is replaced after `node_timeout_seconds`.
 
-There's no etcd or Raft cluster to operate: coordination reuses Kafka's
-own consumer-group protocol and compacted topics. See PLAN.md, Phase 4b
-and 4c, for the design and what was verified.
+</details>
 
-## Where it's going
+<details>
+<summary><b>REST API</b></summary>
 
-Designed in detail in [PLAN.md](PLAN.md), not built yet:
+Every route except `/healthz` and `/metrics` needs a bearer token.
+`ARK_API_VIEWER_TOKENS` can read, `ARK_API_OPERATOR_TOKENS` can also
+pause, resume, retry and discard, and `ARK_API_ADMIN_TOKENS` can also
+reload config. With none set, the API only answers localhost. These are
+separate from the MCP tokens.
 
-- **MCP config tools.** `validate_pipeline_config`,
-  `apply_pipeline_config`, `create_pipeline`, `get_pipeline_schema`,
-  and `list_topics`, so an agent can draft a new pipeline from a plain
-  language description and, once you confirm, apply it (through the
-  cluster config topic in cluster mode).
-- **Dashboard UI.** A separate deployable service that talks to ARK's
-  REST API: pipeline list, live metrics, a DLQ browser, all without
-  touching Kafka directly.
+| Route | What it does |
+|---|---|
+| `GET /healthz` | Liveness |
+| `GET /metrics` | Prometheus metrics |
+| `GET /api/v1/pipelines` | Status of every pipeline worker |
+| `GET /api/v1/pipelines/{name}` | Status of one pipeline |
+| `POST /api/v1/pipelines/{name}/pause`, `/resume` | Pause or resume |
+| `GET /api/v1/pipelines/{name}/dlq`, `/reject` | Recent entries |
+| `GET .../dlq/{id}`, `.../reject/{id}` | One entry |
+| `POST .../dlq/{id}/retry`, `/discard` | Retry or discard (same under `/reject`) |
+| `POST /api/v1/config/reload` | Re-read the config |
+| `GET /api/v1/cluster` | Members, leader, config versions |
+| `GET /api/v1/cluster/pipelines` | Cluster-wide pipeline numbers |
 
-## Repo layout
+</details>
 
-- `bridge-engine/` is the Go engine (consumer, rule engine, callback
-  client, producer, REST API, MCP server).
-- `bridge-ui/` is the dashboard UI, deployed separately from the
-  engine.
+<details>
+<summary><b>Metrics</b></summary>
 
-## Running locally
+`ark_messages_processed_total`, `ark_messages_rejected_total`,
+`ark_messages_dead_lettered_total`, `ark_messages_failed_total`,
+`ark_messages_backpressured_total`, `ark_callback_duration_seconds`,
+`ark_data_rule_violations_total`, `ark_consumer_lag`,
+`ark_oldest_uncommitted_age_seconds`, `ark_circuit_breaker_open`,
+`ark_pipeline_paused`, `ark_worker_up`,
+`ark_last_activity_timestamp_seconds`, `ark_fast_path_rule_matches_total`,
+`ark_post_callback_rule_matches_total`. All labeled by pipeline and
+tenant.
 
-```
-docker compose up
-```
+</details>
 
-This starts a single-node Kafka broker and the bridge engine wired to
-`bridge-engine/config.example.yaml`. Kafka's own data directory is a
-named volume by default. Point it at another disk or mount with:
+## Roadmap
 
-```
-KAFKA_DATA_DIR=/mnt/other-disk/kafka docker compose up
-```
+- **ARK Console:** one web UI to run everything: design pipelines on a
+  drag-and-drop canvas with live data flowing through it, build rules
+  visually, tail messages between stages, restart and scale, and manage
+  AI access.
+- **Projects:** group pipelines into projects, each with its own AI access
+  level and its own MCP endpoints.
+- **Bring any model:** connect the built-in assistant to any provider
+  (Anthropic, OpenAI, Gemini, or any OpenAI-compatible API).
 
-To run the engine directly:
+The full plan, with the reasoning behind every decision, is in
+[PLAN.md](PLAN.md).
 
-```
-cd bridge-engine
-go run ./cmd/bridge -config config.example.yaml
-```
+## Repository
 
-## API
-
-Every route except `/healthz` and `/metrics` needs a bearer token. Set
-`ARK_API_VIEWER_TOKENS` (GET), `ARK_API_OPERATOR_TOKENS` (pause, resume,
-DLQ retry and discard) and `ARK_API_ADMIN_TOKENS` (config reload), each a
-comma-separated list. With none set, the API only answers requests from
-localhost. These are separate from the `ARK_MCP_*` tokens, so a token
-given to an agent for MCP can't be used against REST to get around
-`mcp_access`.
-
-- `GET /healthz`: liveness
-- `GET /metrics`: Prometheus metrics
-- `GET /api/v1/pipelines`: status for every pipeline worker
-- `GET /api/v1/pipelines/{name}`: status for one pipeline's workers
-- `POST /api/v1/pipelines/{name}/pause` and `/resume`
-- `GET /api/v1/pipelines/{name}/dlq` and `/reject`: recent entries
-- `GET /api/v1/pipelines/{name}/dlq/{id}` and `/reject/{id}`: one entry
-- `POST .../dlq/{id}/retry` and `/discard` (same for `/reject`)
-- `POST /api/v1/config/reload`: re-read the config file now
-- `GET /api/v1/cluster`: cluster membership, leader, config versions
-- `GET /api/v1/cluster/pipelines`: cluster-wide pipeline numbers
+| Path | What's there |
+|---|---|
+| [`bridge-engine/`](bridge-engine) | The Go engine: consumer, rules, callback client, producer, REST API, MCP server, cluster |
+| [`bridge-ui/`](bridge-ui) | The ARK Console (in progress) |
+| [`brand/`](brand) | Logo and colors |
+| [`docs/`](docs) | The website |
 
 ## Contributing
 
-PRs welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for dev setup,
-what a good PR looks like, and where ARK's scope is deliberately
-bounded (worth reading before proposing something big).
+Issues and pull requests are welcome. Read
+[CONTRIBUTING.md](CONTRIBUTING.md) for the dev setup and where ARK's scope
+is deliberately bounded, which is worth a look before proposing something
+big.
 
 ## License
 
-Apache License 2.0. See [LICENSE](LICENSE).
+[Apache License 2.0](LICENSE)
