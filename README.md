@@ -63,11 +63,28 @@ pipelines:
 
 That's the whole config for a working pipeline. With it:
 
-- **Nothing is lost on a crash.** Offsets only commit after a
-  successful produce, so killing the process mid-message just means
-  the next worker to pick up that partition redelivers it.
+- **Nothing is lost on a crash or a failure.** Offsets only commit
+  after a successful produce, so killing the process mid-message just
+  means the next worker to pick up that partition redelivers it. A
+  message that can't be completed is retried in place, and nothing after
+  it on its partition is committed until it is. That's why
+  `dead_letter_topic` is required: a message always ends up somewhere
+  you can see it, never skipped. (`on_exhausted: block` opts out and
+  keeps retrying instead.)
+- **Every message carries a stable `X-Correlation-ID`,** derived from its
+  topic, partition and offset, so a retry or a redelivery after a crash
+  reaches your app with the same ID. Use it as an idempotency key:
+  delivery is at-least-once, and this is how your app spots a repeat.
+- **Order per key is kept** (`ordering: per_key`, the default): messages
+  with the same key reach your app one at a time and in order, while
+  different keys run in parallel. `per_partition` and `none` are also
+  available.
 - **A callback that returns 4xx** (the message itself is the problem,
-  not the app) routes to `reject_topic` with no retry.
+  not the app) routes to `reject_topic` with no retry, or to the DLQ if
+  there is no `reject_topic`. 408, 425 and 429 are the exception: they
+  mean "come back later", so ARK waits (honoring `Retry-After`) and
+  tries again without spending a retry. `target.reject_statuses`
+  overrides which codes count as rejects.
 - **Retries that fail past `max_attempts`** (5xx, timeout, a network
   error) don't flood `dead_letter_topic` forever once the destination
   is genuinely down. The circuit breaker opens, ARK stops hammering
@@ -84,7 +101,8 @@ That's the whole config for a working pipeline. With it:
   `orders.raw`'s partitions across 3 goroutines in this one process.
   Scale a single pipeline up without deploying anything new.
 - **Pause it without killing the process:**
-  `POST /api/v1/pipelines/order-processor/pause` (and `/resume`).
+  `POST /api/v1/pipelines/order-processor/pause` (and `/resume`). A
+  pause holds across config reloads and restarts of the pipeline.
 - **See it live.** `GET /metrics` (Prometheus) exposes throughput,
   callback latency, consumer lag, circuit breaker state, worker
   liveness, and a last-activity timestamp per pipeline and worker, so
@@ -125,7 +143,11 @@ That's the whole config for a working pipeline. With it:
   `GET /api/v1/pipelines/order-processor/dlq` lists recent entries,
   `POST .../dlq/{id}/retry` re-enters the message into the pipeline
   from `source_topic` (fast_path_rules and all), `POST .../dlq/{id}/discard`
-  removes it from the list. Same routes under `.../reject`.
+  removes it from the list. Same routes under `.../reject`. What was
+  retried or discarded is recorded in Kafka, so it stays handled after a
+  restart and can't be retried twice. `dead_letter_redrive:
+  {after_seconds: 3600, max_times: 3}` retries dead letters on a
+  schedule and stops after `max_times`, leaving the rest for a human.
 - **Spread a pipeline's callbacks across more than one backend
   instance** with `target.mode: multi_url`:
 
@@ -169,6 +191,44 @@ That's the whole config for a working pipeline. With it:
   descriptions actually explain themselves rather than only making
   sense to one model.
 
+## Running more than one ARK
+
+To add capacity, you don't need anything special: run more copies with
+the same `consumer_group` and Kafka splits the partitions between them.
+
+Turn on cluster mode when you want the copies to act as one ARK:
+
+```yaml
+cluster:
+  enabled: true
+  name: prod            # namespaces ARK's internal topics
+  labels: {zone: dmz}   # optional, used by node_selector below
+```
+
+- **One config.** Pipeline config lives in a compacted Kafka topic. The
+  first node seeds it from its file; after that, a reload on any node
+  publishes to every node, and an invalid config is refused before it
+  spreads. `GET /api/v1/cluster` shows which config version each node
+  runs.
+- **One control surface.** Pause through any node and the pipeline
+  pauses everywhere, including on nodes that start it later.
+  `GET /api/v1/cluster/pipelines` returns cluster-wide numbers with a
+  per-node breakdown, and every node can browse, retry and discard any
+  pipeline's DLQ.
+- **Placement.** An elected leader spreads each pipeline's `workers`
+  across live nodes, never more than the source topic has partitions,
+  and only onto nodes matching the pipeline's
+  `placement.node_selector` (for a target only reachable from one
+  network zone, or to keep tenants apart). Membership changes add or
+  remove workers in place instead of restarting pipelines.
+- **Failover.** A node that stops cleanly hands its work over in about
+  a second; one that crashes is replaced after `node_timeout_seconds`.
+  Scheduled DLQ redrive runs on the leader only.
+
+There's no etcd or Raft cluster to operate: coordination reuses Kafka's
+own consumer-group protocol and compacted topics. See PLAN.md, Phase 4b
+and 4c, for the design and what was verified.
+
 ## Where it's going
 
 Designed in detail in [PLAN.md](PLAN.md), not built yet:
@@ -176,14 +236,8 @@ Designed in detail in [PLAN.md](PLAN.md), not built yet:
 - **MCP config tools.** `validate_pipeline_config`,
   `apply_pipeline_config`, `create_pipeline`, `get_pipeline_schema`,
   and `list_topics`, so an agent can draft a new pipeline from a plain
-  language description and, once you confirm, apply it. Waiting on
-  Phase 4's hot-reload, since there is no live config to apply to yet.
-- **ARK Cluster.** Run several ARK processes across machines and let
-  them split a pipeline's workers automatically, with failover if one
-  dies. No etcd, no separate Raft cluster to operate: it reuses
-  Kafka's own consumer-group coordination as the election and
-  placement mechanism, since ARK already depends on Kafka being up
-  anyway.
+  language description and, once you confirm, apply it (through the
+  cluster config topic in cluster mode).
 - **Dashboard UI.** A separate deployable service that talks to ARK's
   REST API: pipeline list, live metrics, a DLQ browser, all without
   touching Kafka directly.
@@ -218,6 +272,14 @@ go run ./cmd/bridge -config config.example.yaml
 
 ## API
 
+Every route except `/healthz` and `/metrics` needs a bearer token. Set
+`ARK_API_VIEWER_TOKENS` (GET), `ARK_API_OPERATOR_TOKENS` (pause, resume,
+DLQ retry and discard) and `ARK_API_ADMIN_TOKENS` (config reload), each a
+comma-separated list. With none set, the API only answers requests from
+localhost. These are separate from the `ARK_MCP_*` tokens, so a token
+given to an agent for MCP can't be used against REST to get around
+`mcp_access`.
+
 - `GET /healthz`: liveness
 - `GET /metrics`: Prometheus metrics
 - `GET /api/v1/pipelines`: status for every pipeline worker
@@ -226,6 +288,9 @@ go run ./cmd/bridge -config config.example.yaml
 - `GET /api/v1/pipelines/{name}/dlq` and `/reject`: recent entries
 - `GET /api/v1/pipelines/{name}/dlq/{id}` and `/reject/{id}`: one entry
 - `POST .../dlq/{id}/retry` and `/discard` (same for `/reject`)
+- `POST /api/v1/config/reload`: re-read the config file now
+- `GET /api/v1/cluster`: cluster membership, leader, config versions
+- `GET /api/v1/cluster/pipelines`: cluster-wide pipeline numbers
 
 ## Contributing
 

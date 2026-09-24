@@ -8,9 +8,9 @@ Owner: ekdanai.kk@gmail.com
 License: Apache License 2.0
 Status: Phases 1 to 5 and 4b (cluster v1) done, Phase 6 core done.
 A full review on 2026-09-24 found message-loss and auth gaps, tracked in
-"Phase 0: Hardening" at the top of §6. The data-correctness and security
-items are fixed and verified live; B4, B6 and T1 remain, plus cluster
-v2 (Phase 4c). See checkboxes below.
+"Phase 0: Hardening" at the top of §6. All of Phase 0 except T1
+(batching, deliberately deferred) is fixed and verified live, and
+cluster v2 (Phase 4c) is built. Next: MCP config tools, then the UI.
 CI (`.github/workflows/ci.yml`) runs build/vet/test, govulncheck,
 gosec, Semgrep, OSV-Scanner, Gitleaks, and a Trivy image scan on
 every PR.
@@ -269,18 +269,30 @@ and a live check against docker-compose Kafka before it is ticked.
       per-run state, so any reload or placement change resumes a
       pipeline an operator deliberately paused during an outage. Fix:
       persist pause state (see cluster v2 control topic, C1).
-- [ ] **B4. The DLQ browser forgets retries and discards.** It never
+- [x] **B4. The DLQ browser forgets retries and discards.** It never
       commits and keeps state in memory, so after a restart retried or
       discarded entries come back and can be retried twice. Fix: keep
       entry state (retried/discarded) in a compacted topic and skip
       those on reload.
 - [x] **B5. Callback timeout is hardcoded to 30s.** Make it
       `target.timeout_ms`.
-- [ ] **B6. Head-of-line blocking on commit.** One message stuck in
+- [x] **B6. Head-of-line blocking on commit.** One message stuck in
       retry holds back commits of every later message on the
       partition, so a crash at that moment redelivers a large batch.
       Document it, expose "oldest uncommitted age" as a metric, and let
-      B2's per-key lanes limit the blast radius.
+      B2's per-key lanes limit the blast radius. Done:
+      `ark_oldest_uncommitted_age_seconds` per worker.
+
+**Found by a second code-review pass over the fixes themselves
+(done):** with no DLQ, a 4xx or failure retried in place forever and
+re-posted the callback each time (fixed by requiring
+`dead_letter_topic` unless `on_exhausted: block`, with rejects falling
+back to the DLQ); a worker could hang on a fetch error; "caught up" on a
+compacted topic could never be reached once compaction removed the last
+record (fixed with one shared tailer that uses reader lag and an idle
+timeout); redrive missed pipelines not running on the leader; 408
+didn't honor `Retry-After`; stale per-worker gauges; unbounded DLQ
+state; and only the first broker was ever dialed.
 
 **Found while fixing the above (done):**
 - [x] **H7. Correlation ID changed on every attempt.** It was random per
@@ -307,7 +319,12 @@ old binary sent a 429'd message to `reject_topic`, the new one honored
 operator session replayed with a viewer token gets 403.
 
 **Throughput (T, when a real deployment needs it):**
-- [ ] **T1. One HTTP call per message caps throughput.** Ceiling is
+- [ ] **T1. One HTTP call per message caps throughput.** Still open,
+      and deliberately so for now: T0 removed the 1s-per-produce stall
+      that was the real bottleneck (about 30x faster measured), and
+      batching changes the callback contract (arrays in, per-item
+      results out, partial failures), so it should wait for a
+      deployment that actually needs more than the per-message ceiling. Ceiling is
       roughly `workers x max_in_flight / callback latency` (4 x 10 /
       50ms is about 800 msg/s). Add an optional batch mode
       (`target.batch_size`, `target.batch_linger_ms`) that posts an
@@ -721,7 +738,12 @@ code, odd-node-count constraint) that directly contradicts §3's
 differentiation bet. Revisit only if the Kafka-coordinator approach
 proves unreliable in practice, not preemptively.
 
-#### Phase 4c: ARK Cluster v2 (make the cluster worth running)
+#### Phase 4c: ARK Cluster v2 (make the cluster worth running), mostly done
+
+Status: C1, C2, C4, C5, C6 and C7 are built and verified live on three
+nodes; C3 is built for the DLQ (every node reads it directly, state is
+shared, redrive runs on the leader) but not for shared health probing.
+See the per-item notes.
 
 **What changes in purpose.** v1 treated the cluster as a way to spread
 workers, which Kafka already does. v2 treats it as one logical ARK
@@ -732,7 +754,7 @@ if all you need is more throughput, run more copies with the same
 `consumer_group` and skip cluster mode; turn it on when you want the
 features below.
 
-**C1. One control plane from any node.** Every write operation (pause,
+**C1. One control plane from any node (done).** Every write operation (pause,
 resume, DLQ retry/discard, config apply) becomes a record on a
 compacted `__ark_<cluster>_control` topic, keyed by pipeline. Every
 node applies it, so pausing through any node pauses the pipeline
@@ -742,7 +764,7 @@ node also includes per-pipeline counters in its heartbeat, so `GET
 whole cluster's numbers, with a per-node breakdown. The Dashboard UI
 and agents talk to one address behind a load balancer.
 
-**C2. Config distribution** (designed above, now scheduled): pipeline
+**C2. Config distribution (done):** pipeline
 config lives in the compacted `__ark_<cluster>_pipeline_config` topic
 with a monotonically increasing version. The local YAML only seeds an
 empty topic. Every node reports the config version it runs in its
@@ -751,7 +773,13 @@ version, and `GET /api/v1/cluster` flags any node that is behind. This
 removes the "every node must have the same file" requirement and is
 what MCP `apply_pipeline_config` / `create_pipeline` write to.
 
-**C3. Leader-only singleton jobs.** Some jobs must run once in the
+**C3. Leader-only singleton jobs (DLQ part done, health probing not
+started).** Built differently than first drafted for the DLQ: instead of
+the leader owning the browser, every node reads the DLQ partitions
+directly and the retried/discarded state lives in a shared compacted
+topic, which gives every node the same view without a handoff when the
+leader changes. Redrive (`dead_letter_redrive`) does run on the leader
+only. Some jobs must run once in the
 cluster, not once per node, and that is where leader election actually
 pays off:
 - owning the DLQ and reject browsers, so every node's API shows the
@@ -762,7 +790,7 @@ pays off:
   uses the same healthy/unhealthy view instead of each probing
   separately.
 
-**C4. Placement that respects labels, not just counts.** Nodes declare
+**C4. Placement that respects labels, not just counts (done).** Nodes declare
 `cluster.labels` (for example `zone: dmz`, `tenant: team-a`,
 `egress: partner-net`). Pipelines declare `placement.node_selector`.
 The leader only places a pipeline on matching nodes. Real uses: a
@@ -771,7 +799,10 @@ hard tenant isolation, or keeping a heavy pipeline off nodes that
 serve latency-sensitive ones. Worker counts are capped at the source
 topic's partition count so no idle consumers are placed.
 
-**C5. Scale in place, no stop-the-world.** Changing a node's share
+**C5. Scale in place, no stop-the-world (done, except the assignor).**
+kafka-go only implements eager rebalancing, so the cooperative-sticky
+part isn't possible without changing Kafka client; the pipeline itself
+no longer restarts, only its consumer group rebalances. Changing a node's share
 adds or removes individual runners instead of restarting the pipeline,
 and consumers use the cooperative-sticky assignor so only the moved
 partitions pause during a rebalance. Placement is published only when
@@ -792,9 +823,10 @@ in one batched write.
   `group.min.session.timeout.ms`;
 - placement reconcile errors are logged and exposed as a metric.
 
-**C7. Graceful drain for rolling deploys (partly done: shutdown
-tombstone plus bounded final commits already hand a stopping node's work
-over in about 1s, measured live).** On SIGTERM a node marks
+**C7. Graceful drain for rolling deploys (done differently).** The
+shutdown heartbeat tombstone plus bounded final commits (H2) hand a
+stopping node's work over in about 1s, measured live, so the separate
+"draining" state below turned out not to be needed. On SIGTERM a node marks
 itself `draining` in its heartbeat, the leader moves its share
 immediately instead of waiting for the timeout, the node commits its
 in-flight work (Phase 0 H2) and then writes a heartbeat tombstone and
