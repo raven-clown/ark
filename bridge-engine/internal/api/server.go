@@ -6,6 +6,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/raven-clown/ark/bridge-engine/internal/cluster"
 	"github.com/raven-clown/ark/bridge-engine/internal/consumer"
 	"github.com/raven-clown/ark/bridge-engine/internal/dlq"
 )
@@ -47,7 +48,10 @@ type Reloader interface {
 	Reload() error
 }
 
-func NewServer(reg Registry, reload Reloader) http.Handler {
+// NewServer builds the REST API. clusterNode is nil when cluster mode is
+// off; GET /api/v1/cluster then reports that explicitly instead of a
+// snapshot.
+func NewServer(reg Registry, reload Reloader, clusterNode *cluster.Node) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -55,6 +59,20 @@ func NewServer(reg Registry, reload Reloader) http.Handler {
 	})
 
 	mux.Handle("GET /metrics", promhttp.Handler())
+
+	mux.HandleFunc("GET /api/v1/cluster", func(w http.ResponseWriter, r *http.Request) {
+		if clusterNode == nil {
+			writeJSON(w, http.StatusOK, map[string]any{"enabled": false})
+			return
+		}
+		status := clusterNode.StatusSnapshot()
+		writeJSON(w, http.StatusOK, map[string]any{
+			"enabled":    true,
+			"node_id":    status.NodeID,
+			"leader":     status.Leader,
+			"live_nodes": status.LiveNodes,
+		})
+	})
 
 	mux.HandleFunc("POST /api/v1/config/reload", func(w http.ResponseWriter, r *http.Request) {
 		if reload == nil {

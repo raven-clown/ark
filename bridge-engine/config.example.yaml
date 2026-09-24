@@ -1,6 +1,16 @@
 brokers:
   - kafka:9092
 
+# Opt-in: spread this file's pipelines' worker counts across multiple ARK
+# processes instead of running them all within this one. Every node must
+# be started from the same pipeline config. See PLAN.md, Phase 4b.
+# cluster:
+#   enabled: true
+#   node_id: ark-1                     # defaults to hostname + a random suffix
+#   heartbeat_interval_seconds: 5
+#   node_timeout_seconds: 20
+#   placement_interval_seconds: 5
+
 pipelines:
   - name: order-processor
     tenant: team-a

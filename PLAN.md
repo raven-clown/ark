@@ -406,7 +406,37 @@ succeeds but the webhook call fails?).
 - **Exit criteria:** two independent teams' pipelines run in one Bridge
   process without interfering with each other's throughput or config.
 
-#### Phase 4b: ARK Cluster (multi-node, opt-in)
+#### Phase 4b: ARK Cluster (multi-node, opt-in), done
+
+- [x] `cluster.enabled` opt-in config, with `node_id`,
+  `heartbeat_interval_seconds`, `node_timeout_seconds`,
+  `placement_interval_seconds`
+- [x] Heartbeat topic (`__ark_cluster_nodes`, compacted)
+- [x] Leader election via a single-partition consumer group
+  (`__ark_leader_election`)
+- [x] Placement topic (`__ark_placements`, compacted), leader computes an
+  even split of each pipeline's `workers` across live nodes
+- [x] Execution: every node narrows its local `workers` to its placement
+  share, or falls back to running a pipeline's full configured `workers`
+  if the leader hasn't decided on it yet
+- [x] Failure handling: a dead node's heartbeat goes stale, the leader
+  reassigns its share to the survivors
+- **Exit criteria:** verified against live docker-compose Kafka with two
+  `ark-bridge` processes. A 4-partition, 4-worker pipeline split 2/2
+  across both nodes; killing one node moved leadership and reassigned
+  all 4 workers to the survivor within one node-timeout window, with
+  zero message loss and zero duplication (checked via consumer group
+  offsets and exactly-once delivery to the destination topic); restarting
+  the killed node rejoined it and rebalanced back to 2/2.
+
+Config distribution (pipeline config as a compacted
+`__ark_pipeline_config` topic instead of each node's local YAML) is not
+yet built; see the note below. Today, cluster mode assumes every node is
+started from the same pipeline config, the same operational requirement
+hot-reload already has for a single node, just now spanning multiple
+nodes an operator must keep in sync themselves.
+
+The design below is what was built, kept as the design record:
 
 `workers: N` above parallelizes a pipeline across goroutines *within
 one process*. It does nothing if one machine's capacity is the actual

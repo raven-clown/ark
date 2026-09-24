@@ -11,6 +11,19 @@ import (
 )
 
 func EnsureTopic(ctx context.Context, brokers []string, topic string, partitions int) error {
+	return ensureTopic(ctx, brokers, topic, partitions, nil)
+}
+
+// EnsureCompactedTopic is like EnsureTopic but sets cleanup.policy=compact,
+// for internal topics that hold latest-value-per-key state (cluster
+// heartbeats, placements) rather than an event log.
+func EnsureCompactedTopic(ctx context.Context, brokers []string, topic string, partitions int) error {
+	return ensureTopic(ctx, brokers, topic, partitions, []kafka.ConfigEntry{
+		{ConfigName: "cleanup.policy", ConfigValue: "compact"},
+	})
+}
+
+func ensureTopic(ctx context.Context, brokers []string, topic string, partitions int, configEntries []kafka.ConfigEntry) error {
 	if partitions < 1 {
 		partitions = 1
 	}
@@ -37,6 +50,7 @@ func EnsureTopic(ctx context.Context, brokers []string, topic string, partitions
 		Topic:             topic,
 		NumPartitions:     partitions,
 		ReplicationFactor: 1,
+		ConfigEntries:     configEntries,
 	})
 	if err != nil {
 		return fmt.Errorf("creating topic %s: %w", topic, err)

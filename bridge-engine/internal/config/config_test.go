@@ -170,6 +170,72 @@ pipelines:
 	}
 }
 
+func TestClusterDefaults(t *testing.T) {
+	path := writeConfig(t, `
+brokers: [localhost:9092]
+cluster:
+  enabled: true
+pipelines:
+  - name: draft-pipeline
+    source_topic: orders.raw
+    enabled: false
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.Cluster.HeartbeatIntervalSeconds != 5 {
+		t.Errorf("expected default heartbeat_interval_seconds 5, got %d", cfg.Cluster.HeartbeatIntervalSeconds)
+	}
+	if cfg.Cluster.NodeTimeoutSeconds != 20 {
+		t.Errorf("expected default node_timeout_seconds 20, got %d", cfg.Cluster.NodeTimeoutSeconds)
+	}
+	if cfg.Cluster.PlacementIntervalSeconds != 5 {
+		t.Errorf("expected default placement_interval_seconds 5, got %d", cfg.Cluster.PlacementIntervalSeconds)
+	}
+}
+
+func TestClusterDisabledSkipsDefaults(t *testing.T) {
+	path := writeConfig(t, `
+brokers: [localhost:9092]
+pipelines:
+  - name: draft-pipeline
+    source_topic: orders.raw
+    enabled: false
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.Cluster.HeartbeatIntervalSeconds != 0 {
+		t.Errorf("expected no defaults applied when cluster.enabled is false, got heartbeat_interval_seconds %d", cfg.Cluster.HeartbeatIntervalSeconds)
+	}
+}
+
+func TestClusterNodeTimeoutMustExceedHeartbeatInterval(t *testing.T) {
+	path := writeConfig(t, `
+brokers: [localhost:9092]
+cluster:
+  enabled: true
+  heartbeat_interval_seconds: 10
+  node_timeout_seconds: 5
+pipelines:
+  - name: draft-pipeline
+    source_topic: orders.raw
+    enabled: false
+`)
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error when node_timeout_seconds <= heartbeat_interval_seconds")
+	}
+	if !strings.Contains(err.Error(), "node_timeout_seconds") {
+		t.Errorf("expected error to mention node_timeout_seconds, got: %v", err)
+	}
+}
+
 func TestTransformRouteRequiresExactlyOneOverride(t *testing.T) {
 	base := `
 brokers: [localhost:9092]

@@ -11,18 +11,22 @@ import (
 	"time"
 
 	"github.com/raven-clown/ark/bridge-engine/internal/api"
+	"github.com/raven-clown/ark/bridge-engine/internal/cluster"
 	"github.com/raven-clown/ark/bridge-engine/internal/config"
 	"github.com/raven-clown/ark/bridge-engine/internal/mcpserver"
 	"github.com/raven-clown/ark/bridge-engine/internal/orchestrator"
 )
 
-// configReloader re-reads the config file and reconciles the orchestrator's
-// running pipelines to match it. It implements api.Reloader, so it also
-// drives the manual POST /api/v1/config/reload endpoint.
+// configReloader re-reads the config file and reconciles the running
+// pipelines to match it via reconcile, which is orchestrator.Manager's own
+// Reconcile in single-node mode, or cluster.Node's ApplyConfig (adjusting
+// each pipeline's Workers to this node's placement share first) when
+// cluster mode is on. It implements api.Reloader, so it also drives the
+// manual POST /api/v1/config/reload endpoint.
 type configReloader struct {
-	path string
-	mgr  *orchestrator.Manager
-	log  *slog.Logger
+	path      string
+	reconcile cluster.ReconcileFunc
+	log       *slog.Logger
 }
 
 func (c *configReloader) Reload() error {
@@ -30,7 +34,7 @@ func (c *configReloader) Reload() error {
 	if err != nil {
 		return err
 	}
-	if errs := c.mgr.Reconcile(cfg.Pipelines); len(errs) > 0 {
+	if errs := c.reconcile(cfg.Pipelines); len(errs) > 0 {
 		for _, e := range errs {
 			c.log.Error("reconcile failed to start a pipeline", "error", e)
 		}
@@ -94,18 +98,31 @@ func main() {
 	defer stop()
 
 	mgr := orchestrator.New(ctx, cfg.Brokers, logger)
-	if errs := mgr.Reconcile(cfg.Pipelines); len(errs) > 0 {
+
+	reconcile := cluster.ReconcileFunc(mgr.Reconcile)
+	var clusterNode *cluster.Node
+	if cfg.Cluster.Enabled {
+		clusterNode = cluster.New(cfg.Brokers, cfg.Cluster, mgr.Reconcile, logger)
+		if err := clusterNode.Start(ctx); err != nil {
+			logger.Error("starting cluster node failed", "error", err)
+			os.Exit(1)
+		}
+		reconcile = clusterNode.ApplyConfig
+		logger.Info("cluster mode enabled", "node_id", cfg.Cluster.NodeID)
+	}
+
+	if errs := reconcile(cfg.Pipelines); len(errs) > 0 {
 		for _, e := range errs {
 			logger.Error("starting pipeline failed", "error", e)
 		}
 		os.Exit(1)
 	}
 
-	reload := &configReloader{path: *configPath, mgr: mgr, log: logger}
+	reload := &configReloader{path: *configPath, reconcile: reconcile, log: logger}
 	go watchFile(ctx, *configPath, 5*time.Second, reload, logger)
 
 	rootMux := http.NewServeMux()
-	rootMux.Handle("/", api.NewServer(mgr, reload))
+	rootMux.Handle("/", api.NewServer(mgr, reload, clusterNode))
 
 	mcpTokens := mcpserver.LoadTokenStoreFromEnv()
 	if mcpTokens.Enabled() {

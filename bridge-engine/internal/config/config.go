@@ -91,8 +91,17 @@ type Pipeline struct {
 	Enabled           *bool            `yaml:"enabled"`
 }
 
+type Cluster struct {
+	Enabled                  bool   `yaml:"enabled"`
+	NodeID                   string `yaml:"node_id"`
+	HeartbeatIntervalSeconds int    `yaml:"heartbeat_interval_seconds"`
+	NodeTimeoutSeconds       int    `yaml:"node_timeout_seconds"`
+	PlacementIntervalSeconds int    `yaml:"placement_interval_seconds"`
+}
+
 type Config struct {
 	Brokers   []string   `yaml:"brokers"`
+	Cluster   Cluster    `yaml:"cluster"`
 	Pipelines []Pipeline `yaml:"pipelines"`
 }
 
@@ -124,6 +133,18 @@ func Load(path string) (*Config, error) {
 }
 
 func applyDefaults(cfg *Config) {
+	if cfg.Cluster.Enabled {
+		if cfg.Cluster.HeartbeatIntervalSeconds == 0 {
+			cfg.Cluster.HeartbeatIntervalSeconds = 5
+		}
+		if cfg.Cluster.NodeTimeoutSeconds == 0 {
+			cfg.Cluster.NodeTimeoutSeconds = 20
+		}
+		if cfg.Cluster.PlacementIntervalSeconds == 0 {
+			cfg.Cluster.PlacementIntervalSeconds = 5
+		}
+	}
+
 	for i := range cfg.Pipelines {
 		p := &cfg.Pipelines[i]
 		if p.MCPAccess == "" {
@@ -165,6 +186,10 @@ func applyDefaults(cfg *Config) {
 func (c *Config) Validate() error {
 	if len(c.Brokers) == 0 {
 		return fmt.Errorf("brokers: at least one broker address is required")
+	}
+
+	if c.Cluster.Enabled && c.Cluster.NodeTimeoutSeconds <= c.Cluster.HeartbeatIntervalSeconds {
+		return fmt.Errorf("cluster: node_timeout_seconds (%d) must be greater than heartbeat_interval_seconds (%d)", c.Cluster.NodeTimeoutSeconds, c.Cluster.HeartbeatIntervalSeconds)
 	}
 
 	seen := map[string]bool{}
