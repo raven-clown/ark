@@ -66,9 +66,10 @@ type Node struct {
 	elector *elector
 	placer  *placer
 
-	mu    sync.Mutex
-	base  []config.Pipeline // last config seen via ApplyConfig
-	local map[string]int    // pipeline name -> workers assigned to this node; nil until the first placement view arrives
+	mu         sync.Mutex
+	base       []config.Pipeline // last config seen via ApplyConfig
+	configured bool
+	local      map[string]int // pipeline name -> workers assigned to this node; nil until the first placement view arrives
 }
 
 func New(brokers []string, cfg config.Cluster, replicationFactor int, reconcile ReconcileFunc, log *slog.Logger) *Node {
@@ -124,6 +125,18 @@ func (n *Node) Start(ctx context.Context) error {
 	n.placer = newPlacer(n.brokers, n.topics.Placement, n.log)
 	go n.placer.watch(ctx, n.onPlacementUpdate)
 
+	// Give the first ApplyConfig the current placement to work from, so a
+	// joining node starts with its real share instead of starting at full
+	// workers and being narrowed a moment later (two restarts per join).
+	deadline := time.Now().Add(placementCatchUpTimeout)
+	for !n.placer.caughtUp.Load() && time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+
 	el, err := newElector(n.brokers, n.topics.Election, n.nodeTimeout(), n.log)
 	if err != nil {
 		return fmt.Errorf("starting leader election: %w", err)
@@ -133,6 +146,8 @@ func (n *Node) Start(ctx context.Context) error {
 
 	return nil
 }
+
+const placementCatchUpTimeout = 10 * time.Second
 
 func (n *Node) heartbeatInterval() time.Duration {
 	return time.Duration(n.cfg.HeartbeatIntervalSeconds) * time.Second
@@ -197,6 +212,7 @@ func (n *Node) runLeaderDuties(genCtx context.Context, generation int32) {
 func (n *Node) ApplyConfig(pipelines []config.Pipeline) []error {
 	n.mu.Lock()
 	n.base = pipelines
+	n.configured = true
 	n.mu.Unlock()
 	return n.reconcileLocal(pipelines)
 }
@@ -212,8 +228,12 @@ func (n *Node) onPlacementUpdate(assignments map[string]map[string]int) {
 	n.mu.Lock()
 	n.local = local
 	pipelines := n.base
+	configured := n.configured
 	n.mu.Unlock()
 
+	if !configured {
+		return // ApplyConfig hasn't run yet; it will pick up this placement
+	}
 	for _, err := range n.reconcileLocal(pipelines) {
 		n.log.Error("applying placement failed to start a pipeline", "error", err)
 	}
