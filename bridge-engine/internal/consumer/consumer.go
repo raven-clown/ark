@@ -69,7 +69,15 @@ type shared struct {
 
 const dlqBrowserMaxEntries = 200
 
-func newShared(ctx context.Context, brokers []string, p config.Pipeline, replicationFactor int, log *slog.Logger) (*shared, error) {
+// Deps are the process-wide dependencies every pipeline shares.
+type Deps struct {
+	Brokers           []string
+	ReplicationFactor int
+	DLQState          *dlq.StateStore
+}
+
+func newShared(ctx context.Context, deps Deps, p config.Pipeline, log *slog.Logger) (*shared, error) {
+	brokers, replicationFactor := deps.Brokers, deps.ReplicationFactor
 	engine, err := rules.Compile(p)
 	if err != nil {
 		return nil, err
@@ -100,11 +108,11 @@ func newShared(ctx context.Context, brokers []string, p config.Pipeline, replica
 
 	if p.DeadLetterTopic != "" {
 		s.dlq = producer.New(brokers, p.DeadLetterTopic)
-		s.dlqBrowser = dlq.NewBrowser(brokers, p.DeadLetterTopic, p.ConsumerGroup+"-dlq-browser", dlqBrowserMaxEntries, s.source, log)
+		s.dlqBrowser = dlq.NewBrowser(brokers, p.DeadLetterTopic, deps.DLQState, dlqBrowserMaxEntries, s.source, log)
 	}
 	if p.RejectTopic != "" {
 		s.reject = producer.New(brokers, p.RejectTopic)
-		s.rejectBrowser = dlq.NewBrowser(brokers, p.RejectTopic, p.ConsumerGroup+"-reject-browser", dlqBrowserMaxEntries, s.source, log)
+		s.rejectBrowser = dlq.NewBrowser(brokers, p.RejectTopic, deps.DLQState, dlqBrowserMaxEntries, s.source, log)
 	}
 
 	return s, nil
@@ -166,7 +174,8 @@ type Runner struct {
 	counters    counters
 }
 
-func NewPipeline(ctx context.Context, brokers []string, p config.Pipeline, replicationFactor int, log *slog.Logger) ([]*Runner, error) {
+func NewPipeline(ctx context.Context, deps Deps, p config.Pipeline, log *slog.Logger) ([]*Runner, error) {
+	brokers, replicationFactor := deps.Brokers, deps.ReplicationFactor
 	log = log.With("pipeline", p.Name, "tenant", p.Tenant)
 
 	workers := p.Workers
@@ -178,7 +187,7 @@ func NewPipeline(ctx context.Context, brokers []string, p config.Pipeline, repli
 		return nil, fmt.Errorf("pipeline %q: ensuring source_topic %s exists: %w", p.Name, p.SourceTopic, err)
 	}
 
-	sh, err := newShared(ctx, brokers, p, replicationFactor, log)
+	sh, err := newShared(ctx, deps, p, log)
 	if err != nil {
 		return nil, fmt.Errorf("pipeline %q: %w", p.Name, err)
 	}
@@ -194,32 +203,45 @@ func NewPipeline(ctx context.Context, brokers []string, p config.Pipeline, repli
 
 	runners := make([]*Runner, 0, workers)
 	for w := 0; w < workers; w++ {
-		reader := kafka.NewReader(kafka.ReaderConfig{
-			Brokers:                brokers,
-			Topic:                  p.SourceTopic,
-			GroupID:                p.ConsumerGroup,
-			MinBytes:               1,
-			MaxBytes:               10e6,
-			MaxWait:                time.Second,
-			CommitInterval:         0,
-			WatchPartitionChanges:  true,
-			PartitionWatchInterval: 5 * time.Second,
-			Logger:                 kafka.LoggerFunc(func(f string, a ...interface{}) { log.Debug(fmt.Sprintf(f, a...)) }),
-			ErrorLogger:            kafka.LoggerFunc(func(f string, a ...interface{}) { log.Error(fmt.Sprintf(f, a...)) }),
-		})
-
-		runners = append(runners, &Runner{
-			pipeline:    p,
-			workerID:    w,
-			workerLabel: strconv.Itoa(w),
-			reader:      reader,
-			shared:      sh,
-			log:         log.With("worker", w),
-		})
+		runners = append(runners, newRunner(sh, p, w, log))
 	}
 
 	return runners, nil
 }
+
+func newRunner(sh *shared, p config.Pipeline, workerID int, log *slog.Logger) *Runner {
+	reader := kafka.NewReader(kafka.ReaderConfig{
+		Brokers:                sh.brokers,
+		Topic:                  p.SourceTopic,
+		GroupID:                p.ConsumerGroup,
+		MinBytes:               1,
+		MaxBytes:               10e6,
+		MaxWait:                time.Second,
+		CommitInterval:         0,
+		WatchPartitionChanges:  true,
+		PartitionWatchInterval: 5 * time.Second,
+		Logger:                 kafka.LoggerFunc(func(f string, a ...interface{}) { log.Debug(fmt.Sprintf(f, a...)) }),
+		ErrorLogger:            kafka.LoggerFunc(func(f string, a ...interface{}) { log.Error(fmt.Sprintf(f, a...)) }),
+	})
+	return &Runner{
+		pipeline:    p,
+		workerID:    workerID,
+		workerLabel: strconv.Itoa(workerID),
+		reader:      reader,
+		shared:      sh,
+		log:         log.With("worker", workerID),
+	}
+}
+
+// AddRunner creates one more worker for the same pipeline as sibling,
+// sharing its producers, target pool, breaker and pause state, so a
+// pipeline can scale up without being restarted.
+func AddRunner(sibling *Runner, workerID int, log *slog.Logger) *Runner {
+	log = log.With("pipeline", sibling.pipeline.Name, "tenant", sibling.pipeline.Tenant)
+	return newRunner(sibling.shared, sibling.pipeline, workerID, log)
+}
+
+func (r *Runner) WorkerID() int { return r.workerID }
 
 func (r *Runner) Tenant() string {
 	return r.pipeline.Tenant

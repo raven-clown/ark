@@ -49,3 +49,20 @@ func TestDistributeZeroOrNegativeTotal(t *testing.T) {
 		t.Errorf("expected an empty assignment for a zero total, got %v", got)
 	}
 }
+
+func TestEligibleFiltersBySelector(t *testing.T) {
+	live := map[string]heartbeatRecord{
+		"a": {Labels: map[string]string{"zone": "dmz", "tier": "gold"}},
+		"b": {Labels: map[string]string{"zone": "core"}},
+		"c": {},
+	}
+	if got := eligible(live, map[string]string{"zone": "dmz"}); len(got) != 1 || got[0] != "a" {
+		t.Errorf("zone=dmz: got %v, want [a]", got)
+	}
+	if got := eligible(live, nil); len(got) != 3 {
+		t.Errorf("no selector should match every live node, got %v", got)
+	}
+	if got := eligible(live, map[string]string{"zone": "edge"}); len(got) != 0 {
+		t.Errorf("unmatched selector should match nothing, got %v", got)
+	}
+}

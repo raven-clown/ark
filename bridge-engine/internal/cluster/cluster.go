@@ -27,6 +27,7 @@ type Topics struct {
 	Heartbeat string
 	Election  string
 	Placement string
+	Control   string
 }
 
 func TopicsFor(clusterName string) Topics {
@@ -35,6 +36,7 @@ func TopicsFor(clusterName string) Topics {
 		Heartbeat: prefix + "cluster_nodes",
 		Election:  prefix + "leader_election",
 		Placement: prefix + "placements",
+		Control:   prefix + "control",
 	}
 }
 
@@ -65,6 +67,10 @@ type Node struct {
 	hbView  *heartbeatView
 	elector *elector
 	placer  *placer
+	control *producer.Producer
+
+	statsFn func() map[string]PipelineStats
+	onPause func(pipeline string, paused bool)
 
 	mu         sync.Mutex
 	base       []config.Pipeline // last config seen via ApplyConfig
@@ -105,6 +111,14 @@ func defaultNodeID() string {
 
 func (n *Node) ID() string { return n.id }
 
+// SetStatsProvider sets where this node's per-pipeline numbers come from;
+// they ride along in its heartbeat. Call before Start.
+func (n *Node) SetStatsProvider(fn func() map[string]PipelineStats) { n.statsFn = fn }
+
+// SetPauseHandler sets what applies a cluster-wide pause or resume on this
+// node. Call before Start.
+func (n *Node) SetPauseHandler(fn func(pipeline string, paused bool)) { n.onPause = fn }
+
 // Start ensures the internal cluster topics exist and launches every
 // background loop (heartbeat, election, placement). It returns once setup
 // succeeds; the loops keep running until ctx is cancelled.
@@ -119,8 +133,14 @@ func (n *Node) Start(ctx context.Context) error {
 		return fmt.Errorf("ensuring %s exists: %w", n.topics.Placement, err)
 	}
 
+	if err := kafkaadmin.EnsureCompactedTopic(ctx, n.brokers, n.topics.Control, 1, n.replicationFactor); err != nil {
+		return fmt.Errorf("ensuring %s exists: %w", n.topics.Control, err)
+	}
+	n.control = producer.New(n.brokers, n.topics.Control)
+	go n.watchControl(ctx)
+
 	go n.hbView.run(ctx, n.brokers, n.topics.Heartbeat, n.log)
-	go runHeartbeatProducer(ctx, producer.New(n.brokers, n.topics.Heartbeat), n.id, n.heartbeatInterval(), n.log) // #nosec G118 -- the shutdown tombstone must be written after ctx is cancelled
+	go runHeartbeatProducer(ctx, producer.New(n.brokers, n.topics.Heartbeat), n.id, n.heartbeatInterval(), n.heartbeatSnapshot, n.log) // #nosec G118 -- the shutdown tombstone must be written after ctx is cancelled
 
 	n.placer = newPlacer(n.brokers, n.topics.Placement, n.log)
 	go n.placer.watch(ctx, n.onPlacementUpdate)
@@ -148,6 +168,14 @@ func (n *Node) Start(ctx context.Context) error {
 }
 
 const placementCatchUpTimeout = 10 * time.Second
+
+func (n *Node) heartbeatSnapshot() heartbeatRecord {
+	rec := heartbeatRecord{Labels: n.cfg.Labels}
+	if n.statsFn != nil {
+		rec.Pipelines = n.statsFn()
+	}
+	return rec
+}
 
 func (n *Node) heartbeatInterval() time.Duration {
 	return time.Duration(n.cfg.HeartbeatIntervalSeconds) * time.Second
@@ -179,11 +207,20 @@ func (n *Node) runLeaderDuties(genCtx context.Context, generation int32) {
 		pipelines := n.base
 		n.mu.Unlock()
 
-		live := n.hbView.liveNodes(n.nodeTimeout())
+		live := n.hbView.liveInfo(n.nodeTimeout())
 		if len(live) == 0 {
-			live = []string{n.id}
+			live = map[string]heartbeatRecord{n.id: n.heartbeatSnapshot()}
 		}
-		written, err := n.placer.publish(genCtx, epoch, pipelines, live)
+		partitions := make(map[string]int)
+		for _, p := range pipelines {
+			if _, done := partitions[p.SourceTopic]; done || !p.IsEnabled() {
+				continue
+			}
+			if count, err := kafkaadmin.PartitionCount(genCtx, n.brokers, p.SourceTopic); err == nil {
+				partitions[p.SourceTopic] = count
+			}
+		}
+		written, err := n.placer.publish(genCtx, epoch, pipelines, live, partitions)
 		if err != nil {
 			if genCtx.Err() == nil {
 				n.log.Error("publishing placement failed", "error", err)

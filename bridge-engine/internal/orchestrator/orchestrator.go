@@ -12,11 +12,26 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/consumer"
 )
 
+type worker struct {
+	runner *consumer.Runner
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
 type runningPipeline struct {
 	cfg     config.Pipeline
+	ctx     context.Context
 	cancel  context.CancelFunc
-	runners []*consumer.Runner
+	workers []*worker
 	wg      sync.WaitGroup
+}
+
+func (rp *runningPipeline) runners() []*consumer.Runner {
+	out := make([]*consumer.Runner, len(rp.workers))
+	for i, w := range rp.workers {
+		out[i] = w.runner
+	}
+	return out
 }
 
 // Manager owns the set of currently-running pipelines and implements
@@ -29,10 +44,9 @@ type runningPipeline struct {
 // moment the response is written; a pipeline started under it would be
 // killed within milliseconds.
 type Manager struct {
-	baseCtx           context.Context
-	brokers           []string
-	replicationFactor int
-	logger            *slog.Logger
+	baseCtx context.Context
+	deps    consumer.Deps
+	logger  *slog.Logger
 
 	// reconcileMu serializes whole Reconcile calls. The file watcher, the
 	// reload endpoint and cluster placement can all trigger one, and two
@@ -45,18 +59,19 @@ type Manager struct {
 	desired   map[string]config.Pipeline
 	retrying  map[string]context.CancelFunc
 	paused    map[string]bool
+	standby   map[string]*standbyBrowsers
 }
 
-func New(baseCtx context.Context, brokers []string, replicationFactor int, logger *slog.Logger) *Manager {
+func New(baseCtx context.Context, deps consumer.Deps, logger *slog.Logger) *Manager {
 	return &Manager{
-		baseCtx:           baseCtx,
-		brokers:           brokers,
-		replicationFactor: replicationFactor,
-		logger:            logger,
-		pipelines:         make(map[string]*runningPipeline),
-		desired:           make(map[string]config.Pipeline),
-		retrying:          make(map[string]context.CancelFunc),
-		paused:            make(map[string]bool),
+		baseCtx:   baseCtx,
+		deps:      deps,
+		logger:    logger,
+		pipelines: make(map[string]*runningPipeline),
+		desired:   make(map[string]config.Pipeline),
+		retrying:  make(map[string]context.CancelFunc),
+		paused:    make(map[string]bool),
+		standby:   make(map[string]*standbyBrowsers),
 	}
 }
 
@@ -66,7 +81,7 @@ func (m *Manager) Runners() []*consumer.Runner {
 
 	var out []*consumer.Runner
 	for _, rp := range m.pipelines {
-		out = append(out, rp.runners...)
+		out = append(out, rp.runners()...)
 	}
 	return out
 }
@@ -76,24 +91,27 @@ func (m *Manager) PipelineRunners(name string) []*consumer.Runner {
 	defer m.mu.RUnlock()
 
 	if rp, ok := m.pipelines[name]; ok {
-		return rp.runners
+		return rp.runners()
 	}
 	return nil
 }
 
 // SetPaused pauses or resumes a pipeline and remembers the choice, so a
 // restart caused by a reload or a cluster placement change doesn't
-// silently resume a pipeline an operator paused on purpose. It reports
-// false if no pipeline by that name is running here.
+// silently resume a pipeline an operator paused on purpose. The choice is
+// remembered even for a pipeline not running here yet (cluster placement
+// may start it later). It reports whether the pipeline is running here.
 func (m *Manager) SetPaused(name string, paused bool) bool {
 	m.mu.Lock()
+	if paused {
+		m.paused[name] = true
+	} else {
+		delete(m.paused, name)
+	}
 	rp, ok := m.pipelines[name]
+	var runners []*consumer.Runner
 	if ok {
-		if paused {
-			m.paused[name] = true
-		} else {
-			delete(m.paused, name)
-		}
+		runners = rp.runners()
 	}
 	m.mu.Unlock()
 	if !ok {
@@ -101,9 +119,9 @@ func (m *Manager) SetPaused(name string, paused bool) bool {
 	}
 
 	if paused {
-		consumer.Pause(rp.runners)
+		consumer.Pause(runners)
 	} else {
-		consumer.Resume(rp.runners)
+		consumer.Resume(runners)
 	}
 	return true
 }
@@ -154,6 +172,10 @@ func (m *Manager) Reconcile(pipelines []config.Pipeline) []error {
 		m.mu.RUnlock()
 
 		if ok && reflect.DeepEqual(existing.cfg, p) {
+			continue
+		}
+		if ok && p.IsEnabled() && sameExceptWorkers(existing.cfg, p) {
+			m.resize(p)
 			continue
 		}
 		if ok {
@@ -219,7 +241,7 @@ func (m *Manager) retryStart(p config.Pipeline) {
 func (m *Manager) start(p config.Pipeline) error {
 	pctx, cancel := context.WithCancel(m.baseCtx)
 
-	runners, err := consumer.NewPipeline(pctx, m.brokers, p, m.replicationFactor, m.logger)
+	runners, err := consumer.NewPipeline(pctx, m.deps, p, m.logger)
 	if err != nil {
 		cancel()
 		return err
@@ -232,25 +254,10 @@ func (m *Manager) start(p config.Pipeline) error {
 		consumer.Pause(runners)
 	}
 
-	rp := &runningPipeline{cfg: p, cancel: cancel, runners: runners}
-	rp.wg.Add(1)
-	go func() {
-		defer rp.wg.Done()
-
-		var workers sync.WaitGroup
-		for _, runner := range runners {
-			workers.Add(1)
-			go func(runner *consumer.Runner) {
-				defer workers.Done()
-				m.supervise(pctx, runner)
-			}(runner)
-		}
-		workers.Wait()
-
-		if err := consumer.CloseShared(runners); err != nil {
-			m.logger.Error("closing pipeline shared resources failed", "pipeline", p.Name, "tenant", p.Tenant, "error", err)
-		}
-	}()
+	rp := &runningPipeline{cfg: p, ctx: pctx, cancel: cancel}
+	for _, runner := range runners {
+		m.launch(rp, runner)
+	}
 
 	m.mu.Lock()
 	m.pipelines[p.Name] = rp
@@ -301,7 +308,65 @@ func (m *Manager) stop(name string) {
 
 	rp.cancel()
 	rp.wg.Wait()
+	if err := consumer.CloseShared(rp.runners()); err != nil {
+		m.logger.Error("closing pipeline shared resources failed", "pipeline", name, "tenant", rp.cfg.Tenant, "error", err)
+	}
 	m.logger.Info("pipeline stopped", "pipeline", name, "tenant", rp.cfg.Tenant)
+}
+
+// launch starts one supervised worker under its own cancel, so it can be
+// removed later without touching the pipeline's other workers.
+func (m *Manager) launch(rp *runningPipeline, runner *consumer.Runner) {
+	wctx, cancel := context.WithCancel(rp.ctx)
+	w := &worker{runner: runner, cancel: cancel, done: make(chan struct{})}
+	rp.workers = append(rp.workers, w)
+	rp.wg.Add(1)
+	go func() {
+		defer rp.wg.Done()
+		defer close(w.done)
+		m.supervise(wctx, runner)
+	}()
+}
+
+// sameExceptWorkers reports whether two configs differ only in Workers.
+func sameExceptWorkers(a, b config.Pipeline) bool {
+	a.Workers, b.Workers = 0, 0
+	return reflect.DeepEqual(a, b)
+}
+
+// resize adds or removes workers of a running pipeline in place. Removed
+// workers drain and commit their finished work before leaving; the others
+// keep running, and the pipeline's producers, target pool, breaker and
+// pause state are untouched. Only the consumer group rebalances.
+func (m *Manager) resize(p config.Pipeline) {
+	m.mu.Lock()
+	rp := m.pipelines[p.Name]
+	current := len(rp.workers)
+	want := max(p.Workers, 1)
+	var removed []*worker
+	switch {
+	case want > current:
+		nextID := 0
+		for _, w := range rp.workers {
+			nextID = max(nextID, w.runner.WorkerID()+1)
+		}
+		for i := 0; i < want-current; i++ {
+			m.launch(rp, consumer.AddRunner(rp.workers[0].runner, nextID+i, m.logger))
+		}
+	case want < current:
+		removed = rp.workers[want:]
+		rp.workers = rp.workers[:want]
+	}
+	rp.cfg = p
+	m.mu.Unlock()
+
+	for _, w := range removed {
+		w.cancel()
+	}
+	for _, w := range removed {
+		<-w.done
+	}
+	m.logger.Info("pipeline resized in place", "pipeline", p.Name, "tenant", p.Tenant, "from", current, "to", want)
 }
 
 // ShutdownAll stops every running pipeline and waits for them to finish

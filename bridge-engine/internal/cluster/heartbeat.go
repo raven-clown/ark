@@ -12,17 +12,32 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/producer"
 )
 
+// PipelineStats is one node's view of one pipeline, carried in its
+// heartbeat so any node can answer for the whole cluster.
+type PipelineStats struct {
+	Workers      int   `json:"workers"`
+	Processed    int64 `json:"processed"`
+	Rejected     int64 `json:"rejected"`
+	DeadLettered int64 `json:"dead_lettered"`
+	Failed       int64 `json:"failed"`
+	Paused       bool  `json:"paused"`
+}
+
 type heartbeatRecord struct {
-	NodeID   string    `json:"node_id"`
-	LastSeen time.Time `json:"last_seen"`
+	NodeID    string                   `json:"node_id"`
+	LastSeen  time.Time                `json:"last_seen"`
+	Labels    map[string]string        `json:"labels,omitempty"`
+	Pipelines map[string]PipelineStats `json:"pipelines,omitempty"`
 }
 
 // runHeartbeatProducer produces one heartbeat record for this node on every
 // tick until ctx is done, then writes a tombstone for its key so the leader
 // drops this node immediately instead of waiting out node_timeout.
-func runHeartbeatProducer(ctx context.Context, w *producer.Producer, nodeID string, interval time.Duration, log *slog.Logger) {
+func runHeartbeatProducer(ctx context.Context, w *producer.Producer, nodeID string, interval time.Duration, snapshot func() heartbeatRecord, log *slog.Logger) {
 	beat := func() {
-		val, err := json.Marshal(heartbeatRecord{NodeID: nodeID, LastSeen: time.Now().UTC()})
+		rec := snapshot()
+		rec.NodeID, rec.LastSeen = nodeID, time.Now().UTC()
+		val, err := json.Marshal(rec)
 		if err != nil {
 			log.Error("marshaling heartbeat failed", "error", err)
 			return
@@ -64,10 +79,11 @@ type heartbeatView struct {
 
 	mu   sync.RWMutex
 	seen map[string]time.Time
+	info map[string]heartbeatRecord
 }
 
 func newHeartbeatView() *heartbeatView {
-	return &heartbeatView{seen: make(map[string]time.Time), startedAt: time.Now()}
+	return &heartbeatView{seen: make(map[string]time.Time), info: make(map[string]heartbeatRecord), startedAt: time.Now()}
 }
 
 func (v *heartbeatView) run(ctx context.Context, brokers []string, topic string, log *slog.Logger) {
@@ -96,18 +112,39 @@ func (v *heartbeatView) run(ctx context.Context, brokers []string, topic string,
 			}
 			continue
 		}
-		v.observe(string(msg.Key), msg.Value == nil, time.Now())
+		var rec heartbeatRecord
+		if msg.Value != nil {
+			if err := json.Unmarshal(msg.Value, &rec); err != nil {
+				log.Error("decoding heartbeat failed", "error", err)
+				continue
+			}
+		}
+		v.observe(string(msg.Key), msg.Value == nil, time.Now(), rec)
 	}
 }
 
-func (v *heartbeatView) observe(nodeID string, tombstone bool, at time.Time) {
+func (v *heartbeatView) observe(nodeID string, tombstone bool, at time.Time, rec heartbeatRecord) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if tombstone {
 		delete(v.seen, nodeID)
+		delete(v.info, nodeID)
 		return
 	}
 	v.seen[nodeID] = at
+	v.info[nodeID] = rec
+}
+
+// liveInfo returns the last heartbeat of every live node.
+func (v *heartbeatView) liveInfo(timeout time.Duration) map[string]heartbeatRecord {
+	live := v.liveNodes(timeout)
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	out := make(map[string]heartbeatRecord, len(live))
+	for _, id := range live {
+		out[id] = v.info[id]
+	}
+	return out
 }
 
 // warm reports whether the view has been running long enough to have
@@ -134,6 +171,7 @@ func (v *heartbeatView) liveNodes(timeout time.Duration) []string {
 			out = append(out, id)
 		case lastSeen.Before(forget):
 			delete(v.seen, id)
+			delete(v.info, id)
 		}
 	}
 	return out

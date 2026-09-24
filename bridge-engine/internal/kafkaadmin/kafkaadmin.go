@@ -2,6 +2,7 @@ package kafkaadmin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"strconv"
@@ -89,4 +90,22 @@ func ensureTopic(ctx context.Context, brokers []string, topic string, partitions
 		}
 	}
 	return fmt.Errorf("topic %s did not become visible within timeout", topic)
+}
+
+// PartitionCount returns how many partitions topic has, or 0 if it doesn't
+// exist yet.
+func PartitionCount(ctx context.Context, brokers []string, topic string) (int, error) {
+	conn, err := kafka.DialContext(ctx, "tcp", brokers[0])
+	if err != nil {
+		return 0, fmt.Errorf("dialing %s: %w", brokers[0], err)
+	}
+	defer conn.Close()
+	parts, err := conn.ReadPartitions(topic)
+	if err != nil {
+		if errors.Is(err, kafka.UnknownTopicOrPartition) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return len(parts), nil
 }

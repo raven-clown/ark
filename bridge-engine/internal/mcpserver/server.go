@@ -145,7 +145,14 @@ func getPipelineStatus(reg api.Registry) mcp.ToolHandlerFor[pipelineNameIn, getP
 func findDLQBrowser(reg api.Registry, name, kind string) (*dlq.Browser, string, error) {
 	statuses := pipelineStatuses(reg, name)
 	if len(statuses) == 0 {
-		return nil, "", fmt.Errorf("pipeline not found: %s", name)
+		b, access, ok := reg.DLQBrowser(name, kind)
+		if !ok {
+			return nil, "", fmt.Errorf("pipeline not found: %s", name)
+		}
+		if !visibleToMCP(string(access)) {
+			return nil, "", fmt.Errorf("pipeline %s has mcp_access: none", name)
+		}
+		return b, string(access), nil
 	}
 	if !visibleToMCP(statuses[0].MCPAccess) {
 		return nil, "", fmt.Errorf("pipeline %s has mcp_access: none", name)
@@ -269,7 +276,7 @@ func retryDLQMessage(reg api.Registry, scope Scope, audit *slog.Logger) mcp.Tool
 }
 
 func discardDLQMessage(reg api.Registry, scope Scope, audit *slog.Logger) mcp.ToolHandlerFor[dlqEntryIn, actionOut] {
-	return func(_ context.Context, _ *mcp.CallToolRequest, in dlqEntryIn) (*mcp.CallToolResult, actionOut, error) {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in dlqEntryIn) (*mcp.CallToolResult, actionOut, error) {
 		browser, access, err := findDLQBrowser(reg, in.Name, in.Kind)
 		if err != nil {
 			return nil, actionOut{}, err
@@ -277,7 +284,11 @@ func discardDLQMessage(reg api.Registry, scope Scope, audit *slog.Logger) mcp.To
 		if err := requireWritable(access, in.Name); err != nil {
 			return nil, actionOut{}, err
 		}
-		if !browser.Discard(in.ID) {
+		found, err := browser.Discard(ctx, in.ID)
+		if err != nil {
+			return nil, actionOut{}, err
+		}
+		if !found {
 			return nil, actionOut{}, fmt.Errorf("entry not found: %s", in.ID)
 		}
 		audit.Info("mcp write", "scope", scope, "action", "discard_dlq_message", "pipeline", in.Name, "kind", in.Kind, "id", in.ID)

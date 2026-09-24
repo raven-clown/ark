@@ -118,16 +118,24 @@ type Pipeline struct {
 	Retry             Retry            `yaml:"retry"`
 	FastPathRules     []FastPathRule   `yaml:"fast_path_rules"`
 	PostCallbackRules []FastPathRule   `yaml:"post_callback_rules"`
+	Placement         Placement        `yaml:"placement"`
 	Enabled           *bool            `yaml:"enabled"`
 }
 
 type Cluster struct {
-	Enabled                  bool   `yaml:"enabled"`
-	Name                     string `yaml:"name"`
-	NodeID                   string `yaml:"node_id"`
-	HeartbeatIntervalSeconds int    `yaml:"heartbeat_interval_seconds"`
-	NodeTimeoutSeconds       int    `yaml:"node_timeout_seconds"`
-	PlacementIntervalSeconds int    `yaml:"placement_interval_seconds"`
+	Enabled                  bool              `yaml:"enabled"`
+	Name                     string            `yaml:"name"`
+	NodeID                   string            `yaml:"node_id"`
+	HeartbeatIntervalSeconds int               `yaml:"heartbeat_interval_seconds"`
+	NodeTimeoutSeconds       int               `yaml:"node_timeout_seconds"`
+	PlacementIntervalSeconds int               `yaml:"placement_interval_seconds"`
+	Labels                   map[string]string `yaml:"labels"`
+}
+
+// Placement restricts which cluster nodes may run a pipeline: only nodes
+// whose cluster.labels contain every key/value in NodeSelector.
+type Placement struct {
+	NodeSelector map[string]string `yaml:"node_selector"`
 }
 
 type Topics struct {

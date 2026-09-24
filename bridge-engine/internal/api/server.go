@@ -8,6 +8,7 @@ import (
 
 	"github.com/raven-clown/ark/bridge-engine/internal/authz"
 	"github.com/raven-clown/ark/bridge-engine/internal/cluster"
+	"github.com/raven-clown/ark/bridge-engine/internal/config"
 	"github.com/raven-clown/ark/bridge-engine/internal/consumer"
 	"github.com/raven-clown/ark/bridge-engine/internal/dlq"
 )
@@ -16,6 +17,8 @@ type Registry interface {
 	Runners() []*consumer.Runner
 	PipelineRunners(name string) []*consumer.Runner
 	SetPaused(name string, paused bool) bool
+	// DLQBrowser is a fallback for pipelines not running on this node.
+	DLQBrowser(name, kind string) (*dlq.Browser, config.MCPAccess, bool)
 }
 
 type staticRegistry struct {
@@ -37,6 +40,10 @@ func (s *staticRegistry) Runners() []*consumer.Runner {
 
 func (s *staticRegistry) PipelineRunners(name string) []*consumer.Runner {
 	return s.byName[name]
+}
+
+func (s *staticRegistry) DLQBrowser(string, string) (*dlq.Browser, config.MCPAccess, bool) {
+	return nil, "", false
 }
 
 func (s *staticRegistry) SetPaused(name string, paused bool) bool {
@@ -95,6 +102,14 @@ func NewServer(reg Registry, reload Reloader, clusterNode *cluster.Node, tokens 
 		})
 	})
 
+	mux.HandleFunc("GET /api/v1/cluster/pipelines", func(w http.ResponseWriter, r *http.Request) {
+		if clusterNode == nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "cluster mode is not enabled"})
+			return
+		}
+		writeJSON(w, http.StatusOK, clusterNode.ClusterPipelines())
+	})
+
 	mux.HandleFunc("POST /api/v1/config/reload", func(w http.ResponseWriter, r *http.Request) {
 		if reload == nil {
 			writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "hot-reload not configured"})
@@ -135,23 +150,19 @@ func NewServer(reg Registry, reload Reloader, clusterNode *cluster.Node, tokens 
 
 	mux.HandleFunc("POST /api/v1/pipelines/{name}/pause", func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("name")
-		runners := reg.PipelineRunners(name)
-		if len(runners) == 0 {
+		if !reg.SetPaused(name, true) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "pipeline not found: " + name})
 			return
 		}
-		reg.SetPaused(name, true)
 		writeJSON(w, http.StatusOK, map[string]string{"pipeline": name, "state": "paused"})
 	})
 
 	mux.HandleFunc("POST /api/v1/pipelines/{name}/resume", func(w http.ResponseWriter, r *http.Request) {
 		name := r.PathValue("name")
-		runners := reg.PipelineRunners(name)
-		if len(runners) == 0 {
+		if !reg.SetPaused(name, false) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "pipeline not found: " + name})
 			return
 		}
-		reg.SetPaused(name, false)
 		writeJSON(w, http.StatusOK, map[string]string{"pipeline": name, "state": "running"})
 	})
 
@@ -216,6 +227,9 @@ func registerDLQRoutes(mux *http.ServeMux, reg Registry, kind string, pick func(
 				return b, true
 			}
 		}
+		if b, _, ok := reg.DLQBrowser(pipelineName, kind); ok {
+			return b, true
+		}
 		return nil, false
 	}
 
@@ -261,7 +275,12 @@ func registerDLQRoutes(mux *http.ServeMux, reg Registry, kind string, pick func(
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": kind + " not configured for pipeline: " + r.PathValue("name")})
 			return
 		}
-		if !browser.Discard(r.PathValue("id")) {
+		found, err := browser.Discard(r.Context(), r.PathValue("id"))
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		if !found {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": kind + " entry not found: " + r.PathValue("id")})
 			return
 		}

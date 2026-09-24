@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,45 +24,103 @@ type Entry struct {
 	Offset    int64     `json:"offset"`
 }
 
+// Browser keeps the most recent entries of a dead-letter or reject topic
+// for inspection, retry and discard. It reads every partition directly
+// rather than through a consumer group, so every node in a cluster sees
+// the same entries, and it hides entries the shared StateStore says were
+// already retried or discarded, so they don't come back after a restart.
 type Browser struct {
+	brokers    []string
 	topic      string
 	maxEntries int
+	state      *StateStore
 
 	mu      sync.RWMutex
 	entries []Entry
 
-	reader  *kafka.Reader
 	retryTo *producer.Producer
 	log     *slog.Logger
 }
 
-func NewBrowser(brokers []string, topic, groupID string, maxEntries int, retryTo *producer.Producer, log *slog.Logger) *Browser {
-	reader := kafka.NewReader(kafka.ReaderConfig{
-		Brokers:  brokers,
-		Topic:    topic,
-		GroupID:  groupID,
-		MinBytes: 1,
-		MaxBytes: 10e6,
-		MaxWait:  time.Second,
-	})
-
+func NewBrowser(brokers []string, topic string, state *StateStore, maxEntries int, retryTo *producer.Producer, log *slog.Logger) *Browser {
 	return &Browser{
+		brokers:    brokers,
 		topic:      topic,
 		maxEntries: maxEntries,
-		reader:     reader,
+		state:      state,
 		retryTo:    retryTo,
 		log:        log.With("dlq_topic", topic),
 	}
 }
 
 func (b *Browser) Run(ctx context.Context) {
+	partitions, err := b.partitions(ctx)
+	for err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		b.log.Error("listing dlq partitions failed", "error", err)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(time.Second):
+		}
+		partitions, err = b.partitions(ctx)
+	}
+
+	var wg sync.WaitGroup
+	for _, p := range partitions {
+		wg.Add(1)
+		go func(p kafka.Partition) {
+			defer wg.Done()
+			b.tail(ctx, p.ID)
+		}(p)
+	}
+	wg.Wait()
+}
+
+func (b *Browser) partitions(ctx context.Context) ([]kafka.Partition, error) {
+	conn, err := kafka.DialContext(ctx, "tcp", b.brokers[0])
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	return conn.ReadPartitions(b.topic)
+}
+
+// tail reads one partition starting maxEntries back from its end, since
+// only the most recent entries are ever kept.
+func (b *Browser) tail(ctx context.Context, partition int) {
+	start := kafka.FirstOffset
+	if conn, err := kafka.DialLeader(ctx, "tcp", b.brokers[0], b.topic, partition); err == nil {
+		first, last, err := conn.ReadOffsets()
+		conn.Close()
+		if err == nil {
+			start = max(first, last-int64(b.maxEntries))
+		}
+	}
+
+	reader := kafka.NewReader(kafka.ReaderConfig{
+		Brokers:   b.brokers,
+		Topic:     b.topic,
+		Partition: partition,
+		MinBytes:  1,
+		MaxBytes:  10e6,
+		MaxWait:   time.Second,
+	})
+	defer reader.Close()
+	if err := reader.SetOffset(start); err != nil {
+		b.log.Error("positioning dlq reader failed", "error", err, "partition", partition)
+		return
+	}
+
 	for {
-		msg, err := b.reader.FetchMessage(ctx)
+		msg, err := reader.FetchMessage(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
 			}
-			b.log.Error("dlq browser fetch failed", "error", err)
+			b.log.Error("dlq browser fetch failed", "error", err, "partition", partition)
 			select {
 			case <-ctx.Done():
 				return
@@ -73,9 +132,9 @@ func (b *Browser) Run(ctx context.Context) {
 	}
 }
 
-func (b *Browser) Close() error {
-	return b.reader.Close()
-}
+// Close is kept for callers that manage the Browser's lifetime explicitly;
+// readers are closed when Run's context ends.
+func (b *Browser) Close() error { return nil }
 
 func (b *Browser) add(msg kafka.Message) {
 	entry := Entry{
@@ -90,20 +149,42 @@ func (b *Browser) add(msg kafka.Message) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.entries = append(b.entries, entry)
-	if len(b.entries) > b.maxEntries {
+	if len(b.entries) > b.maxEntries*2 {
+		sort.Slice(b.entries, func(i, j int) bool { return b.entries[i].Timestamp.Before(b.entries[j].Timestamp) })
 		b.entries = b.entries[len(b.entries)-b.maxEntries:]
 	}
 }
 
+func (b *Browser) handled(id string) bool {
+	if b.state == nil {
+		return false
+	}
+	_, ok := b.state.Handled(b.topic, id)
+	return ok
+}
+
+// List returns pending entries, oldest first, at most maxEntries.
 func (b *Browser) List() []Entry {
 	b.mu.RLock()
-	defer b.mu.RUnlock()
-	out := make([]Entry, len(b.entries))
-	copy(out, b.entries)
+	out := make([]Entry, 0, len(b.entries))
+	for _, e := range b.entries {
+		if !b.handled(e.ID) {
+			out = append(out, e)
+		}
+	}
+	b.mu.RUnlock()
+
+	sort.Slice(out, func(i, j int) bool { return out[i].Timestamp.Before(out[j].Timestamp) })
+	if len(out) > b.maxEntries {
+		out = out[len(out)-b.maxEntries:]
+	}
 	return out
 }
 
 func (b *Browser) Get(id string) (Entry, bool) {
+	if b.handled(id) {
+		return Entry{}, false
+	}
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	for _, e := range b.entries {
@@ -114,27 +195,37 @@ func (b *Browser) Get(id string) (Entry, bool) {
 	return Entry{}, false
 }
 
-func (b *Browser) Discard(id string) bool {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	for i, e := range b.entries {
-		if e.ID == id {
-			b.entries = append(b.entries[:i], b.entries[i+1:]...)
-			return true
-		}
+// Discard hides an entry on every node, durably. The message itself stays
+// in the topic until retention removes it.
+func (b *Browser) Discard(ctx context.Context, id string) (bool, error) {
+	if _, ok := b.Get(id); !ok {
+		return false, nil
 	}
-	return false
+	if b.state == nil {
+		return false, fmt.Errorf("dlq state store not configured")
+	}
+	if err := b.state.Mark(ctx, b.topic, id, StateDiscarded); err != nil {
+		return false, fmt.Errorf("recording discard of %s: %w", id, err)
+	}
+	return true, nil
 }
 
+// Retry resends an entry to the pipeline's source topic and records that
+// it was retried, so neither this node nor any other offers it again.
 func (b *Browser) Retry(ctx context.Context, id string) error {
 	entry, ok := b.Get(id)
 	if !ok {
-		return fmt.Errorf("dlq entry %s not found", id)
+		return fmt.Errorf("dlq entry %s not found or already handled", id)
+	}
+	if b.state == nil {
+		return fmt.Errorf("dlq state store not configured")
 	}
 	if err := b.retryTo.Send(ctx, []byte(entry.Key), []byte(entry.Value), nil); err != nil {
 		return fmt.Errorf("retrying %s: %w", id, err)
 	}
-	b.Discard(id)
+	if err := b.state.Mark(ctx, b.topic, id, StateRetried); err != nil {
+		return fmt.Errorf("retried %s but recording it failed, it may be offered again: %w", id, err)
+	}
 	return nil
 }
 

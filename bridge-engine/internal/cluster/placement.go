@@ -74,15 +74,33 @@ func (p *placer) leaderEpoch(ctx context.Context, generation int32) (int64, erro
 	return max(int64(generation), p.maxEpoch+1), nil
 }
 
+// eligible returns, sorted, the live nodes whose labels satisfy selector.
+func eligible(live map[string]heartbeatRecord, selector map[string]string) []string {
+	out := make([]string, 0, len(live))
+	for id, rec := range live {
+		ok := true
+		for k, v := range selector {
+			if rec.Labels[k] != v {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			out = append(out, id)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // publish writes, in one batch, the placement for every enabled pipeline
 // whose computed assignment differs from what this leader last published
-// under epoch, plus a tombstone for any pipeline no longer configured. It
-// returns how many records it wrote.
-func (p *placer) publish(ctx context.Context, epoch int64, pipelines []config.Pipeline, liveNodes []string) (int, error) {
-	nodes := make([]string, len(liveNodes))
-	copy(nodes, liveNodes)
-	sort.Strings(nodes)
-
+// under epoch, plus a tombstone for any pipeline no longer configured. Each
+// pipeline is spread only over live nodes matching its node_selector, and
+// never over more workers than its source topic has partitions (extra
+// consumers in a group just sit idle). It returns how many records it
+// wrote.
+func (p *placer) publish(ctx context.Context, epoch int64, pipelines []config.Pipeline, live map[string]heartbeatRecord, partitions map[string]int) (int, error) {
 	p.mu.Lock()
 	if p.pubEpoch != epoch {
 		p.pubEpoch = epoch
@@ -98,7 +116,14 @@ func (p *placer) publish(ctx context.Context, epoch int64, pipelines []config.Pi
 		if !pl.IsEnabled() {
 			continue
 		}
-		assign := distribute(pl.Workers, nodes)
+		total := pl.Workers
+		if n := partitions[pl.SourceTopic]; n > 0 {
+			total = min(total, n)
+		}
+		assign := distribute(total, eligible(live, pl.Placement.NodeSelector))
+		if len(assign) == 0 {
+			p.log.Warn("no live node matches this pipeline's node_selector, it runs nowhere until one joins", "pipeline", pl.Name, "node_selector", pl.Placement.NodeSelector)
+		}
 		next[pl.Name] = assign
 		if old, ok := prev[pl.Name]; ok && maps.Equal(old, assign) {
 			continue

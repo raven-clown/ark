@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"log/slog"
 	"net/http"
@@ -14,6 +15,8 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/authz"
 	"github.com/raven-clown/ark/bridge-engine/internal/cluster"
 	"github.com/raven-clown/ark/bridge-engine/internal/config"
+	"github.com/raven-clown/ark/bridge-engine/internal/consumer"
+	"github.com/raven-clown/ark/bridge-engine/internal/dlq"
 	"github.com/raven-clown/ark/bridge-engine/internal/mcpserver"
 	"github.com/raven-clown/ark/bridge-engine/internal/orchestrator"
 )
@@ -77,6 +80,43 @@ func watchFile(ctx context.Context, path string, interval time.Duration, reload 
 	}
 }
 
+// clusterRegistry routes pause/resume through the cluster control topic,
+// so a pause made through any node holds on every node and survives
+// restarts. Everything else is served from this node's own Manager.
+type clusterRegistry struct {
+	*orchestrator.Manager
+	node *cluster.Node
+	log  *slog.Logger
+}
+
+func (c clusterRegistry) SetPaused(name string, paused bool) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := c.node.PublishPause(ctx, name, paused); err != nil {
+		if !errors.Is(err, cluster.ErrUnknownPipeline) {
+			c.log.Error("publishing cluster-wide pause failed", "pipeline", name, "error", err)
+		}
+		return false
+	}
+	return true
+}
+
+func localStats(mgr *orchestrator.Manager) map[string]cluster.PipelineStats {
+	out := make(map[string]cluster.PipelineStats)
+	for _, r := range mgr.Runners() {
+		st := r.Status()
+		agg := out[st.Pipeline]
+		agg.Workers++
+		agg.Processed += st.Processed
+		agg.Rejected += st.Rejected
+		agg.DeadLettered += st.DeadLettered
+		agg.Failed += st.Failed
+		agg.Paused = agg.Paused || st.Paused
+		out[st.Pipeline] = agg
+	}
+	return out
+}
+
 func main() {
 	configPath := flag.String("config", "config.yaml", "path to pipelines config file")
 	apiAddr := flag.String("api-addr", ":8080", "address for the REST API")
@@ -98,17 +138,34 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	mgr := orchestrator.New(ctx, cfg.Brokers, cfg.Topics.ReplicationFactor, logger)
+	dlqState, err := dlq.NewStateStore(ctx, cfg.Brokers, cfg.Topics.ReplicationFactor, logger)
+	if err != nil {
+		logger.Error("starting dlq state store failed", "error", err)
+		os.Exit(1)
+	}
+	go dlqState.Run(ctx)
+	dlqState.WaitCaughtUp(ctx)
+
+	mgr := orchestrator.New(ctx, consumer.Deps{
+		Brokers:           cfg.Brokers,
+		ReplicationFactor: cfg.Topics.ReplicationFactor,
+		DLQState:          dlqState,
+	}, logger)
 
 	reconcile := cluster.ReconcileFunc(mgr.Reconcile)
 	var clusterNode *cluster.Node
 	if cfg.Cluster.Enabled {
 		clusterNode = cluster.New(cfg.Brokers, cfg.Cluster, cfg.Topics.ReplicationFactor, mgr.Reconcile, logger)
+		clusterNode.SetStatsProvider(func() map[string]cluster.PipelineStats { return localStats(mgr) })
+		clusterNode.SetPauseHandler(func(name string, paused bool) { mgr.SetPaused(name, paused) })
 		if err := clusterNode.Start(ctx); err != nil {
 			logger.Error("starting cluster node failed", "error", err)
 			os.Exit(1)
 		}
-		reconcile = clusterNode.ApplyConfig
+		reconcile = func(pipelines []config.Pipeline) []error {
+			mgr.SyncStandbyBrowsers(pipelines)
+			return clusterNode.ApplyConfig(pipelines)
+		}
 		logger.Info("cluster mode enabled", "cluster", cfg.Cluster.Name, "node_id", clusterNode.ID())
 	}
 
@@ -127,12 +184,16 @@ func main() {
 	if !apiTokens.Enabled() {
 		logger.Warn("no ARK_API_*_TOKENS set: the REST API only accepts requests from localhost")
 	}
-	rootMux.Handle("/", api.NewServer(mgr, reload, clusterNode, apiTokens))
+	var registry api.Registry = mgr
+	if clusterNode != nil {
+		registry = clusterRegistry{Manager: mgr, node: clusterNode, log: logger}
+	}
+	rootMux.Handle("/", api.NewServer(registry, reload, clusterNode, apiTokens))
 
 	mcpTokens := mcpserver.LoadTokenStoreFromEnv()
 	if mcpTokens.Enabled() {
 		auditLog := logger.With("component", "mcp-audit")
-		rootMux.Handle("/mcp", mcpserver.NewHTTPHandler(mgr, mcpTokens, auditLog))
+		rootMux.Handle("/mcp", mcpserver.NewHTTPHandler(registry, mcpTokens, auditLog))
 		logger.Info("mcp server enabled", "path", "/mcp")
 	} else {
 		logger.Info("mcp server disabled: no ARK_MCP_*_TOKENS set")
