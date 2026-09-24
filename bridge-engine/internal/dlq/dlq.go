@@ -94,7 +94,7 @@ func (b *Browser) tail(ctx context.Context, partition int) {
 	start := kafka.FirstOffset
 	if conn, err := kafka.DialLeader(ctx, "tcp", b.brokers[0], b.topic, partition); err == nil {
 		first, last, err := conn.ReadOffsets()
-		conn.Close()
+		_ = conn.Close()
 		if err == nil {
 			start = max(first, last-int64(b.maxEntries))
 		}

@@ -89,7 +89,7 @@ func (s *StateStore) Run(ctx context.Context) {
 		conn, err := kafka.DialLeader(ctx, "tcp", s.brokers[0], StateTopic, 0)
 		if err == nil {
 			hw, err = conn.ReadLastOffset()
-			conn.Close()
+			_ = conn.Close()
 		}
 		if err == nil {
 			break
