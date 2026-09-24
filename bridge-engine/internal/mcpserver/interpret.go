@@ -39,6 +39,8 @@ var intentRules = []intentRule{
 	{"retry", []string{"retry", "reprocess", "resend", "redrive", "ลองใหม่", "ส่งใหม่", "ประมวลผลใหม่", "รีไทร"}, "The user wants dead-lettered messages processed again."},
 	{"config_view", []string{"config", "configuration", "settings", "yaml", "การตั้งค่า", "คอนฟิก", "ตั้งไว้ยังไง"}, "The user wants to see how something is configured."},
 	{"topics", []string{"topic", "topics", "partition", "ท็อปปิก", "หัวข้อ"}, "The user is asking about Kafka topics."},
+	{"check_data", []string{"weird data", "bad data", "strange", "odd", "malformed", "invalid", "format", "schema", "validate data", "data quality", "anomal", "parameter", "ข้อมูลแปลก", "ข้อมูลผิด", "ข้อมูลเสีย", "รูปแบบ", "ฟอร์แมต", "พารามิเตอร์", "ตรวจข้อมูล", "คุณภาพข้อมูล", "ผิดปกติ", "ไม่ตรง format"}, "The user wants the actual messages checked for odd formats, fields or values."},
+	{"data_rules", []string{"data rule", "rule", "catch", "block bad", "reject if", "กฎ", "ดักจับ", "ดัก", "กรอง", "ห้าม", "บังคับ field"}, "The user wants rules that catch or block bad data."},
 }
 
 var planFor = map[string][]string{
@@ -57,6 +59,8 @@ var planFor = map[string][]string{
 	"retry":         {"list_dlq_messages", "retry_dlq_message for the entries the user means (confirm if several)"},
 	"config_view":   {"get_pipeline_config"},
 	"topics":        {"list_topics"},
+	"check_data":    {"check_data (from: source; also dlq if failures are the concern)", "test_message with an example the user gave, if any"},
+	"data_rules":    {"check_data to see real data and get suggested_data_rules_yaml", "get_pipeline_config", "apply_pipeline_config with data_rules added (preview, then confirm; start with on_violation: tag)"},
 }
 
 type nameMatch struct {

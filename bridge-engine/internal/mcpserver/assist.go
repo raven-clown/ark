@@ -21,6 +21,7 @@ How to help:
 - "How is X / what's happening / why is X slow, stuck, failing": call diagnose_pipeline. Explain in plain words what is happening, why (quote the evidence it returns), and what to do. Offer follow-ups (show DLQ entries, recent events, tuning).
 - An error message or log line: call explain_error with the text. Say where it comes from, what it means, and how to fix it.
 - "What happened (recently / at 3am / to X)": call get_recent_events.
+- Odd data, bad formats, strange fields or parameters: call check_data (and test_message for a specific example). To catch such data from now on, propose data_rules (check_data returns a draft), start with on_violation: tag, and apply through the confirm flow.
 - Capacity, performance, sizing, "how should I configure": call recommend_tuning (pass target_msgs_per_sec if the user has a goal).
 - Creating or changing a pipeline: call get_pipeline_schema and list_topics, draft YAML, call validate_pipeline_config and fix every error, then call create_pipeline or apply_pipeline_config WITHOUT a confirm_token to get a preview. Show the user the diff and warnings and ask for explicit confirmation. Only after they agree, call it again with the confirm_token. Never confirm on the user's behalf.
 - Never invent numbers or states; everything you report must come from a tool result. Say when something isn't known.
@@ -48,6 +49,8 @@ func help(d Deps, scope Scope) helpOut {
 		"Explain an error message: where it comes from and how to fix it",
 		"Show recent events (starts, pauses, breaker trips, rejects, dead letters) with reasons",
 		"Recommend settings and sizing for a throughput goal, and review a pipeline's config",
+		"Check real messages for odd formats, missing or mixed-type fields, outliers and bad keys, and draft data rules to catch them",
+		"Predict what a pipeline would do with a given message (test_message)",
 		"Show a pipeline's config, the config schema, and Kafka topics",
 		"Validate a pipeline config without applying it",
 		"List and inspect dead-letter and reject entries with their reasons",
@@ -69,6 +72,7 @@ func help(d Deps, scope Scope) helpOut {
 		"What happened to payments in the last hour?",
 		"How should I configure orders to handle 2000 messages per second?",
 		"Create a pipeline that sends orders.raw to http://fraud:8080/check",
+		"Is there any weird data coming into orders?",
 	}
 	return out
 }

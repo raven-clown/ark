@@ -87,6 +87,30 @@ func buildServer(scope Scope, d Deps, cf *confirmations) *mcp.Server {
 	})
 
 	mcp.AddTool(s, &mcp.Tool{
+		Name:        "check_data",
+		Description: "Look at real recent messages of a pipeline (from: source, dlq or reject) and report what's odd: invalid JSON, missing keys, fields with mixed types or missing sometimes, values that break the usual format (uuid, email, date-time, url), numeric outliers, and data rule violations. Also returns suggested data_rules drafted from what the data actually looks like.",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in checkDataIn) (*mcp.CallToolResult, checkDataOut, error) {
+		p, ok := d.pipeline(in.Name)
+		if !ok {
+			return nil, checkDataOut{}, fmt.Errorf("pipeline not found or not visible: %s", in.Name)
+		}
+		out, err := checkData(ctx, d, p, in.Sample, in.From)
+		return nil, out, err
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "test_message",
+		Description: "Predict what a pipeline would do with one message, without sending anything: which data rules it breaks, whether a fast_path_rule catches it, or whether it would go to the target.",
+	}, func(_ context.Context, _ *mcp.CallToolRequest, in testMessageIn) (*mcp.CallToolResult, testMessageOut, error) {
+		p, ok := d.pipeline(in.Name)
+		if !ok {
+			return nil, testMessageOut{}, fmt.Errorf("pipeline not found or not visible: %s", in.Name)
+		}
+		out, err := testMessage(p, in)
+		return nil, out, err
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
 		Name:        "get_pipeline_schema",
 		Description: "Every pipeline config field: type, whether it's required, default, allowed values and what it does, plus a complete example. Use before writing or changing pipeline YAML.",
 	}, func(context.Context, *mcp.CallToolRequest, emptyIn) (*mcp.CallToolResult, schemaOut, error) {
@@ -175,6 +199,12 @@ func buildServer(scope Scope, d Deps, cf *confirmations) *mcp.Server {
 	}
 
 	return s
+}
+
+type checkDataIn struct {
+	Name   string `json:"name" jsonschema:"the pipeline name"`
+	Sample int    `json:"sample,omitempty" jsonschema:"how many recent messages to look at, default 100"`
+	From   string `json:"from,omitempty" jsonschema:"source (default), dlq or reject"`
 }
 
 type interpretIn struct {

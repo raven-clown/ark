@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"regexp"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -129,6 +130,7 @@ type Pipeline struct {
 	PostCallbackRules []FastPathRule   `yaml:"post_callback_rules"`
 	Placement         Placement        `yaml:"placement"`
 	CircuitBreaker    CircuitBreaker   `yaml:"circuit_breaker"`
+	DataRules         DataRules        `yaml:"data_rules"`
 	DeadLetterRedrive Redrive          `yaml:"dead_letter_redrive"`
 	OnExhausted       OnExhausted      `yaml:"on_exhausted"`
 	Enabled           *bool            `yaml:"enabled"`
@@ -142,6 +144,53 @@ type Cluster struct {
 	NodeTimeoutSeconds       int               `yaml:"node_timeout_seconds"`
 	PlacementIntervalSeconds int               `yaml:"placement_interval_seconds"`
 	Labels                   map[string]string `yaml:"labels"`
+}
+
+// DataRules describe what a valid message looks like. Every message is
+// checked before fast_path_rules and before the callback; one that breaks a
+// rule is handled by OnViolation, with the broken rules as the reason.
+type DataRules struct {
+	// OnViolation: reject (default; reject_topic, or the DLQ without one),
+	// dead_letter, or tag (let it through with an X-Ark-Violations header).
+	OnViolation string `yaml:"on_violation,omitempty"`
+	// AllowUnknownFields: false flags top-level fields no rule mentions.
+	AllowUnknownFields *bool        `yaml:"allow_unknown_fields,omitempty"`
+	MaxBytes           int          `yaml:"max_bytes,omitempty"`
+	Key                *ValueRule   `yaml:"key,omitempty"`
+	Headers            []HeaderRule `yaml:"headers,omitempty"`
+	Fields             []FieldRule  `yaml:"fields,omitempty"`
+}
+
+func (d DataRules) Enabled() bool {
+	return len(d.Fields) > 0 || d.Key != nil || len(d.Headers) > 0 || d.MaxBytes > 0 || (d.AllowUnknownFields != nil && !*d.AllowUnknownFields)
+}
+
+// ValueRule constrains one string value (a message key or a header).
+type ValueRule struct {
+	Required  bool     `yaml:"required,omitempty"`
+	Pattern   string   `yaml:"pattern,omitempty"`
+	Enum      []string `yaml:"enum,omitempty"`
+	MaxLength int      `yaml:"max_length,omitempty"`
+}
+
+type HeaderRule struct {
+	Name      string `yaml:"name"`
+	ValueRule `yaml:",inline"`
+}
+
+// FieldRule constrains one field of a JSON message, addressed by a dot
+// path such as "customer.id".
+type FieldRule struct {
+	Path      string   `yaml:"path"`
+	Required  bool     `yaml:"required,omitempty"`
+	Type      string   `yaml:"type,omitempty"`
+	Min       *float64 `yaml:"min,omitempty"`
+	Max       *float64 `yaml:"max,omitempty"`
+	MinLength *int     `yaml:"min_length,omitempty"`
+	MaxLength *int     `yaml:"max_length,omitempty"`
+	Pattern   string   `yaml:"pattern,omitempty"`
+	Enum      []string `yaml:"enum,omitempty"`
+	Format    string   `yaml:"format,omitempty"`
 }
 
 // CircuitBreaker controls when ARK stops calling a failing target:
@@ -408,6 +457,10 @@ func ValidatePipelines(pipelines []Pipeline) error {
 			return fmt.Errorf("pipeline %q: unknown ordering %q (want per_key, per_partition or none)", p.Name, p.Ordering)
 		}
 
+		if err := validateDataRules(p.DataRules); err != nil {
+			return fmt.Errorf("pipeline %q: data_rules: %w", p.Name, err)
+		}
+
 		if p.CircuitBreaker.FailureThreshold < 1 || p.CircuitBreaker.CooldownSeconds < 1 {
 			return fmt.Errorf("pipeline %q: circuit_breaker.failure_threshold and cooldown_seconds must be at least 1", p.Name)
 		}
@@ -448,6 +501,60 @@ func validateRules(pipelineName, field string, rules []FastPathRule) error {
 			}
 		default:
 			return fmt.Errorf("pipeline %q: %s[%d]: unknown action %q", pipelineName, field, j, r.Action)
+		}
+	}
+	return nil
+}
+
+var (
+	fieldTypes   = map[string]bool{"": true, "string": true, "number": true, "integer": true, "boolean": true, "object": true, "array": true, "null": true}
+	fieldFormats = map[string]bool{"": true, "email": true, "uuid": true, "date-time": true, "date": true, "url": true, "ipv4": true}
+)
+
+func validateDataRules(d DataRules) error {
+	switch d.OnViolation {
+	case "", "reject", "dead_letter", "tag":
+	default:
+		return fmt.Errorf("on_violation must be reject, dead_letter or tag, got %q", d.OnViolation)
+	}
+	checkValue := func(where string, v ValueRule) error {
+		if v.Pattern != "" {
+			if _, err := regexp.Compile(v.Pattern); err != nil {
+				return fmt.Errorf("%s: pattern: %w", where, err)
+			}
+		}
+		return nil
+	}
+	if d.Key != nil {
+		if err := checkValue("key", *d.Key); err != nil {
+			return err
+		}
+	}
+	for i, h := range d.Headers {
+		if h.Name == "" {
+			return fmt.Errorf("headers[%d]: name is required", i)
+		}
+		if err := checkValue("header "+h.Name, h.ValueRule); err != nil {
+			return err
+		}
+	}
+	for i, f := range d.Fields {
+		if f.Path == "" {
+			return fmt.Errorf("fields[%d]: path is required", i)
+		}
+		if !fieldTypes[f.Type] {
+			return fmt.Errorf("field %s: unknown type %q (string, number, integer, boolean, object, array, null)", f.Path, f.Type)
+		}
+		if !fieldFormats[f.Format] {
+			return fmt.Errorf("field %s: unknown format %q (email, uuid, date-time, date, url, ipv4)", f.Path, f.Format)
+		}
+		if f.Pattern != "" {
+			if _, err := regexp.Compile(f.Pattern); err != nil {
+				return fmt.Errorf("field %s: pattern: %w", f.Path, err)
+			}
+		}
+		if f.Min != nil && f.Max != nil && *f.Min > *f.Max {
+			return fmt.Errorf("field %s: min is greater than max", f.Path)
 		}
 	}
 	return nil

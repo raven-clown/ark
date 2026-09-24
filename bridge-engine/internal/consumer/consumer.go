@@ -14,6 +14,7 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/breaker"
 	"github.com/raven-clown/ark/bridge-engine/internal/callback"
 	"github.com/raven-clown/ark/bridge-engine/internal/config"
+	"github.com/raven-clown/ark/bridge-engine/internal/datarules"
 	"github.com/raven-clown/ark/bridge-engine/internal/dlq"
 	"github.com/raven-clown/ark/bridge-engine/internal/events"
 	"github.com/raven-clown/ark/bridge-engine/internal/kafkaadmin"
@@ -72,6 +73,7 @@ type shared struct {
 	breaker       *breaker.Breaker
 	targetPool    *targetpool.Pool
 	rules         *rules.Engine
+	dataRules     *datarules.Checker
 	paused        atomic.Bool
 	overrideMu    sync.Mutex
 	overrideDest  map[string]*producer.Producer
@@ -94,6 +96,10 @@ func newShared(ctx context.Context, deps Deps, p config.Pipeline, log *slog.Logg
 	if err != nil {
 		return nil, err
 	}
+	checker, err := datarules.New(p.DataRules)
+	if err != nil {
+		return nil, fmt.Errorf("data_rules: %w", err)
+	}
 
 	if p.DeadLetterTopic != "" {
 		if err := kafkaadmin.EnsureTopic(ctx, brokers, p.DeadLetterTopic, 1, replicationFactor); err != nil {
@@ -115,6 +121,7 @@ func newShared(ctx context.Context, deps Deps, p config.Pipeline, log *slog.Logg
 		breaker:      breaker.New(p.CircuitBreaker.FailureThreshold, time.Duration(p.CircuitBreaker.CooldownSeconds)*time.Second),
 		targetPool:   targetpool.New(p.Target, client),
 		rules:        engine,
+		dataRules:    checker,
 		overrideDest: make(map[string]*producer.Producer),
 	}
 
@@ -584,6 +591,31 @@ func (r *Runner) process(ctx context.Context, msg kafka.Message) error {
 		}
 	}
 
+	if c := r.shared.dataRules; c != nil {
+		original := make(map[string]string, len(msg.Headers))
+		for _, h := range msg.Headers {
+			original[h.Key] = string(h.Value)
+		}
+		if vs := c.Check(msg.Key, original, msg.Value); len(vs) > 0 {
+			reason := datarules.Summary(vs)
+			for _, v := range vs {
+				metrics.DataRuleViolations.WithLabelValues(r.pipeline.Name, v.Rule, r.pipeline.Tenant).Inc()
+			}
+			events.Record(r.pipeline.Name, events.DataRuleViolation, reason, map[string]string{
+				"partition": strconv.Itoa(msg.Partition), "offset": strconv.FormatInt(msg.Offset, 10),
+				"correlation_id": correlationID, "on_violation": c.OnViolation(),
+			})
+			switch c.OnViolation() {
+			case "tag":
+				headers[ViolationsHeader] = reason
+			case "dead_letter":
+				return r.route(ctx, r.shared.dlq, msg.Key, msg.Value, headers, log, "dead_lettered", 0, reason)
+			default:
+				return r.route(ctx, r.shared.reject, msg.Key, msg.Value, headers, log, "rejected", 0, reason)
+			}
+		}
+	}
+
 	if r.shared.rules.HasFastPath() {
 		rule, err := r.shared.rules.EvaluateFastPath(msg.Value)
 		if err != nil {
@@ -716,6 +748,9 @@ const (
 	ReasonHeader   = "X-Ark-Reason"
 	PipelineHeader = "X-Ark-Pipeline"
 	FailedAtHeader = "X-Ark-Failed-At"
+	// ViolationsHeader lists broken data rules on a message let through
+	// with data_rules.on_violation: tag.
+	ViolationsHeader = "X-Ark-Violations"
 )
 
 func (r *Runner) route(ctx context.Context, target *producer.Producer, key, value []byte, headers map[string]string, log *slog.Logger, outcome string, statusCode int, reason string) error {

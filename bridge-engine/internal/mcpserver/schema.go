@@ -41,6 +41,13 @@ var pipelineSchema = []fieldDoc{
 	{"rule.action", "string", "yes (per rule)", "", []string{"pass_through", "reject", "drop", "dead_letter", "transform_route"}, "transform_route needs exactly one of destination_override or webhook_override."},
 	{"dead_letter_redrive", "{after_seconds, max_times}", "no", "", nil, "Resend dead-lettered messages automatically once they're after_seconds old, at most max_times each."},
 	{"placement.node_selector", "map", "no", "", nil, "Cluster mode: only run on nodes whose cluster.labels contain all these key/values."},
+	{"circuit_breaker", "{failure_threshold, cooldown_seconds}", "no", "5, 30", nil, "After failure_threshold failures in a row, stop calling the target and hold messages for cooldown_seconds."},
+	{"data_rules.on_violation", "string", "no", "reject", []string{"reject", "dead_letter", "tag"}, "What happens to a message that breaks a data rule. tag lets it through with an X-Ark-Violations header, useful to observe before enforcing."},
+	{"data_rules.allow_unknown_fields", "bool", "no", "true", nil, "false flags top-level fields no rule mentions."},
+	{"data_rules.max_bytes", "int", "no", "", nil, "Largest allowed message body."},
+	{"data_rules.key", "{required, pattern, enum, max_length}", "no", "", nil, "Rules for the Kafka message key."},
+	{"data_rules.headers", "[]{name, required, pattern, enum, max_length}", "no", "", nil, "Rules for Kafka headers."},
+	{"data_rules.fields", "[]{path, required, type, min, max, min_length, max_length, pattern, enum, format}", "no", "", nil, "Rules for JSON body fields by dot path (customer.id). type: string, number, integer, boolean, object, array, null. format: email, uuid, date-time, date, url, ipv4. Checked before fast_path_rules and before the callback."},
 }
 
 const exampleYAML = `name: orders-to-fraud-check
@@ -66,4 +73,11 @@ fast_path_rules:
 dead_letter_redrive:
   after_seconds: 3600
   max_times: 3
+data_rules:
+  on_violation: reject
+  fields:
+    - {path: order_id, required: true, type: string, pattern: "^ORD-[0-9]+$"}
+    - {path: amount, required: true, type: number, min: 0}
+    - {path: currency, enum: [THB, USD, EUR]}
+    - {path: customer.email, format: email}
 `

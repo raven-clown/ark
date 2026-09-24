@@ -28,6 +28,7 @@ const (
 	ConfigApplied       Kind = "config_applied"
 	LeaderChanged       Kind = "leader_changed"
 	DLQRedriven         Kind = "dlq_redriven"
+	DataRuleViolation   Kind = "data_rule_violation"
 )
 
 type Event struct {
