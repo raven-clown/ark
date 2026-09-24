@@ -36,7 +36,18 @@ func (s *staticRegistry) PipelineRunners(name string) []*consumer.Runner {
 	return s.byName[name]
 }
 
-func NewServer(reg Registry) http.Handler {
+// Reloader re-reads the config file from disk and reconciles running
+// pipelines to match it: starting new ones, stopping removed ones, and
+// restarting ones whose config changed. It returns an error if the file
+// fails to parse or validate, in which case the running pipelines are left
+// untouched. A pipeline (re)started by Reload keeps running past the
+// lifetime of whatever request triggered it, exactly like one started at
+// boot; implementations must not tie its lifetime to the caller's context.
+type Reloader interface {
+	Reload() error
+}
+
+func NewServer(reg Registry, reload Reloader) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -44,6 +55,18 @@ func NewServer(reg Registry) http.Handler {
 	})
 
 	mux.Handle("GET /metrics", promhttp.Handler())
+
+	mux.HandleFunc("POST /api/v1/config/reload", func(w http.ResponseWriter, r *http.Request) {
+		if reload == nil {
+			writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "hot-reload not configured"})
+			return
+		}
+		if err := reload.Reload(); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"state": "reloaded"})
+	})
 
 	mux.HandleFunc("GET /api/v1/pipelines", func(w http.ResponseWriter, r *http.Request) {
 		statuses := make([]consumer.Status, 0, len(reg.Runners()))

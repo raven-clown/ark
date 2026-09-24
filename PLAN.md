@@ -367,7 +367,26 @@ succeeds but the webhook call fails?).
       and the per-runner `slog` logger both carry a `tenant` label
       alongside `pipeline`, sourced from the config's optional
       `tenant:` field.
-- [ ] Hot-reload config without downtime (file watch or reload endpoint)
+- [x] Hot-reload config without downtime, both ways at once:
+      `internal/orchestrator` owns the set of running pipelines and
+      reconciles it against a fresh config read, diffing each pipeline
+      with `reflect.DeepEqual` so unchanged ones are left running
+      untouched, removed ones are stopped, new ones are started, and
+      changed ones are stopped and restarted (some fields, like
+      `workers` or `consumer_group`, aren't safe to change on a live
+      `Runner`). A background poller checks the config file's mtime
+      every 5 seconds and reconciles automatically; `POST
+      /api/v1/config/reload` triggers the same reconcile on demand and
+      is safe to call redundantly. A pipeline the reload starts runs
+      under the process's own lifetime context, not the HTTP request
+      that triggered it: an earlier draft wired it to `r.Context()`,
+      which would have killed a freshly-reloaded pipeline the instant
+      the reload response was written, caught before it shipped.
+      Verified live: edited the config file on a running container,
+      watched the auto-reload stop a removed pipeline, restart one
+      whose `workers` changed, and start a brand new one, all within
+      one poll interval and with zero downtime for the pipeline that
+      didn't change.
 - [x] `multi_url` target mode: round-robin, least-in-flight, sticky-partition,
       implemented in `internal/targetpool`. `target.strategy` picks the
       algorithm; `sticky_partition` maps a message's Kafka partition to an
