@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -127,6 +128,7 @@ type Pipeline struct {
 	FastPathRules     []FastPathRule   `yaml:"fast_path_rules"`
 	PostCallbackRules []FastPathRule   `yaml:"post_callback_rules"`
 	Placement         Placement        `yaml:"placement"`
+	CircuitBreaker    CircuitBreaker   `yaml:"circuit_breaker"`
 	DeadLetterRedrive Redrive          `yaml:"dead_letter_redrive"`
 	OnExhausted       OnExhausted      `yaml:"on_exhausted"`
 	Enabled           *bool            `yaml:"enabled"`
@@ -140,6 +142,14 @@ type Cluster struct {
 	NodeTimeoutSeconds       int               `yaml:"node_timeout_seconds"`
 	PlacementIntervalSeconds int               `yaml:"placement_interval_seconds"`
 	Labels                   map[string]string `yaml:"labels"`
+}
+
+// CircuitBreaker controls when ARK stops calling a failing target:
+// after FailureThreshold failures in a row it holds messages in place for
+// CooldownSeconds before trying again.
+type CircuitBreaker struct {
+	FailureThreshold int `yaml:"failure_threshold"`
+	CooldownSeconds  int `yaml:"cooldown_seconds"`
 }
 
 // Redrive automatically resends dead-lettered messages to source_topic
@@ -161,8 +171,20 @@ type Topics struct {
 	ReplicationFactor int `yaml:"replication_factor"`
 }
 
+// Assistant tunes the MCP assistant. Lexicon adds words (in any
+// language) that signal an intent, on top of the built-in English, Thai
+// and Chinese ones, e.g. {diagnose: ["langsam", "lento"]}.
+type Assistant struct {
+	Lexicon map[string][]string `yaml:"lexicon"`
+}
+
 type Config struct {
-	Brokers   []string   `yaml:"brokers"`
+	Brokers []string `yaml:"brokers"`
+	// Timezone (IANA name, e.g. Asia/Bangkok) used when showing times over
+	// the API and MCP. Times are always ISO 8601 with an offset; storage and
+	// logs stay in UTC. Default UTC.
+	Timezone  string     `yaml:"timezone"`
+	Assistant Assistant  `yaml:"assistant"`
 	Topics    Topics     `yaml:"topics"`
 	Cluster   Cluster    `yaml:"cluster"`
 	Pipelines []Pipeline `yaml:"pipelines"`
@@ -201,6 +223,9 @@ func Load(path string) (*Config, error) {
 }
 
 func applyDefaults(cfg *Config) {
+	if cfg.Timezone == "" {
+		cfg.Timezone = "UTC"
+	}
 	if cfg.Topics.ReplicationFactor == 0 {
 		cfg.Topics.ReplicationFactor = 3
 	}
@@ -220,52 +245,67 @@ func applyDefaults(cfg *Config) {
 	}
 
 	for i := range cfg.Pipelines {
-		p := &cfg.Pipelines[i]
-		if p.MCPAccess == "" {
-			p.MCPAccess = MCPAccessReadOnly
-		}
-		if p.Target.Mode == "" {
-			p.Target.Mode = TargetModeSingleURL
-		}
-		if p.Target.Mode == TargetModeMultiURL && p.Target.Strategy == "" {
-			p.Target.Strategy = StrategyRoundRobin
-		}
-		if p.Target.HealthCheckURL != "" && p.Target.HealthCheckSecs == 0 {
-			p.Target.HealthCheckSecs = 10
-		}
-		if len(p.Target.HealthCheckURLs) > 0 && p.Target.HealthCheckSecs == 0 {
-			p.Target.HealthCheckSecs = 10
-		}
-		if p.Workers < 1 {
-			p.Workers = 1
-		}
-		if p.Consumer.MaxPollRecords == 0 {
-			p.Consumer.MaxPollRecords = 50
-		}
-		if p.Consumer.MaxPollIntervalMs == 0 {
-			p.Consumer.MaxPollIntervalMs = 300000
-		}
-		if p.Concurrency.MaxInFlight == 0 {
-			p.Concurrency.MaxInFlight = 10
-		}
-		if p.Retry.MaxAttempts == 0 {
-			p.Retry.MaxAttempts = 3
-		}
-		if p.Retry.BackoffMs == 0 {
-			p.Retry.BackoffMs = 1000
-		}
-		if p.Target.TimeoutMs == 0 {
-			p.Target.TimeoutMs = 30000
-		}
-		if p.Ordering == "" {
-			p.Ordering = OrderingPerKey
-		}
+		ApplyPipelineDefaults(&cfg.Pipelines[i])
+	}
+}
+
+// ApplyPipelineDefaults fills every unset pipeline field with its default,
+// the same way loading a config file does.
+func ApplyPipelineDefaults(p *Pipeline) {
+	if p.MCPAccess == "" {
+		p.MCPAccess = MCPAccessReadOnly
+	}
+	if p.Target.Mode == "" {
+		p.Target.Mode = TargetModeSingleURL
+	}
+	if p.Target.Mode == TargetModeMultiURL && p.Target.Strategy == "" {
+		p.Target.Strategy = StrategyRoundRobin
+	}
+	if p.Target.HealthCheckURL != "" && p.Target.HealthCheckSecs == 0 {
+		p.Target.HealthCheckSecs = 10
+	}
+	if len(p.Target.HealthCheckURLs) > 0 && p.Target.HealthCheckSecs == 0 {
+		p.Target.HealthCheckSecs = 10
+	}
+	if p.Workers < 1 {
+		p.Workers = 1
+	}
+	if p.Consumer.MaxPollRecords == 0 {
+		p.Consumer.MaxPollRecords = 50
+	}
+	if p.Consumer.MaxPollIntervalMs == 0 {
+		p.Consumer.MaxPollIntervalMs = 300000
+	}
+	if p.Concurrency.MaxInFlight == 0 {
+		p.Concurrency.MaxInFlight = 10
+	}
+	if p.Retry.MaxAttempts == 0 {
+		p.Retry.MaxAttempts = 3
+	}
+	if p.Retry.BackoffMs == 0 {
+		p.Retry.BackoffMs = 1000
+	}
+	if p.Target.TimeoutMs == 0 {
+		p.Target.TimeoutMs = 30000
+	}
+	if p.Ordering == "" {
+		p.Ordering = OrderingPerKey
+	}
+	if p.CircuitBreaker.FailureThreshold == 0 {
+		p.CircuitBreaker.FailureThreshold = 5
+	}
+	if p.CircuitBreaker.CooldownSeconds == 0 {
+		p.CircuitBreaker.CooldownSeconds = 30
 	}
 }
 
 func (c *Config) Validate() error {
 	if len(c.Brokers) == 0 {
 		return fmt.Errorf("brokers: at least one broker address is required")
+	}
+
+	if _, err := time.LoadLocation(c.Timezone); err != nil {
+		return fmt.Errorf("timezone %q is not a valid IANA time zone name (e.g. UTC, Asia/Bangkok): %w", c.Timezone, err)
 	}
 
 	if c.Topics.ReplicationFactor < 1 {
@@ -366,6 +406,10 @@ func ValidatePipelines(pipelines []Pipeline) error {
 		case OrderingPerKey, OrderingPerPartition, OrderingNone:
 		default:
 			return fmt.Errorf("pipeline %q: unknown ordering %q (want per_key, per_partition or none)", p.Name, p.Ordering)
+		}
+
+		if p.CircuitBreaker.FailureThreshold < 1 || p.CircuitBreaker.CooldownSeconds < 1 {
+			return fmt.Errorf("pipeline %q: circuit_breaker.failure_threshold and cooldown_seconds must be at least 1", p.Name)
 		}
 
 		if p.Target.TimeoutMs < 1 {

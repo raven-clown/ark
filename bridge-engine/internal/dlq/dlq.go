@@ -22,13 +22,18 @@ import (
 const RedriveCountHeader = "X-Ark-Redrive-Count"
 
 type Entry struct {
-	ID        string    `json:"id"`
-	Redrives  int       `json:"redrives"`
-	Key       string    `json:"key,omitempty"`
-	Value     string    `json:"value"`
-	Timestamp time.Time `json:"timestamp"`
-	Partition int       `json:"partition"`
-	Offset    int64     `json:"offset"`
+	ID       string `json:"id"`
+	Redrives int    `json:"redrives"`
+	// Reason says why the message ended up here, as recorded by ARK when
+	// it routed it (callback status, last error, or the rule that matched).
+	Reason        string    `json:"reason,omitempty"`
+	FailedAt      string    `json:"failed_at,omitempty"`
+	CorrelationID string    `json:"correlation_id,omitempty"`
+	Key           string    `json:"key,omitempty"`
+	Value         string    `json:"value"`
+	Timestamp     time.Time `json:"timestamp"`
+	Partition     int       `json:"partition"`
+	Offset        int64     `json:"offset"`
 }
 
 // Browser keeps the most recent entries of a dead-letter or reject topic
@@ -185,19 +190,30 @@ func (b *Browser) Close() error { return nil }
 
 func (b *Browser) add(msg kafka.Message) {
 	redrives := 0
+	var reason, failedAt, correlationID string
 	for _, h := range msg.Headers {
-		if h.Key == RedriveCountHeader {
+		switch h.Key {
+		case RedriveCountHeader:
 			redrives, _ = strconv.Atoi(string(h.Value))
+		case "X-Ark-Reason":
+			reason = string(h.Value)
+		case "X-Ark-Failed-At":
+			failedAt = string(h.Value)
+		case "X-Correlation-ID":
+			correlationID = string(h.Value)
 		}
 	}
 	entry := Entry{
-		ID:        entryID(msg.Partition, msg.Offset),
-		Redrives:  redrives,
-		Key:       string(msg.Key),
-		Value:     string(msg.Value),
-		Timestamp: msg.Time,
-		Partition: msg.Partition,
-		Offset:    msg.Offset,
+		ID:            entryID(msg.Partition, msg.Offset),
+		Redrives:      redrives,
+		Reason:        reason,
+		FailedAt:      failedAt,
+		CorrelationID: correlationID,
+		Key:           string(msg.Key),
+		Value:         string(msg.Value),
+		Timestamp:     msg.Time,
+		Partition:     msg.Partition,
+		Offset:        msg.Offset,
 	}
 
 	b.mu.Lock()

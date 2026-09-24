@@ -2,10 +2,12 @@ package orchestrator
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/raven-clown/ark/bridge-engine/internal/config"
 	"github.com/raven-clown/ark/bridge-engine/internal/dlq"
+	"github.com/raven-clown/ark/bridge-engine/internal/events"
 )
 
 const redriveInterval = 10 * time.Second
@@ -78,6 +80,7 @@ func (m *Manager) redriveOnce(ctx context.Context) {
 				continue
 			}
 			m.logger.Info("redrove dead-lettered message", "pipeline", t.name, "id", e.ID, "redrive", e.Redrives+1, "max", t.max)
+			events.Record(t.name, events.DLQRedriven, fmt.Sprintf("dead-lettered message %s resent to source_topic automatically (redrive %d of %d)", e.ID, e.Redrives+1, t.max), map[string]string{"original_reason": e.Reason})
 		}
 	}
 }

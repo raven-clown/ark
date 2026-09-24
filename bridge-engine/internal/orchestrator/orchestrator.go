@@ -10,6 +10,7 @@ import (
 
 	"github.com/raven-clown/ark/bridge-engine/internal/config"
 	"github.com/raven-clown/ark/bridge-engine/internal/consumer"
+	"github.com/raven-clown/ark/bridge-engine/internal/events"
 )
 
 type worker struct {
@@ -133,8 +134,10 @@ func (m *Manager) RememberPause(name string, paused bool) bool {
 
 	if paused {
 		consumer.Pause(runners)
+		events.Record(name, events.Paused, "pipeline paused by an operator; messages wait safely in source_topic", nil)
 	} else {
 		consumer.Resume(runners)
+		events.Record(name, events.Resumed, "pipeline resumed by an operator", nil)
 	}
 	return true
 }
@@ -199,6 +202,7 @@ func (m *Manager) Reconcile(pipelines []config.Pipeline) []error {
 		}
 		if err := m.start(p); err != nil {
 			errs = append(errs, fmt.Errorf("pipeline %q: %w", p.Name, err))
+			events.Record(p.Name, events.PipelineStartFailed, "pipeline failed to start, retrying in the background: "+err.Error(), nil)
 			m.retryStart(p)
 		}
 	}
@@ -277,6 +281,7 @@ func (m *Manager) start(p config.Pipeline) error {
 	m.mu.Unlock()
 
 	m.logger.Info("pipeline started", "pipeline", p.Name, "tenant", p.Tenant, "workers", len(runners))
+	events.Record(p.Name, events.PipelineStarted, fmt.Sprintf("pipeline started with %d worker(s) on this node", len(runners)), nil)
 	return nil
 }
 
@@ -298,6 +303,7 @@ func (m *Manager) supervise(ctx context.Context, runner *consumer.Runner) {
 			return
 		}
 		m.logger.Error("pipeline worker stopped, restarting it", "pipeline", runner.Name(), "tenant", runner.Tenant(), "error", err, "retry_in", backoff.String())
+		events.Record(runner.Name(), events.WorkerRestarted, fmt.Sprintf("worker %d stopped on its own and is being restarted: %v", runner.WorkerID(), err), nil)
 		select {
 		case <-ctx.Done():
 			return
@@ -325,6 +331,7 @@ func (m *Manager) stop(name string) {
 		m.logger.Error("closing pipeline shared resources failed", "pipeline", name, "tenant", rp.cfg.Tenant, "error", err)
 	}
 	m.logger.Info("pipeline stopped", "pipeline", name, "tenant", rp.cfg.Tenant)
+	events.Record(name, events.PipelineStopped, "pipeline stopped on this node (removed, disabled, or restarting with a changed config)", nil)
 }
 
 // launch starts one supervised worker under its own cancel, so it can be
@@ -380,6 +387,7 @@ func (m *Manager) resize(p config.Pipeline) {
 		<-w.done
 	}
 	m.logger.Info("pipeline resized in place", "pipeline", p.Name, "tenant", p.Tenant, "from", current, "to", want)
+	events.Record(p.Name, events.PipelineResized, fmt.Sprintf("workers on this node changed from %d to %d without a restart", current, want), nil)
 }
 
 // ShutdownAll stops every running pipeline and waits for them to finish

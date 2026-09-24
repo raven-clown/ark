@@ -15,6 +15,7 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/callback"
 	"github.com/raven-clown/ark/bridge-engine/internal/config"
 	"github.com/raven-clown/ark/bridge-engine/internal/dlq"
+	"github.com/raven-clown/ark/bridge-engine/internal/events"
 	"github.com/raven-clown/ark/bridge-engine/internal/kafkaadmin"
 	"github.com/raven-clown/ark/bridge-engine/internal/metrics"
 	"github.com/raven-clown/ark/bridge-engine/internal/producer"
@@ -29,6 +30,9 @@ type counters struct {
 	failed           atomic.Int64
 	running          atomic.Bool
 	lastActivityUnix atomic.Int64
+	callbackNanos    atomic.Int64
+	callbackCount    atomic.Int64
+	lag              atomic.Int64
 }
 
 type Status struct {
@@ -47,6 +51,15 @@ type Status struct {
 	Failed         int64   `json:"failed"`
 	Paused         bool    `json:"paused"`
 	LastActivityAt *string `json:"last_activity_at,omitempty"`
+	// Lag is how many messages on this worker's partitions are waiting.
+	Lag int64 `json:"lag"`
+	// OldestUncommittedSeconds is how long the message holding back this
+	// worker's commits has been in progress (0 when nothing is stuck).
+	OldestUncommittedSeconds float64 `json:"oldest_uncommitted_seconds"`
+	// AvgCallbackMs is the mean callback latency since the worker started.
+	AvgCallbackMs float64 `json:"avg_callback_ms"`
+	CallbackCalls int64   `json:"callback_calls"`
+	ConsumerGroup string  `json:"consumer_group"`
 }
 
 type shared struct {
@@ -99,7 +112,7 @@ func newShared(ctx context.Context, deps Deps, p config.Pipeline, log *slog.Logg
 		source:       producer.New(brokers, p.SourceTopic),
 		dest:         producer.New(brokers, p.DestinationTopic),
 		client:       client,
-		breaker:      breaker.New(5, 30*time.Second),
+		breaker:      breaker.New(p.CircuitBreaker.FailureThreshold, time.Duration(p.CircuitBreaker.CooldownSeconds)*time.Second),
 		targetPool:   targetpool.New(p.Target, client),
 		rules:        engine,
 		overrideDest: make(map[string]*producer.Producer),
@@ -253,20 +266,29 @@ func (r *Runner) Name() string {
 
 func (r *Runner) Status() Status {
 	s := Status{
-		Pipeline:     r.pipeline.Name,
-		Worker:       r.workerID,
-		Tenant:       r.pipeline.Tenant,
-		MCPAccess:    string(r.pipeline.MCPAccess),
-		SourceTopic:  r.pipeline.SourceTopic,
-		Destination:  r.pipeline.DestinationTopic,
-		Enabled:      r.pipeline.IsEnabled(),
-		Running:      r.counters.running.Load(),
-		BreakerState: r.shared.breaker.State(),
-		Processed:    r.counters.processed.Load(),
-		Rejected:     r.counters.rejected.Load(),
-		DeadLettered: r.counters.deadLettered.Load(),
-		Failed:       r.counters.failed.Load(),
-		Paused:       r.shared.paused.Load(),
+		Pipeline:      r.pipeline.Name,
+		Worker:        r.workerID,
+		Tenant:        r.pipeline.Tenant,
+		MCPAccess:     string(r.pipeline.MCPAccess),
+		SourceTopic:   r.pipeline.SourceTopic,
+		Destination:   r.pipeline.DestinationTopic,
+		Enabled:       r.pipeline.IsEnabled(),
+		Running:       r.counters.running.Load(),
+		BreakerState:  r.shared.breaker.State(),
+		Processed:     r.counters.processed.Load(),
+		Rejected:      r.counters.rejected.Load(),
+		DeadLettered:  r.counters.deadLettered.Load(),
+		Failed:        r.counters.failed.Load(),
+		Paused:        r.shared.paused.Load(),
+		Lag:           r.counters.lag.Load(),
+		CallbackCalls: r.counters.callbackCount.Load(),
+		ConsumerGroup: r.pipeline.ConsumerGroup,
+	}
+	if n := s.CallbackCalls; n > 0 {
+		s.AvgCallbackMs = float64(r.counters.callbackNanos.Load()) / float64(n) / 1e6
+	}
+	if since := r.headSince.Load(); since != 0 {
+		s.OldestUncommittedSeconds = time.Since(time.Unix(0, since)).Seconds()
 	}
 	if unix := r.counters.lastActivityUnix.Load(); unix != 0 {
 		formatted := time.Unix(unix, 0).UTC().Format(time.RFC3339)
@@ -448,6 +470,7 @@ func (r *Runner) processUntilDone(ctx context.Context, msg kafka.Message) error 
 		r.counters.failed.Add(1)
 		metrics.Failed.WithLabelValues(r.pipeline.Name, r.workerLabel, r.pipeline.Tenant).Inc()
 		r.log.Error("message could not be completed, retrying it in place instead of skipping it", "error", err, "offset", msg.Offset, "partition", msg.Partition, "retry_in", backoff.String())
+		events.Record(r.pipeline.Name, events.MessageRetrying, "a message could not be completed and is being retried in place, holding back later messages on its partition: "+err.Error(), map[string]string{"partition": strconv.Itoa(msg.Partition), "offset": strconv.FormatInt(msg.Offset, 10), "retry_in": backoff.String()})
 
 		select {
 		case <-ctx.Done():
@@ -511,7 +534,7 @@ func (r *Runner) probeHealth(ctx context.Context) {
 				continue
 			}
 			r.log.Info("health check probe succeeded, closing circuit breaker")
-			r.shared.breaker.RecordResult(true)
+			r.recordBreaker(true, "health check "+r.pipeline.Target.HealthCheckURL+" answered")
 		}
 	}
 }
@@ -525,6 +548,7 @@ func (r *Runner) reportLag(ctx context.Context) {
 			return
 		case <-ticker.C:
 			stats := r.reader.Stats()
+			r.counters.lag.Store(stats.Lag)
 			metrics.ConsumerLag.WithLabelValues(r.pipeline.Name, r.workerLabel, r.pipeline.Tenant).Set(float64(stats.Lag))
 			age := 0.0
 			if since := r.headSince.Load(); since != 0 {
@@ -573,6 +597,7 @@ func (r *Runner) process(ctx context.Context, msg kafka.Message) error {
 
 	var resp *callback.Response
 	var lastErr error
+	var lastFailure string
 	realAttempts := 0
 
 	for realAttempts < r.pipeline.Retry.MaxAttempts {
@@ -603,11 +628,15 @@ func (r *Runner) process(ctx context.Context, msg kafka.Message) error {
 		callStart := time.Now()
 		resp, lastErr = r.shared.client.Post(ctx, url, correlationID, msg.Value)
 		release()
-		metrics.CallbackDuration.WithLabelValues(r.pipeline.Name, r.pipeline.Tenant).Observe(time.Since(callStart).Seconds())
+		elapsed := time.Since(callStart)
+		r.counters.callbackNanos.Add(elapsed.Nanoseconds())
+		r.counters.callbackCount.Add(1)
+		metrics.CallbackDuration.WithLabelValues(r.pipeline.Name, r.pipeline.Tenant).Observe(elapsed.Seconds())
 
 		if lastErr == nil && r.pipeline.Target.IsReject(resp.StatusCode) {
-			r.shared.breaker.RecordResult(true)
-			return r.route(ctx, r.shared.reject, msg.Key, msg.Value, headers, log, "rejected", resp.StatusCode)
+			r.recordBreaker(true, "")
+			reason := fmt.Sprintf("target %s answered status %d, which is a reject status", url, resp.StatusCode)
+			return r.route(ctx, r.shared.reject, msg.Key, msg.Value, headers, log, "rejected", resp.StatusCode, reason)
 		}
 
 		if lastErr == nil && resp.RetryLater() {
@@ -621,6 +650,7 @@ func (r *Runner) process(ctx context.Context, msg kafka.Message) error {
 			wait = min(wait, maxRetryAfter)
 			metrics.Backpressured.WithLabelValues(r.pipeline.Name, r.workerLabel, r.pipeline.Tenant).Inc()
 			log.Warn("target asked to retry later", "status_code", resp.StatusCode, "retry_in", wait.String())
+			events.Record(r.pipeline.Name, events.TargetRateLimited, fmt.Sprintf("target %s answered %d, waiting %s before trying again", url, resp.StatusCode, wait), map[string]string{"partition": strconv.Itoa(msg.Partition), "offset": strconv.FormatInt(msg.Offset, 10)})
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
@@ -630,7 +660,16 @@ func (r *Runner) process(ctx context.Context, msg kafka.Message) error {
 		}
 
 		success := lastErr == nil && resp.Success()
-		r.shared.breaker.RecordResult(success)
+		failure := ""
+		if !success {
+			if lastErr != nil {
+				failure = lastErr.Error()
+			} else {
+				failure = fmt.Sprintf("target %s answered status %d", url, resp.StatusCode)
+			}
+			lastFailure = failure
+		}
+		r.recordBreaker(success, failure)
 		if success {
 			break
 		}
@@ -646,7 +685,8 @@ func (r *Runner) process(ctx context.Context, msg kafka.Message) error {
 	}
 
 	if lastErr != nil || resp == nil || !resp.Success() {
-		return r.route(ctx, r.shared.dlq, msg.Key, msg.Value, headers, log, "dead_lettered", 0)
+		reason := fmt.Sprintf("callback failed %d time(s), max_attempts reached; last failure: %s", realAttempts, lastFailure)
+		return r.route(ctx, r.shared.dlq, msg.Key, msg.Value, headers, log, "dead_lettered", 0, reason)
 	}
 
 	if r.shared.rules.HasPostCallback() {
@@ -670,12 +710,29 @@ func (r *Runner) process(ctx context.Context, msg kafka.Message) error {
 	return nil
 }
 
-func (r *Runner) route(ctx context.Context, target *producer.Producer, key, value []byte, headers map[string]string, log *slog.Logger, outcome string, statusCode int) error {
+// Headers ARK adds to every message it sends to a reject or dead-letter
+// topic, so whoever looks at it later can tell where it came from and why.
+const (
+	ReasonHeader   = "X-Ark-Reason"
+	PipelineHeader = "X-Ark-Pipeline"
+	FailedAtHeader = "X-Ark-Failed-At"
+)
+
+func (r *Runner) route(ctx context.Context, target *producer.Producer, key, value []byte, headers map[string]string, log *slog.Logger, outcome string, statusCode int, reason string) error {
 	if target == nil && outcome == "rejected" {
 		// No reject_topic: a rejected message still has to go somewhere
 		// other than being skipped, and the DLQ is where it can be seen.
 		target, outcome = r.shared.dlq, "dead_lettered"
+		reason += " (no reject_topic, sent to the dead-letter topic instead)"
 	}
+	routed := make(map[string]string, len(headers)+3)
+	for k, v := range headers {
+		routed[k] = v
+	}
+	routed[ReasonHeader] = reason
+	routed[PipelineHeader] = r.pipeline.Name
+	routed[FailedAtHeader] = time.Now().UTC().Format(time.RFC3339)
+	headers = routed
 	if target == nil {
 		// Only reachable with on_exhausted: block, which the operator chose
 		// knowing the message is retried in place until the target accepts.
@@ -688,12 +745,35 @@ func (r *Runner) route(ctx context.Context, target *producer.Producer, key, valu
 	case "rejected":
 		r.counters.rejected.Add(1)
 		metrics.Rejected.WithLabelValues(r.pipeline.Name, r.workerLabel, r.pipeline.Tenant).Inc()
+		events.Record(r.pipeline.Name, events.MessageRejected, reason, map[string]string{"key": string(key), "correlation_id": headers[callback.CorrelationIDHeader]})
 	case "dead_lettered":
 		r.counters.deadLettered.Add(1)
 		metrics.DeadLettered.WithLabelValues(r.pipeline.Name, r.workerLabel, r.pipeline.Tenant).Inc()
+		events.Record(r.pipeline.Name, events.MessageDeadLettered, reason, map[string]string{"key": string(key), "correlation_id": headers[callback.CorrelationIDHeader]})
 	}
-	log.Info("message "+outcome, "status_code", statusCode)
+	log.Info("message "+outcome, "status_code", statusCode, "reason", reason)
 	return nil
+}
+
+// recordBreaker feeds a callback result to the circuit breaker and records
+// an event whenever that flips the breaker, with what caused it.
+func (r *Runner) recordBreaker(success bool, cause string) {
+	before := r.shared.breaker.State()
+	r.shared.breaker.RecordResult(success)
+	after := r.shared.breaker.State()
+	if before == after {
+		return
+	}
+	switch after {
+	case "open":
+		events.Record(r.pipeline.Name, events.BreakerOpened, "circuit breaker opened after repeated callback failures; messages now wait in place until the target recovers", map[string]string{"last_failure": cause})
+	case "closed":
+		msg := "circuit breaker closed, callbacks flowing again"
+		if cause != "" {
+			msg += " (" + cause + ")"
+		}
+		events.Record(r.pipeline.Name, events.BreakerClosed, msg, nil)
+	}
 }
 
 func (r *Runner) applyRuleAction(ctx context.Context, rule *config.FastPathRule, key, value []byte, headers map[string]string, log *slog.Logger) error {
@@ -707,14 +787,14 @@ func (r *Runner) applyRuleAction(ctx context.Context, rule *config.FastPathRule,
 		return nil
 
 	case config.ActionReject:
-		return r.route(ctx, r.shared.reject, key, value, headers, log, "rejected", 0)
+		return r.route(ctx, r.shared.reject, key, value, headers, log, "rejected", 0, fmt.Sprintf("rule %q matched with action reject", rule.Name))
 
 	case config.ActionDrop:
 		log.Info("message dropped", "rule", rule.Name)
 		return nil
 
 	case config.ActionDeadLetter:
-		return r.route(ctx, r.shared.dlq, key, value, headers, log, "dead_lettered", 0)
+		return r.route(ctx, r.shared.dlq, key, value, headers, log, "dead_lettered", 0, fmt.Sprintf("rule %q matched with action dead_letter", rule.Name))
 
 	case config.ActionTransformRoute:
 		if rule.DestinationOverride != "" {

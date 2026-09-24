@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+	_ "time/tzdata" // IANA zones work even on images without /usr/share/zoneinfo
 
 	"github.com/raven-clown/ark/bridge-engine/internal/api"
 	"github.com/raven-clown/ark/bridge-engine/internal/authz"
@@ -31,12 +32,18 @@ type configReloader struct {
 	path      string
 	reconcile cluster.ReconcileFunc
 	log       *slog.Logger
+	// loaded is told about every config that passed validation, so the MCP
+	// config tools see what's actually applied.
+	loaded func([]config.Pipeline)
 }
 
 func (c *configReloader) Reload() error {
 	cfg, err := config.Load(c.path)
 	if err != nil {
 		return err
+	}
+	if c.loaded != nil {
+		c.loaded(cfg.Pipelines)
 	}
 	if errs := c.reconcile(cfg.Pipelines); len(errs) > 0 {
 		for _, e := range errs {
@@ -116,6 +123,9 @@ func localStats(mgr *orchestrator.Manager) map[string]cluster.PipelineStats {
 	}
 	return out
 }
+
+// version is set at build time with -ldflags "-X main.version=...".
+var version = "dev"
 
 func main() {
 	configPath := flag.String("config", "config.yaml", "path to pipelines config file")
@@ -200,6 +210,14 @@ func main() {
 	go mgr.RunRedrive(ctx, redriveGate)
 
 	reload := &configReloader{path: *configPath, reconcile: reconcile, log: logger}
+	var configSource mcpserver.ConfigSource
+	if clusterNode != nil {
+		configSource = clusterSource{node: clusterNode}
+	} else {
+		fs := &fileSource{path: *configPath, reload: reload, current: cfg.Pipelines}
+		reload.loaded = fs.set
+		configSource = fs
+	}
 	go watchFile(ctx, *configPath, 5*time.Second, reload, logger)
 
 	rootMux := http.NewServeMux()
@@ -213,10 +231,23 @@ func main() {
 	}
 	rootMux.Handle("/", api.NewServer(registry, reload, clusterNode, apiTokens))
 
+	displayLocation, _ := time.LoadLocation(cfg.Timezone) // validated in config.Load
+	for intent, words := range cfg.Assistant.Lexicon {
+		mcpserver.ExtendLexicon(intent, words...)
+	}
 	mcpTokens := mcpserver.LoadTokenStoreFromEnv()
 	if mcpTokens.Enabled() {
 		auditLog := logger.With("component", "mcp-audit")
-		rootMux.Handle("/mcp", mcpserver.NewHTTPHandler(registry, mcpTokens, auditLog))
+		rootMux.Handle("/mcp", mcpserver.NewHTTPHandler(mcpserver.Deps{
+			Registry:          registry,
+			Config:            configSource,
+			Brokers:           cfg.Brokers,
+			ReplicationFactor: cfg.Topics.ReplicationFactor,
+			Cluster:           clusterNode,
+			Audit:             auditLog,
+			Version:           version,
+			Location:          displayLocation,
+		}, mcpTokens))
 		logger.Info("mcp server enabled", "path", "/mcp")
 	} else {
 		logger.Info("mcp server disabled: no ARK_MCP_*_TOKENS set")

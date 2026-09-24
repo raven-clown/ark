@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/raven-clown/ark/bridge-engine/internal/config"
+	"github.com/raven-clown/ark/bridge-engine/internal/events"
 	"github.com/raven-clown/ark/bridge-engine/internal/kafkaadmin"
 	"github.com/raven-clown/ark/bridge-engine/internal/producer"
 )
@@ -221,6 +222,7 @@ func (n *Node) runLeaderDuties(genCtx context.Context, generation int32) {
 		return
 	}
 	n.log.Info("became cluster leader", "epoch", epoch)
+	events.Record("", events.LeaderChanged, fmt.Sprintf("node %s became cluster leader (epoch %d)", n.id, epoch), nil)
 	defer n.log.Info("lost cluster leadership", "epoch", epoch)
 
 	ticker := time.NewTicker(time.Duration(n.cfg.PlacementIntervalSeconds) * time.Second)

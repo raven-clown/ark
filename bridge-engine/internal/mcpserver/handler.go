@@ -2,13 +2,11 @@ package mcpserver
 
 import (
 	"context"
-	"log/slog"
 	"net/http"
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/raven-clown/ark/bridge-engine/internal/api"
 	"github.com/raven-clown/ark/bridge-engine/internal/authz"
 )
 
@@ -17,11 +15,12 @@ import (
 // on every request that reuses a session: a session opened with an
 // operator token can't be driven by a request holding a different token,
 // even if the session ID leaks.
-func NewHTTPHandler(reg api.Registry, tokens *TokenStore, auditLog *slog.Logger) http.Handler {
+func NewHTTPHandler(d Deps, tokens *TokenStore) http.Handler {
+	cf := newConfirmations()
 	servers := map[Scope]*mcp.Server{
-		ScopeViewer:   buildServer(ScopeViewer, reg, auditLog),
-		ScopeOperator: buildServer(ScopeOperator, reg, auditLog),
-		ScopeAdmin:    buildServer(ScopeAdmin, reg, auditLog),
+		ScopeViewer:   buildServer(ScopeViewer, d, cf),
+		ScopeOperator: buildServer(ScopeOperator, d, cf),
+		ScopeAdmin:    buildServer(ScopeAdmin, d, cf),
 	}
 
 	mcpHandler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {

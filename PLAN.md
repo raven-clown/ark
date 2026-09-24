@@ -874,7 +874,7 @@ pipeline that only ever runs on the labeled node.
   re-entered the pipeline rather than being faked), and a separate
   entry discarded.
 
-### Backend: Phase 6: MCP server (AI-agent interface), core done
+### Backend: Phase 6: MCP server (AI-agent interface), done
 
 **Permission model, two layers, both enforced server-side (never trust
 the calling agent to self-restrict):**
@@ -938,12 +938,45 @@ the calling agent to self-restrict):**
       scope, so a `viewer` session's `tools/list` doesn't even show
       them, not just rejects calling them): `pause_pipeline`,
       `resume_pipeline`, `retry_dlq_message`, `discard_dlq_message`
-- [ ] Config tools (`validate_pipeline_config`, `apply_pipeline_config`,
-      `create_pipeline`, `get_pipeline_schema`, `list_topics`): not
-      built. These need Phase 4's hot-reload (config becomes something
-      that can be changed live, not just read once at startup) to mean
-      anything, and that isn't built yet either. Revisit once Phase 4
-      lands.
+- [x] Config tools: `get_pipeline_schema`, `get_pipeline_config`,
+      `list_topics`, `validate_pipeline_config` (rejects unknown or
+      misspelled fields, validates against the whole config, checks
+      topics and partitions, returns a field-by-field diff and
+      best-practice warnings), and `create_pipeline` /
+      `apply_pipeline_config` in two steps: a preview that returns a
+      `confirm_token`, then an apply that only accepts that token from the
+      same caller, once, within 10 minutes, and only if the pipeline
+      hasn't changed since the preview. Applies go to the config file on a
+      single node (previous version kept as `.bak`, then hot-reloaded) or
+      to the cluster config topic. Existing pipelines can only be changed
+      if their `mcp_access` is `read_write`.
+- [x] Assistant tools so an agent can hold a real conversation about
+      ARK, not just fetch data: `interpret_request` (understand first:
+      intents in Thai, English, simplified and traditional Chinese, plus
+      any words added under `assistant.lexicon`; resolves the pipelines,
+      topics, URLs, rates and time windows the user mentioned to what
+      exists; lists what to ask back; returns a plan of tool calls),
+      `get_help`, `get_overview`, `diagnose_pipeline` (what is happening,
+      why with evidence, what to do), `get_recent_events`, `explain_error`
+      (a catalog of ARK, Kafka and target errors with meaning, causes and
+      fixes, plus where it recently occurred) and `recommend_tuning`
+      (throughput ceiling from measured latency, settings for a target
+      rate, config review, node sizing). Server instructions tell the
+      model to understand first, ask back when unsure, never invent
+      numbers, never confirm on the user's behalf, and answer in the
+      user's language. Prompts for the common flows.
+- [x] An event log (`internal/events`) with the reason for everything
+      notable, and every dead-lettered or rejected message now carries
+      `X-Ark-Reason`, `X-Ark-Pipeline` and `X-Ark-Failed-At`, which the
+      DLQ browser shows. Times over MCP are ISO 8601 in the configured
+      `timezone`.
+- Verified live against docker-compose Kafka through the MCP HTTP
+  endpoint: a Thai question was resolved to the right pipeline and
+  intents, the diagnosis named the real cause (the target answering
+  500) with Bangkok-time timestamps, a viewer token saw no write tools,
+  and an admin created a pipeline through preview and confirm, after
+  which it was running, the file had a backup, and reusing the token was
+  refused.
 - [ ] `get_metrics`: not built. `get_pipeline_status` already surfaces
       the same counters Prometheus does; a real time-ranged metrics
       query tool is closer to a small PromQL client than a naming
@@ -988,6 +1021,46 @@ the calling agent to self-restrict):**
 - [ ] Revisit: CDC source, RabbitMQ/NATS, schedule trigger, only if
       real demand shows up after Phase 1 through 6 are solid
 
+### Backend: Phase 8: Projects, AI access and "everything configurable"
+
+Direction set on 2026-09-24.
+
+- [ ] **Projects.** A project groups several pipelines (for example
+      "orders": ingest, fraud check, notify, usually chained). Everything
+      in the console and the API can be scoped to a project. Stored with
+      the pipeline config (file or cluster config topic).
+- [ ] **AI access per project, set from the console.** For each project:
+      none / read only / operate (pause, resume, retry) / change config.
+      A pipeline's `mcp_access` stays as a stricter per-pipeline ceiling.
+- [ ] **Several MCP endpoints per project,** each with its own tokens,
+      access level and optionally a subset of tools, for example one for
+      the ops team's agent that can operate, one for a support chatbot
+      that can only read. Served under `/mcp/<project>/<endpoint>`.
+- [ ] **Any AI model.** MCP already works with any MCP-capable client.
+      For the console's built-in assistant, a provider layer: Anthropic,
+      OpenAI, Google Gemini, and any OpenAI-compatible API (which covers
+      most others: DeepSeek, Qwen, Mistral, Groq, OpenRouter, Together,
+      Azure OpenAI, Ollama, vLLM, LM Studio). Provider, model, base URL and
+      API key reference chosen per project; keys kept out of the config
+      file (environment or a secret store).
+- [ ] **Understand, then act, for the built-in assistant.** A first model
+      pass that rewrites the user's words into a precise request (using
+      `interpret_request`) and decides whether to ask back, then a second
+      pass that calls tools and answers; more passes allowed when results
+      raise new questions.
+- [ ] **Languages.** Built in: Thai, English, simplified and traditional
+      Chinese; more by config (`assistant.lexicon`, done) and a console
+      setting for the UI language.
+- [ ] **Time.** Everything ISO 8601; storage and logs in UTC; display in
+      the configured `timezone` (done for MCP, to do for REST and the
+      console).
+- [ ] **Everything configurable.** Move the remaining hard-coded values
+      to config: circuit breaker (done per pipeline), DLQ browser size,
+      event log size, redrive and prune intervals, retry backoff cap,
+      Retry-After cap, final commit timeout, producer batch timeout,
+      diagnosis thresholds (stuck/stalled), confirm token lifetime, and
+      cluster catch-up timeouts, each with the current value as default.
+
 ### Frontend: ARK Console (one place to see and control everything)
 
 Direction set on 2026-09-24, replacing the earlier "Grafana first, own UI
@@ -1025,7 +1098,7 @@ show data moving, never as decoration.
   run, config version per node.
 - **History.** The event log ("what happened, when, and why") next to
   charts of throughput, lag, latency and errors.
-- **AI assistant panel.** A chat that uses the same MCP tools (overview,
+- **AI assistant panel.** A chat, backed by any configured model (Phase 8), that uses the same MCP tools (interpret, overview,
   diagnose, explain_error, recommend_tuning, config tools), so "why is
   orders stuck?" or "add a pipeline that sends high-value orders to the
   fraud service" works from inside the console, with the same confirm

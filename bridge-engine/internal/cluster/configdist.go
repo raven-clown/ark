@@ -11,6 +11,7 @@ import (
 	"github.com/segmentio/kafka-go"
 
 	"github.com/raven-clown/ark/bridge-engine/internal/config"
+	"github.com/raven-clown/ark/bridge-engine/internal/events"
 	"github.com/raven-clown/ark/bridge-engine/internal/kafkatail"
 )
 
@@ -26,6 +27,9 @@ func (n *Node) SetConfigHandler(fn func(pipelines []config.Pipeline)) { n.onConf
 
 // ConfigVersion is the offset of the last config record this node applied.
 func (n *Node) ConfigVersion() int64 { return n.configVersion.Load() }
+
+// Pipelines returns the cluster's current pipeline config.
+func (n *Node) Pipelines() []config.Pipeline { return n.distributedPipelines() }
 
 func (n *Node) distributedPipelines() []config.Pipeline {
 	n.cfgMu.Lock()
@@ -117,7 +121,9 @@ func (n *Node) applyDistributed(version int64) {
 		n.log.Error("cluster pipeline config is invalid, keeping the last good one", "error", err, "version", version)
 		return
 	}
-	n.configVersion.Store(version)
+	if n.configVersion.Swap(version) != version {
+		events.Record("", events.ConfigApplied, fmt.Sprintf("cluster pipeline config version %d applied on node %s (%d pipelines)", version, n.id, len(pipelines)), nil)
+	}
 	if n.onConfig != nil {
 		n.onConfig(pipelines)
 	}
