@@ -99,8 +99,8 @@ func TestRetryAfterIsParsed(t *testing.T) {
 	if resp.RetryAfter != 7*time.Second {
 		t.Errorf("expected RetryAfter 7s, got %v", resp.RetryAfter)
 	}
-	if !resp.Retryable() {
-		t.Error("expected 429 to be retryable")
+	if !resp.RetryLater() {
+		t.Error("expected 429 to mean retry later")
 	}
 }
 

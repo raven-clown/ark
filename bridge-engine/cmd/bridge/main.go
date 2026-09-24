@@ -144,7 +144,9 @@ func main() {
 		os.Exit(1)
 	}
 	go dlqState.Run(ctx)
-	dlqState.WaitCaughtUp(ctx)
+	stateCtx, stateCancel := context.WithTimeout(ctx, 15*time.Second)
+	dlqState.WaitCaughtUp(stateCtx)
+	stateCancel()
 
 	mgr := orchestrator.New(ctx, consumer.Deps{
 		Brokers:           cfg.Brokers,
@@ -157,7 +159,7 @@ func main() {
 	if cfg.Cluster.Enabled {
 		clusterNode = cluster.New(cfg.Brokers, cfg.Cluster, cfg.Topics.ReplicationFactor, mgr.Reconcile, logger)
 		clusterNode.SetStatsProvider(func() map[string]cluster.PipelineStats { return localStats(mgr) })
-		clusterNode.SetPauseHandler(func(name string, paused bool) { mgr.SetPaused(name, paused) })
+		clusterNode.SetPauseHandler(func(name string, paused bool) { mgr.RememberPause(name, paused) })
 		clusterNode.SetConfigHandler(func(pipelines []config.Pipeline) {
 			mgr.SyncStandbyBrowsers(pipelines)
 			for _, err := range clusterNode.ApplyConfig(pipelines) {

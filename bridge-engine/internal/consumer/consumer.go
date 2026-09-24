@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -329,6 +328,8 @@ func (r *Runner) Run(ctx context.Context) error {
 	defer func() {
 		r.counters.running.Store(false)
 		metrics.WorkerUp.WithLabelValues(r.pipeline.Name, r.workerLabel, r.pipeline.Tenant).Set(0)
+		metrics.OldestUncommittedAge.DeleteLabelValues(r.pipeline.Name, r.workerLabel, r.pipeline.Tenant)
+		metrics.ConsumerLag.DeleteLabelValues(r.pipeline.Name, r.workerLabel, r.pipeline.Tenant)
 	}()
 
 	runCtx, cancelRun := context.WithCancel(ctx)
@@ -367,6 +368,9 @@ func (r *Runner) Run(ctx context.Context) error {
 
 		msg, err := r.reader.FetchMessage(ctx)
 		if err != nil {
+			// Stop in-flight jobs too, or drain would wait on messages that
+			// retry in place forever and the worker would never restart.
+			cancelRun()
 			drain()
 			if ctx.Err() != nil {
 				return nil
@@ -398,12 +402,12 @@ func (r *Runner) Run(ctx context.Context) error {
 			if wait != nil {
 				select {
 				case <-wait:
-				case <-ctx.Done():
-					j.done <- ctx.Err()
+				case <-runCtx.Done():
+					j.done <- runCtx.Err()
 					return
 				}
 			}
-			j.done <- r.processUntilDone(ctx, j.msg)
+			j.done <- r.processUntilDone(runCtx, j.msg)
 		}(j)
 	}
 }
@@ -606,7 +610,7 @@ func (r *Runner) process(ctx context.Context, msg kafka.Message) error {
 			return r.route(ctx, r.shared.reject, msg.Key, msg.Value, headers, log, "rejected", resp.StatusCode)
 		}
 
-		if lastErr == nil && (resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusTooEarly) {
+		if lastErr == nil && resp.RetryLater() {
 			// An explicit "come back later" is not a failed attempt: it
 			// neither spends a retry nor sends the message to the DLQ.
 			realAttempts--
@@ -667,8 +671,15 @@ func (r *Runner) process(ctx context.Context, msg kafka.Message) error {
 }
 
 func (r *Runner) route(ctx context.Context, target *producer.Producer, key, value []byte, headers map[string]string, log *slog.Logger, outcome string, statusCode int) error {
+	if target == nil && outcome == "rejected" {
+		// No reject_topic: a rejected message still has to go somewhere
+		// other than being skipped, and the DLQ is where it can be seen.
+		target, outcome = r.shared.dlq, "dead_lettered"
+	}
 	if target == nil {
-		return fmt.Errorf("%s but no topic configured for pipeline %s", outcome, r.pipeline.Name)
+		// Only reachable with on_exhausted: block, which the operator chose
+		// knowing the message is retried in place until the target accepts.
+		return fmt.Errorf("%s but no topic configured for pipeline %s (on_exhausted: block keeps retrying it)", outcome, r.pipeline.Name)
 	}
 	if err := r.sendWithRetry(ctx, target, key, value, headers, log); err != nil {
 		return fmt.Errorf("routing to %s: %w", outcome, err)

@@ -102,6 +102,19 @@ func (m *Manager) PipelineRunners(name string) []*consumer.Runner {
 // remembered even for a pipeline not running here yet (cluster placement
 // may start it later). It reports whether the pipeline is running here.
 func (m *Manager) SetPaused(name string, paused bool) bool {
+	m.mu.RLock()
+	_, known := m.desired[name]
+	m.mu.RUnlock()
+	if !known {
+		return false
+	}
+	return m.RememberPause(name, paused)
+}
+
+// RememberPause records a pause or resume decided elsewhere (the cluster
+// control topic), including for a pipeline not running on this node yet,
+// and applies it if the pipeline is running here.
+func (m *Manager) RememberPause(name string, paused bool) bool {
 	m.mu.Lock()
 	if paused {
 		m.paused[name] = true

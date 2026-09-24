@@ -3,7 +3,6 @@ package cluster
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"maps"
 	"sort"
@@ -14,6 +13,7 @@ import (
 	"github.com/segmentio/kafka-go"
 
 	"github.com/raven-clown/ark/bridge-engine/internal/config"
+	"github.com/raven-clown/ark/bridge-engine/internal/kafkatail"
 	"github.com/raven-clown/ark/bridge-engine/internal/producer"
 )
 
@@ -175,15 +175,6 @@ func distribute(total int, nodes []string) map[string]int {
 	return out
 }
 
-func (p *placer) highWatermark(ctx context.Context) (int64, error) {
-	conn, err := kafka.DialLeader(ctx, "tcp", p.brokers[0], p.topic, 0)
-	if err != nil {
-		return 0, fmt.Errorf("dialing leader for %s: %w", p.topic, err)
-	}
-	defer conn.Close()
-	return conn.ReadLastOffset()
-}
-
 // watch tails the placement topic from the beginning. Records from an epoch
 // older than the newest one already seen are ignored: they come from a
 // leader that has since been replaced. onUpdate receives the full
@@ -191,24 +182,6 @@ func (p *placer) highWatermark(ctx context.Context) (int64, error) {
 // records is complete, so a restarting node reconciles once against the
 // current placement rather than once per historical record.
 func (p *placer) watch(ctx context.Context, onUpdate func(map[string]map[string]int)) {
-	var hw int64
-	for {
-		var err error
-		hw, err = p.highWatermark(ctx)
-		if err == nil {
-			break
-		}
-		if ctx.Err() != nil {
-			return
-		}
-		p.log.Error("reading placement topic end offset failed", "error", err)
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(time.Second):
-		}
-	}
-
 	notify := func() {
 		p.mu.Lock()
 		snapshot := make(map[string]map[string]int, len(p.assignments))
@@ -218,48 +191,17 @@ func (p *placer) watch(ctx context.Context, onUpdate func(map[string]map[string]
 		p.mu.Unlock()
 		onUpdate(snapshot)
 	}
-
-	if hw == 0 {
-		p.caughtUp.Store(true)
-		notify()
-	}
-
-	reader := kafka.NewReader(kafka.ReaderConfig{
-		Brokers:     p.brokers,
-		Topic:       p.topic,
-		Partition:   0,
-		MinBytes:    1,
-		MaxBytes:    10e6,
-		MaxWait:     500 * time.Millisecond,
-		StartOffset: kafka.FirstOffset,
-	})
-	defer reader.Close()
-
-	for {
-		msg, err := reader.FetchMessage(ctx)
-		if err != nil {
-			if ctx.Err() != nil {
-				return
+	kafkatail.Compacted(ctx, p.brokers, p.topic, p.log,
+		func(msg kafka.Message) {
+			p.apply(msg)
+			if p.caughtUp.Load() {
+				notify()
 			}
-			p.log.Error("reading placements failed", "error", err)
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(time.Second):
-			}
-			continue
-		}
-
-		p.apply(msg)
-
-		if !p.caughtUp.Load() {
-			if msg.Offset+1 < hw {
-				continue
-			}
+		},
+		func() {
 			p.caughtUp.Store(true)
-		}
-		notify()
-	}
+			notify()
+		})
 }
 
 func (p *placer) apply(msg kafka.Message) {

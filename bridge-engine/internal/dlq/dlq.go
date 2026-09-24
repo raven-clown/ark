@@ -2,6 +2,7 @@ package dlq
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/segmentio/kafka-go"
 
+	"github.com/raven-clown/ark/bridge-engine/internal/kafkaadmin"
 	"github.com/raven-clown/ark/bridge-engine/internal/producer"
 )
 
@@ -64,7 +66,11 @@ func (b *Browser) Run(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		b.log.Error("listing dlq partitions failed", "error", err)
+		if errors.Is(err, kafka.UnknownTopicOrPartition) {
+			b.log.Debug("dlq topic not created yet, waiting for it", "error", err)
+		} else {
+			b.log.Error("listing dlq partitions failed", "error", err)
+		}
 		select {
 		case <-ctx.Done():
 			return
@@ -75,17 +81,53 @@ func (b *Browser) Run(ctx context.Context) {
 
 	var wg sync.WaitGroup
 	for _, p := range partitions {
-		wg.Add(1)
+		wg.Add(2)
 		go func(p kafka.Partition) {
 			defer wg.Done()
 			b.tail(ctx, p.ID)
+		}(p)
+		go func(p kafka.Partition) {
+			defer wg.Done()
+			b.pruneState(ctx, p.ID)
 		}(p)
 	}
 	wg.Wait()
 }
 
+const pruneInterval = 10 * time.Minute
+
+// pruneState periodically drops state for entries retention has removed.
+func (b *Browser) pruneState(ctx context.Context, partition int) {
+	if b.state == nil {
+		return
+	}
+	ticker := time.NewTicker(pruneInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		conn, err := kafkaadmin.DialLeaderAny(ctx, b.brokers, b.topic, partition)
+		if err != nil {
+			continue
+		}
+		first, err := conn.ReadFirstOffset()
+		_ = conn.Close()
+		if err != nil {
+			continue
+		}
+		if n, err := b.state.Prune(ctx, b.topic, partition, first); err != nil {
+			b.log.Warn("pruning dlq state failed", "error", err, "partition", partition)
+		} else if n > 0 {
+			b.log.Info("pruned dlq state for entries removed by retention", "entries", n, "partition", partition)
+		}
+	}
+}
+
 func (b *Browser) partitions(ctx context.Context) ([]kafka.Partition, error) {
-	conn, err := kafka.DialContext(ctx, "tcp", b.brokers[0])
+	conn, err := kafkaadmin.DialAny(ctx, b.brokers)
 	if err != nil {
 		return nil, err
 	}
@@ -97,7 +139,7 @@ func (b *Browser) partitions(ctx context.Context) ([]kafka.Partition, error) {
 // only the most recent entries are ever kept.
 func (b *Browser) tail(ctx context.Context, partition int) {
 	start := kafka.FirstOffset
-	if conn, err := kafka.DialLeader(ctx, "tcp", b.brokers[0], b.topic, partition); err == nil {
+	if conn, err := kafkaadmin.DialLeaderAny(ctx, b.brokers, b.topic, partition); err == nil {
 		first, last, err := conn.ReadOffsets()
 		_ = conn.Close()
 		if err == nil {

@@ -4,9 +4,10 @@ import (
 	"context"
 	"errors"
 	"strings"
-	"time"
 
 	"github.com/segmentio/kafka-go"
+
+	"github.com/raven-clown/ark/bridge-engine/internal/kafkatail"
 )
 
 // The control topic carries operator intent that must hold on every node
@@ -18,35 +19,13 @@ const pauseKeyPrefix = "pause/"
 var ErrUnknownPipeline = errors.New("pipeline is not configured in this cluster")
 
 func (n *Node) watchControl(ctx context.Context) {
-	reader := kafka.NewReader(kafka.ReaderConfig{
-		Brokers:     n.brokers,
-		Topic:       n.topics.Control,
-		Partition:   0,
-		MaxWait:     500 * time.Millisecond,
-		StartOffset: kafka.FirstOffset,
-	})
-	defer reader.Close()
-
-	for {
-		msg, err := reader.FetchMessage(ctx)
-		if err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			n.log.Error("reading control topic failed", "error", err)
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(time.Second):
-			}
-			continue
-		}
+	kafkatail.Compacted(ctx, n.brokers, n.topics.Control, n.log, func(msg kafka.Message) {
 		name, ok := strings.CutPrefix(string(msg.Key), pauseKeyPrefix)
 		if !ok || n.onPause == nil {
-			continue
+			return
 		}
 		n.onPause(name, string(msg.Value) == "1")
-	}
+	}, nil)
 }
 
 // PublishPause records a cluster-wide pause or resume for pipeline name.

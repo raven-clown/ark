@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/raven-clown/ark/bridge-engine/internal/config"
 	"github.com/raven-clown/ark/bridge-engine/internal/dlq"
 )
 
@@ -38,7 +39,17 @@ func (m *Manager) redriveOnce(ctx context.Context) {
 		max     int
 	}
 	var targets []target
+	// m.desired only holds pipelines with workers on this node; in a
+	// cluster the standby browsers cover every configured pipeline, so the
+	// leader redrives pipelines that run entirely on other nodes too.
+	candidates := make(map[string]config.Pipeline, len(m.desired)+len(m.standby))
+	for name, sb := range m.standby {
+		candidates[name] = sb.cfg
+	}
 	for name, p := range m.desired {
+		candidates[name] = p
+	}
+	for name, p := range candidates {
 		if !p.IsEnabled() || !p.DeadLetterRedrive.Enabled() {
 			continue
 		}

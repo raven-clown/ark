@@ -27,6 +27,7 @@ pipelines:
     source_topic: orders.raw
     destination_topic: orders.processed
     consumer_group: order-processor-group
+    dead_letter_topic: test.dlq
     target:
       url: http://app:8080/process
 `)
@@ -94,6 +95,7 @@ pipelines:
   - name: p1
     source_topic: orders.raw
     consumer_group: g1
+    dead_letter_topic: test.dlq
     target: {url: http://app/process}
 `,
 			errSub: "destination_topic is required",
@@ -107,6 +109,7 @@ pipelines:
     source_topic: orders.raw
     destination_topic: orders.processed
     consumer_group: g1
+    dead_letter_topic: test.dlq
 `,
 			errSub: "target.url is required",
 		},
@@ -244,6 +247,7 @@ pipelines:
     source_topic: a
     destination_topic: b
     consumer_group: g1
+    dead_letter_topic: test.dlq
     target: {url: http://app/process}
     fast_path_rules:
       - name: r1
@@ -284,6 +288,7 @@ pipelines:
     source_topic: a
     destination_topic: b
     consumer_group: g1
+    dead_letter_topic: test.dlq
     target: {url: http://app/process}
     fast_path_rules:
       - name: r1
@@ -304,6 +309,7 @@ pipelines:
     source_topic: a
     destination_topic: b
     consumer_group: g1
+    dead_letter_topic: test.dlq
     target: {url: http://app/process}
     fast_path_rules:
       - name: r1
@@ -347,6 +353,7 @@ pipelines:
     source_topic: a
     destination_topic: b
     consumer_group: g
+    dead_letter_topic: test.dlq
     ordering: sometimes
     target:
       url: http://x
@@ -364,6 +371,7 @@ pipelines:
     source_topic: a
     destination_topic: b
     consumer_group: g
+    dead_letter_topic: test.dlq
     target:
       url: http://x
 `)
@@ -400,7 +408,7 @@ pipelines:
     target: {url: http://x}
 `
 	for _, extra := range []string{
-		"    dead_letter_redrive: {after_seconds: 60, max_times: 3}\n",
+		"    on_exhausted: block\n    dead_letter_redrive: {after_seconds: 60, max_times: 3}\n",
 		"    dead_letter_topic: d\n    dead_letter_redrive: {after_seconds: 0, max_times: 3}\n",
 	} {
 		if _, err := Load(writeConfig(t, base+extra)); err == nil || !strings.Contains(err.Error(), "dead_letter_redrive") {
@@ -409,5 +417,26 @@ pipelines:
 	}
 	if _, err := Load(writeConfig(t, base+"    dead_letter_topic: d\n    dead_letter_redrive: {after_seconds: 60, max_times: 3}\n")); err != nil {
 		t.Errorf("valid redrive config rejected: %v", err)
+	}
+}
+
+func TestDeadLetterTopicRequiredUnlessBlock(t *testing.T) {
+	base := `
+brokers: [localhost:9092]
+pipelines:
+  - name: p
+    source_topic: a
+    destination_topic: b
+    consumer_group: g
+    target: {url: http://x}
+`
+	if _, err := Load(writeConfig(t, base)); err == nil || !strings.Contains(err.Error(), "dead_letter_topic is required") {
+		t.Errorf("expected a missing dead_letter_topic to be rejected, got %v", err)
+	}
+	if _, err := Load(writeConfig(t, base+"    on_exhausted: block\n")); err != nil {
+		t.Errorf("on_exhausted: block should allow no dead_letter_topic, got %v", err)
+	}
+	if _, err := Load(writeConfig(t, base+"    on_exhausted: drop\n")); err == nil {
+		t.Error("unknown on_exhausted values must be rejected")
 	}
 }

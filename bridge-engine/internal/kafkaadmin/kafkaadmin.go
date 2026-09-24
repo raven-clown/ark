@@ -32,9 +32,9 @@ func ensureTopic(ctx context.Context, brokers []string, topic string, partitions
 		partitions = 1
 	}
 
-	conn, err := kafka.DialContext(ctx, "tcp", brokers[0])
+	conn, err := DialAny(ctx, brokers)
 	if err != nil {
-		return fmt.Errorf("dialing %s: %w", brokers[0], err)
+		return err
 	}
 	defer conn.Close()
 
@@ -95,9 +95,9 @@ func ensureTopic(ctx context.Context, brokers []string, topic string, partitions
 // PartitionCount returns how many partitions topic has, or 0 if it doesn't
 // exist yet.
 func PartitionCount(ctx context.Context, brokers []string, topic string) (int, error) {
-	conn, err := kafka.DialContext(ctx, "tcp", brokers[0])
+	conn, err := DialAny(ctx, brokers)
 	if err != nil {
-		return 0, fmt.Errorf("dialing %s: %w", brokers[0], err)
+		return 0, err
 	}
 	defer conn.Close()
 	parts, err := conn.ReadPartitions(topic)
@@ -108,4 +108,32 @@ func PartitionCount(ctx context.Context, brokers []string, topic string) (int, e
 		return 0, err
 	}
 	return len(parts), nil
+}
+
+// DialAny connects to the first reachable broker, so one broker being down
+// doesn't stop ARK from reaching the cluster.
+func DialAny(ctx context.Context, brokers []string) (*kafka.Conn, error) {
+	var errs []error
+	for _, b := range brokers {
+		conn, err := kafka.DialContext(ctx, "tcp", b)
+		if err == nil {
+			return conn, nil
+		}
+		errs = append(errs, fmt.Errorf("%s: %w", b, err))
+	}
+	return nil, fmt.Errorf("no broker reachable: %w", errors.Join(errs...))
+}
+
+// DialLeaderAny connects to the leader of topic/partition, looking it up
+// through the first reachable broker.
+func DialLeaderAny(ctx context.Context, brokers []string, topic string, partition int) (*kafka.Conn, error) {
+	var errs []error
+	for _, b := range brokers {
+		conn, err := kafka.DialLeader(ctx, "tcp", b, topic, partition)
+		if err == nil {
+			return conn, nil
+		}
+		errs = append(errs, fmt.Errorf("%s: %w", b, err))
+	}
+	return nil, fmt.Errorf("no broker could reach the leader of %s/%d: %w", topic, partition, errors.Join(errs...))
 }

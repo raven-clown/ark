@@ -11,6 +11,7 @@ import (
 	"github.com/segmentio/kafka-go"
 
 	"github.com/raven-clown/ark/bridge-engine/internal/config"
+	"github.com/raven-clown/ark/bridge-engine/internal/kafkatail"
 )
 
 // Pipeline config in cluster mode lives in a compacted topic keyed by
@@ -81,52 +82,33 @@ func (n *Node) PublishConfig(ctx context.Context, pipelines []config.Pipeline) e
 // watchConfig tails the config topic and applies the full config once the
 // existing records have been read, then again after every change. A config
 // that fails validation is logged and skipped; nodes keep the last good one.
-func (n *Node) watchConfig(ctx context.Context, hw int64) {
-	reader := kafka.NewReader(kafka.ReaderConfig{
-		Brokers:     n.brokers,
-		Topic:       n.topics.Config,
-		Partition:   0,
-		MaxWait:     500 * time.Millisecond,
-		StartOffset: kafka.FirstOffset,
-	})
-	defer reader.Close()
-
-	for {
-		msg, err := reader.FetchMessage(ctx)
-		if err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			n.log.Error("reading pipeline config topic failed", "error", err)
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(time.Second):
-			}
-			continue
-		}
-
-		n.cfgMu.Lock()
-		if msg.Value == nil {
-			delete(n.distributed, string(msg.Key))
-		} else {
-			var p config.Pipeline
-			if err := json.Unmarshal(msg.Value, &p); err != nil {
-				n.log.Error("decoding pipeline config record failed", "pipeline", string(msg.Key), "error", err)
+func (n *Node) watchConfig(ctx context.Context) {
+	var lastOffset int64 = -1
+	kafkatail.Compacted(ctx, n.brokers, n.topics.Config, n.log,
+		func(msg kafka.Message) {
+			lastOffset = msg.Offset
+			n.cfgMu.Lock()
+			if msg.Value == nil {
+				delete(n.distributed, string(msg.Key))
 			} else {
-				n.distributed[p.Name] = p
+				var p config.Pipeline
+				if err := json.Unmarshal(msg.Value, &p); err != nil {
+					n.log.Error("decoding pipeline config record failed", "pipeline", string(msg.Key), "error", err)
+				} else {
+					n.distributed[p.Name] = p
+				}
 			}
-		}
-		n.cfgMu.Unlock()
-
-		if !n.configCaughtUp.Load() {
-			if msg.Offset+1 < hw {
-				continue
+			n.cfgMu.Unlock()
+			if n.configCaughtUp.Load() {
+				n.applyDistributed(msg.Offset)
 			}
+		},
+		func() {
 			n.configCaughtUp.Store(true)
-		}
-		n.applyDistributed(msg.Offset)
-	}
+			if lastOffset >= 0 {
+				n.applyDistributed(lastOffset)
+			}
+		})
 }
 
 func (n *Node) applyDistributed(version int64) {
@@ -141,42 +123,32 @@ func (n *Node) applyDistributed(version int64) {
 	}
 }
 
-// startConfig reads the config topic and, if it's empty, seeds it from
-// this node's local file. It returns once this node has applied a config
-// (or the topic was just seeded and read back).
+// startConfig reads the config topic and, if the cluster has no config
+// yet, seeds it from this node's local file. It returns once this node has
+// applied a config, or after a bounded wait.
 func (n *Node) startConfig(ctx context.Context, seed []config.Pipeline) error {
-	hw, err := n.endOffset(ctx, n.topics.Config)
-	if err != nil {
+	go n.watchConfig(ctx)
+
+	wait := func(done func() bool) error {
+		deadline := time.Now().Add(placementCatchUpTimeout)
+		for !done() && time.Now().Before(deadline) {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
+		return nil
+	}
+
+	if err := wait(n.configCaughtUp.Load); err != nil {
 		return err
 	}
-	if hw == 0 {
-		n.configCaughtUp.Store(true)
-	}
-	go n.watchConfig(ctx, hw)
-
-	if hw == 0 {
+	if n.configVersion.Load() < 0 {
 		if err := n.PublishConfig(ctx, seed); err != nil {
 			return fmt.Errorf("seeding pipeline config from the local file: %w", err)
 		}
-		n.log.Info("pipeline config topic was empty, seeded it from the local file", "pipelines", len(seed))
+		n.log.Info("the cluster had no pipeline config, seeded it from the local file", "pipelines", len(seed))
 	}
-
-	deadline := time.Now().Add(placementCatchUpTimeout)
-	for n.configVersion.Load() < 0 && len(seed) > 0 && time.Now().Before(deadline) {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(100 * time.Millisecond):
-		}
-	}
-	return nil
-}
-
-func (n *Node) endOffset(ctx context.Context, topic string) (int64, error) {
-	conn, err := kafka.DialLeader(ctx, "tcp", n.brokers[0], topic, 0)
-	if err != nil {
-		return 0, fmt.Errorf("dialing leader for %s: %w", topic, err)
-	}
-	defer func() { _ = conn.Close() }()
-	return conn.ReadLastOffset()
+	return wait(func() bool { return n.configVersion.Load() >= 0 || len(seed) == 0 })
 }

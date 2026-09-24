@@ -38,6 +38,14 @@ const (
 	OrderingNone         Ordering = "none"
 )
 
+// OnExhausted says what happens to a message that can't be completed and
+// has nowhere to be routed. The only non-default value is "block": keep
+// retrying it in place, holding back its partition, instead of requiring a
+// dead_letter_topic.
+type OnExhausted string
+
+const OnExhaustedBlock OnExhausted = "block"
+
 type RuleAction string
 
 const (
@@ -120,6 +128,7 @@ type Pipeline struct {
 	PostCallbackRules []FastPathRule   `yaml:"post_callback_rules"`
 	Placement         Placement        `yaml:"placement"`
 	DeadLetterRedrive Redrive          `yaml:"dead_letter_redrive"`
+	OnExhausted       OnExhausted      `yaml:"on_exhausted"`
 	Enabled           *bool            `yaml:"enabled"`
 }
 
@@ -332,6 +341,16 @@ func ValidatePipelines(pipelines []Pipeline) error {
 
 		if p.ConsumerGroup == "" {
 			return fmt.Errorf("pipeline %q: consumer_group is required to enable this pipeline", p.Name)
+		}
+
+		switch p.OnExhausted {
+		case "":
+			if p.DeadLetterTopic == "" {
+				return fmt.Errorf("pipeline %q: dead_letter_topic is required, so a message that can't be delivered is never dropped; set on_exhausted: block to retry such messages in place instead", p.Name)
+			}
+		case OnExhaustedBlock:
+		default:
+			return fmt.Errorf("pipeline %q: unknown on_exhausted %q (the only option is block)", p.Name, p.OnExhausted)
 		}
 
 		if rd := p.DeadLetterRedrive; rd != (Redrive{}) {

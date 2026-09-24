@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -11,6 +13,7 @@ import (
 	"github.com/segmentio/kafka-go"
 
 	"github.com/raven-clown/ark/bridge-engine/internal/kafkaadmin"
+	"github.com/raven-clown/ark/bridge-engine/internal/kafkatail"
 	"github.com/raven-clown/ark/bridge-engine/internal/producer"
 )
 
@@ -70,6 +73,43 @@ func (s *StateStore) Mark(ctx context.Context, topic, id, state string) error {
 	return nil
 }
 
+// Prune tombstones the state of every entry on topic/partition below
+// firstOffset: those records were already removed by retention, so their
+// state can never matter again. This keeps the state topic and every
+// node's memory from growing forever.
+func (s *StateStore) Prune(ctx context.Context, topic string, partition int, firstOffset int64) (int, error) {
+	prefix := topic + "/" + strconv.Itoa(partition) + ":"
+	s.mu.RLock()
+	var stale []string
+	for key := range s.handled {
+		rest, ok := strings.CutPrefix(key, prefix)
+		if !ok {
+			continue
+		}
+		if off, err := strconv.ParseInt(rest, 10, 64); err == nil && off < firstOffset {
+			stale = append(stale, key)
+		}
+	}
+	s.mu.RUnlock()
+	if len(stale) == 0 {
+		return 0, nil
+	}
+
+	msgs := make([]kafka.Message, len(stale))
+	for i, key := range stale {
+		msgs[i] = kafka.Message{Key: []byte(key)}
+	}
+	if err := s.writer.SendMany(ctx, msgs...); err != nil {
+		return 0, err
+	}
+	s.mu.Lock()
+	for _, key := range stale {
+		delete(s.handled, key)
+	}
+	s.mu.Unlock()
+	return len(stale), nil
+}
+
 // WaitCaughtUp blocks until the existing state has been read, or ctx ends.
 func (s *StateStore) WaitCaughtUp(ctx context.Context) {
 	for !s.caughtUp.Load() {
@@ -83,63 +123,15 @@ func (s *StateStore) WaitCaughtUp(ctx context.Context) {
 
 func (s *StateStore) Run(ctx context.Context) {
 	defer s.writer.Close()
-
-	var hw int64
-	for {
-		conn, err := kafka.DialLeader(ctx, "tcp", s.brokers[0], StateTopic, 0)
-		if err == nil {
-			hw, err = conn.ReadLastOffset()
-			_ = conn.Close()
-		}
-		if err == nil {
-			break
-		}
-		if ctx.Err() != nil {
-			return
-		}
-		s.log.Error("reading dlq state end offset failed", "error", err)
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(time.Second):
-		}
-	}
-	if hw == 0 {
-		s.caughtUp.Store(true)
-	}
-
-	reader := kafka.NewReader(kafka.ReaderConfig{
-		Brokers:     s.brokers,
-		Topic:       StateTopic,
-		Partition:   0,
-		MaxWait:     500 * time.Millisecond,
-		StartOffset: kafka.FirstOffset,
-	})
-	defer reader.Close()
-
-	for {
-		msg, err := reader.FetchMessage(ctx)
-		if err != nil {
-			if ctx.Err() != nil {
-				return
+	kafkatail.Compacted(ctx, s.brokers, StateTopic, s.log,
+		func(msg kafka.Message) {
+			s.mu.Lock()
+			if msg.Value == nil {
+				delete(s.handled, string(msg.Key))
+			} else {
+				s.handled[string(msg.Key)] = string(msg.Value)
 			}
-			s.log.Error("reading dlq state failed", "error", err)
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(time.Second):
-			}
-			continue
-		}
-		s.mu.Lock()
-		if msg.Value == nil {
-			delete(s.handled, string(msg.Key))
-		} else {
-			s.handled[string(msg.Key)] = string(msg.Value)
-		}
-		s.mu.Unlock()
-		if msg.Offset+1 >= hw {
-			s.caughtUp.Store(true)
-		}
-	}
+			s.mu.Unlock()
+		},
+		func() { s.caughtUp.Store(true) })
 }

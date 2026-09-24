@@ -39,14 +39,15 @@ func MessageCorrelationID(topic string, partition int, offset int64) string {
 	return hex.EncodeToString(sum[:16])
 }
 
-// Retryable reports statuses that mean "try again later" rather than
-// "this message is invalid", even though some are in the 4xx range.
-func (r *Response) Retryable() bool {
+// RetryLater reports the 4xx statuses that mean "come back later" rather
+// than "this message is invalid". They don't use up a retry attempt and
+// Retry-After is honored.
+func (r *Response) RetryLater() bool {
 	switch r.StatusCode {
 	case http.StatusRequestTimeout, http.StatusTooEarly, http.StatusTooManyRequests:
 		return true
 	}
-	return r.StatusCode >= 500
+	return false
 }
 
 func parseRetryAfter(v string) time.Duration {

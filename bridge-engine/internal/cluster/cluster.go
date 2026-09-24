@@ -194,6 +194,8 @@ func (n *Node) Start(ctx context.Context, seed []config.Pipeline) error {
 
 const placementCatchUpTimeout = 10 * time.Second
 
+const partitionRefresh = time.Minute
+
 func (n *Node) heartbeatSnapshot() heartbeatRecord {
 	rec := heartbeatRecord{Labels: n.cfg.Labels, ConfigVersion: n.configVersion.Load()}
 	if n.statsFn != nil {
@@ -224,6 +226,10 @@ func (n *Node) runLeaderDuties(genCtx context.Context, generation int32) {
 	ticker := time.NewTicker(time.Duration(n.cfg.PlacementIntervalSeconds) * time.Second)
 	defer ticker.Stop()
 
+	// Partition counts rarely change, so they're refreshed on a slower
+	// clock than placement instead of dialing Kafka every tick.
+	var partitions map[string]int
+	var partitionsAt time.Time
 	publish := func() {
 		if !n.hbView.warm(n.heartbeatInterval()) {
 			return // not every live node has been heard from yet
@@ -236,14 +242,17 @@ func (n *Node) runLeaderDuties(genCtx context.Context, generation int32) {
 		if len(live) == 0 {
 			live = map[string]heartbeatRecord{n.id: n.heartbeatSnapshot()}
 		}
-		partitions := make(map[string]int)
-		for _, p := range pipelines {
-			if _, done := partitions[p.SourceTopic]; done || !p.IsEnabled() {
-				continue
+		if time.Since(partitionsAt) > partitionRefresh {
+			partitions = make(map[string]int)
+			for _, p := range pipelines {
+				if _, done := partitions[p.SourceTopic]; done || !p.IsEnabled() {
+					continue
+				}
+				if count, err := kafkaadmin.PartitionCount(genCtx, n.brokers, p.SourceTopic); err == nil {
+					partitions[p.SourceTopic] = count
+				}
 			}
-			if count, err := kafkaadmin.PartitionCount(genCtx, n.brokers, p.SourceTopic); err == nil {
-				partitions[p.SourceTopic] = count
-			}
+			partitionsAt = time.Now()
 		}
 		written, err := n.placer.publish(genCtx, epoch, pipelines, live, partitions)
 		if err != nil {
