@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -51,6 +52,7 @@ type Status struct {
 
 type shared struct {
 	brokers       []string
+	source        *producer.Producer
 	dest          *producer.Producer
 	dlq           *producer.Producer
 	reject        *producer.Producer
@@ -67,15 +69,27 @@ type shared struct {
 
 const dlqBrowserMaxEntries = 200
 
-func newShared(ctx context.Context, brokers []string, p config.Pipeline, log *slog.Logger) (*shared, error) {
+func newShared(ctx context.Context, brokers []string, p config.Pipeline, replicationFactor int, log *slog.Logger) (*shared, error) {
 	engine, err := rules.Compile(p)
 	if err != nil {
 		return nil, err
 	}
 
-	client := callback.NewClient(30 * time.Second)
+	if p.DeadLetterTopic != "" {
+		if err := kafkaadmin.EnsureTopic(ctx, brokers, p.DeadLetterTopic, 1, replicationFactor); err != nil {
+			return nil, fmt.Errorf("ensuring dead_letter_topic %s exists: %w", p.DeadLetterTopic, err)
+		}
+	}
+	if p.RejectTopic != "" {
+		if err := kafkaadmin.EnsureTopic(ctx, brokers, p.RejectTopic, 1, replicationFactor); err != nil {
+			return nil, fmt.Errorf("ensuring reject_topic %s exists: %w", p.RejectTopic, err)
+		}
+	}
+
+	client := callback.NewClient(time.Duration(p.Target.TimeoutMs) * time.Millisecond)
 	s := &shared{
 		brokers:      brokers,
+		source:       producer.New(brokers, p.SourceTopic),
 		dest:         producer.New(brokers, p.DestinationTopic),
 		client:       client,
 		breaker:      breaker.New(5, 30*time.Second),
@@ -84,21 +98,13 @@ func newShared(ctx context.Context, brokers []string, p config.Pipeline, log *sl
 		overrideDest: make(map[string]*producer.Producer),
 	}
 
-	sourceProducer := producer.New(brokers, p.SourceTopic)
-
 	if p.DeadLetterTopic != "" {
 		s.dlq = producer.New(brokers, p.DeadLetterTopic)
-		if err := kafkaadmin.EnsureTopic(ctx, brokers, p.DeadLetterTopic, 1); err != nil {
-			return nil, fmt.Errorf("ensuring dead_letter_topic %s exists: %w", p.DeadLetterTopic, err)
-		}
-		s.dlqBrowser = dlq.NewBrowser(brokers, p.DeadLetterTopic, p.ConsumerGroup+"-dlq-browser", dlqBrowserMaxEntries, sourceProducer, log)
+		s.dlqBrowser = dlq.NewBrowser(brokers, p.DeadLetterTopic, p.ConsumerGroup+"-dlq-browser", dlqBrowserMaxEntries, s.source, log)
 	}
 	if p.RejectTopic != "" {
 		s.reject = producer.New(brokers, p.RejectTopic)
-		if err := kafkaadmin.EnsureTopic(ctx, brokers, p.RejectTopic, 1); err != nil {
-			return nil, fmt.Errorf("ensuring reject_topic %s exists: %w", p.RejectTopic, err)
-		}
-		s.rejectBrowser = dlq.NewBrowser(brokers, p.RejectTopic, p.ConsumerGroup+"-reject-browser", dlqBrowserMaxEntries, sourceProducer, log)
+		s.rejectBrowser = dlq.NewBrowser(brokers, p.RejectTopic, p.ConsumerGroup+"-reject-browser", dlqBrowserMaxEntries, s.source, log)
 	}
 
 	return s, nil
@@ -117,6 +123,9 @@ func (s *shared) overrideProducer(topic string) *producer.Producer {
 
 func (s *shared) Close() error {
 	err := s.dest.Close()
+	if closeErr := s.source.Close(); closeErr != nil && err == nil {
+		err = closeErr
+	}
 	if s.dlq != nil {
 		if closeErr := s.dlq.Close(); closeErr != nil && err == nil {
 			err = closeErr
@@ -157,7 +166,7 @@ type Runner struct {
 	counters    counters
 }
 
-func NewPipeline(ctx context.Context, brokers []string, p config.Pipeline, log *slog.Logger) ([]*Runner, error) {
+func NewPipeline(ctx context.Context, brokers []string, p config.Pipeline, replicationFactor int, log *slog.Logger) ([]*Runner, error) {
 	log = log.With("pipeline", p.Name, "tenant", p.Tenant)
 
 	workers := p.Workers
@@ -165,11 +174,11 @@ func NewPipeline(ctx context.Context, brokers []string, p config.Pipeline, log *
 		workers = 1
 	}
 
-	if err := kafkaadmin.EnsureTopic(ctx, brokers, p.SourceTopic, workers); err != nil {
+	if err := kafkaadmin.EnsureTopic(ctx, brokers, p.SourceTopic, workers, replicationFactor); err != nil {
 		return nil, fmt.Errorf("pipeline %q: ensuring source_topic %s exists: %w", p.Name, p.SourceTopic, err)
 	}
 
-	sh, err := newShared(ctx, brokers, p, log)
+	sh, err := newShared(ctx, brokers, p, replicationFactor, log)
 	if err != nil {
 		return nil, fmt.Errorf("pipeline %q: %w", p.Name, err)
 	}
@@ -282,6 +291,14 @@ type job struct {
 	done chan error
 }
 
+// finalCommitTimeout bounds the commits made while a worker drains after
+// its context is cancelled; those commits can't use the cancelled context.
+const finalCommitTimeout = 10 * time.Second
+
+// maxRetryBackoff caps the in-place retry delay for a message that can't be
+// completed, so a recovered dependency is picked up within this long.
+const maxRetryBackoff = 30 * time.Second
+
 func (r *Runner) Run(ctx context.Context) error {
 	r.counters.running.Store(true)
 	metrics.WorkerUp.WithLabelValues(r.pipeline.Name, r.workerLabel, r.pipeline.Tenant).Set(1)
@@ -289,6 +306,9 @@ func (r *Runner) Run(ctx context.Context) error {
 		r.counters.running.Store(false)
 		metrics.WorkerUp.WithLabelValues(r.pipeline.Name, r.workerLabel, r.pipeline.Tenant).Set(0)
 	}()
+
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
 
 	maxInFlight := r.pipeline.Concurrency.MaxInFlight
 	if maxInFlight < 1 {
@@ -298,19 +318,24 @@ func (r *Runner) Run(ctx context.Context) error {
 	sem := make(chan struct{}, maxInFlight)
 	commitQueue := make(chan *job, maxInFlight)
 	commitErrCh := make(chan error, 1)
+	lanes := newLanes()
 
-	go r.commitInOrder(ctx, commitQueue, commitErrCh)
-	go r.reportLag(ctx)
+	go r.commitInOrder(commitQueue, commitErrCh) // #nosec G118 -- final commits must outlive the cancelled worker ctx
+	go r.reportLag(runCtx)
 	if r.workerID == 0 && r.pipeline.Target.HealthCheckURL != "" {
-		go r.probeHealth(ctx)
+		go r.probeHealth(runCtx)
+	}
+
+	drain := func() {
+		close(commitQueue)
+		<-commitErrCh
 	}
 
 	for {
 		for r.shared.paused.Load() {
 			select {
 			case <-ctx.Done():
-				close(commitQueue)
-				<-commitErrCh
+				drain()
 				return nil
 			case <-time.After(time.Second):
 			}
@@ -318,9 +343,8 @@ func (r *Runner) Run(ctx context.Context) error {
 
 		msg, err := r.reader.FetchMessage(ctx)
 		if err != nil {
-			close(commitQueue)
+			drain()
 			if ctx.Err() != nil {
-				<-commitErrCh
 				return nil
 			}
 			return fmt.Errorf("fetching message: %w", err)
@@ -331,8 +355,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		select {
 		case sem <- struct{}{}:
 		case <-ctx.Done():
-			close(commitQueue)
-			<-commitErrCh
+			drain()
 			return nil
 		}
 
@@ -340,34 +363,100 @@ func (r *Runner) Run(ctx context.Context) error {
 		case commitQueue <- j:
 		case <-ctx.Done():
 			<-sem
-			close(commitQueue)
-			<-commitErrCh
+			drain()
 			return nil
 		}
 
+		wait, release := lanes.acquire(r.laneKey(msg))
 		go func(j *job) {
 			defer func() { <-sem }()
-			j.done <- r.process(ctx, j.msg)
+			defer release()
+			if wait != nil {
+				select {
+				case <-wait:
+				case <-ctx.Done():
+					j.done <- ctx.Err()
+					return
+				}
+			}
+			j.done <- r.processUntilDone(ctx, j.msg)
 		}(j)
 	}
 }
 
-func (r *Runner) commitInOrder(ctx context.Context, queue chan *job, done chan<- error) {
+// laneKey groups messages that must be processed one at a time, in fetch
+// order. An empty key means no ordering constraint for that message.
+func (r *Runner) laneKey(msg kafka.Message) string {
+	switch r.pipeline.Ordering {
+	case config.OrderingNone:
+		return ""
+	case config.OrderingPerPartition:
+		return "p" + strconv.Itoa(msg.Partition)
+	default:
+		if len(msg.Key) == 0 {
+			return ""
+		}
+		return strconv.Itoa(msg.Partition) + "/" + string(msg.Key)
+	}
+}
+
+// processUntilDone never gives up on a message while the worker is running:
+// a message that can't be completed (no DLQ to route to, a webhook override
+// that keeps failing) is retried in place with backoff instead of being
+// skipped, because committing any later offset on its partition would
+// permanently lose it. It only returns an error when ctx is cancelled, in
+// which case the message is left uncommitted and redelivered later.
+func (r *Runner) processUntilDone(ctx context.Context, msg kafka.Message) error {
+	backoff := time.Duration(r.pipeline.Retry.BackoffMs) * time.Millisecond
+	for {
+		err := r.process(ctx, msg)
+		if err == nil {
+			return nil
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+
+		r.counters.failed.Add(1)
+		metrics.Failed.WithLabelValues(r.pipeline.Name, r.workerLabel, r.pipeline.Tenant).Inc()
+		r.log.Error("message could not be completed, retrying it in place instead of skipping it", "error", err, "offset", msg.Offset, "partition", msg.Partition, "retry_in", backoff.String())
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff):
+		}
+		backoff = min(backoff*2, maxRetryBackoff)
+	}
+}
+
+// commitInOrder commits finished jobs in fetch order. Once any job ends
+// without completing (only possible when the worker is stopping), nothing
+// after it is committed either: Kafka's committed offset is a single resume
+// point per partition, so committing past an unfinished message would
+// silently drop it.
+func (r *Runner) commitInOrder(queue chan *job, done chan<- error) {
+	halted := false
 	for j := range queue {
 		err := <-j.done
 
 		now := time.Now()
 		r.counters.lastActivityUnix.Store(now.Unix())
 		metrics.LastActivityTimestamp.WithLabelValues(r.pipeline.Name, r.workerLabel, r.pipeline.Tenant).Set(float64(now.Unix()))
-		if err != nil {
-			r.counters.failed.Add(1)
-			metrics.Failed.WithLabelValues(r.pipeline.Name, r.workerLabel, r.pipeline.Tenant).Inc()
-			r.log.Error("processing message failed", "error", err, "offset", j.msg.Offset, "partition", j.msg.Partition)
+
+		if halted {
 			continue
 		}
-		if err := r.reader.CommitMessages(ctx, j.msg); err != nil {
+		if err != nil {
+			halted = true
+			continue
+		}
+
+		commitCtx, cancel := context.WithTimeout(context.Background(), finalCommitTimeout)
+		if err := r.reader.CommitMessages(commitCtx, j.msg); err != nil {
 			r.log.Error("committing offset failed", "error", err, "offset", j.msg.Offset, "partition", j.msg.Partition)
 		}
+		cancel()
 	}
 	done <- nil
 }
@@ -421,11 +510,12 @@ func (r *Runner) reportLag(ctx context.Context) {
 	}
 }
 
+// maxRetryAfter caps how long a target's Retry-After header can hold a
+// message, so a misconfigured target can't stall a partition for hours.
+const maxRetryAfter = 5 * time.Minute
+
 func (r *Runner) process(ctx context.Context, msg kafka.Message) error {
-	correlationID, err := callback.NewCorrelationID()
-	if err != nil {
-		return err
-	}
+	correlationID := callback.MessageCorrelationID(msg.Topic, msg.Partition, msg.Offset)
 
 	log := r.log.With("correlation_id", correlationID, "offset", msg.Offset, "partition", msg.Partition)
 	headers := map[string]string{callback.CorrelationIDHeader: correlationID}
@@ -475,9 +565,28 @@ func (r *Runner) process(ctx context.Context, msg kafka.Message) error {
 		release()
 		metrics.CallbackDuration.WithLabelValues(r.pipeline.Name, r.pipeline.Tenant).Observe(time.Since(callStart).Seconds())
 
-		if lastErr == nil && resp.StatusCode >= 400 && resp.StatusCode < 500 {
+		if lastErr == nil && r.pipeline.Target.IsReject(resp.StatusCode) {
 			r.shared.breaker.RecordResult(true)
 			return r.route(ctx, r.shared.reject, msg.Key, msg.Value, headers, log, "rejected", resp.StatusCode)
+		}
+
+		if lastErr == nil && (resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode == http.StatusTooEarly) {
+			// An explicit "come back later" is not a failed attempt: it
+			// neither spends a retry nor sends the message to the DLQ.
+			realAttempts--
+			wait := resp.RetryAfter
+			if wait <= 0 {
+				wait = time.Duration(r.pipeline.Retry.BackoffMs) * time.Millisecond
+			}
+			wait = min(wait, maxRetryAfter)
+			metrics.Backpressured.WithLabelValues(r.pipeline.Name, r.workerLabel, r.pipeline.Tenant).Inc()
+			log.Warn("target asked to retry later", "status_code", resp.StatusCode, "retry_in", wait.String())
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(wait):
+			}
+			continue
 		}
 
 		success := lastErr == nil && resp.Success()
@@ -571,7 +680,7 @@ func (r *Runner) applyRuleAction(ctx context.Context, rule *config.FastPathRule,
 			log.Info("message routed", "rule", rule.Name, "destination", rule.DestinationOverride)
 			return nil
 		}
-		if err := r.webhookWithRetry(ctx, rule.WebhookOverride, value, log); err != nil {
+		if err := r.webhookWithRetry(ctx, rule.WebhookOverride, headers[callback.CorrelationIDHeader], value, log); err != nil {
 			return fmt.Errorf("routing to webhook %s: %w", rule.WebhookOverride, err)
 		}
 		r.counters.processed.Add(1)
@@ -584,12 +693,7 @@ func (r *Runner) applyRuleAction(ctx context.Context, rule *config.FastPathRule,
 	}
 }
 
-func (r *Runner) webhookWithRetry(ctx context.Context, url string, value []byte, log *slog.Logger) error {
-	correlationID, err := callback.NewCorrelationID()
-	if err != nil {
-		return err
-	}
-
+func (r *Runner) webhookWithRetry(ctx context.Context, url, correlationID string, value []byte, log *slog.Logger) error {
 	var lastErr error
 	for attempt := 1; attempt <= r.pipeline.Retry.MaxAttempts; attempt++ {
 		var resp *callback.Response
@@ -613,22 +717,26 @@ func (r *Runner) webhookWithRetry(ctx context.Context, url string, value []byte,
 	return lastErr
 }
 
+// sendWithRetry retries a produce until it succeeds or ctx ends. A produce
+// failure means Kafka itself is unavailable, not that the message is bad,
+// so giving up would only force the callback to be repeated later.
 func (r *Runner) sendWithRetry(ctx context.Context, target *producer.Producer, key, value []byte, headers map[string]string, log *slog.Logger) error {
-	var lastErr error
-	for attempt := 1; attempt <= r.pipeline.Retry.MaxAttempts; attempt++ {
-		lastErr = target.Send(ctx, key, value, headers)
-		if lastErr == nil {
+	backoff := time.Duration(r.pipeline.Retry.BackoffMs) * time.Millisecond
+	for attempt := 1; ; attempt++ {
+		err := target.Send(ctx, key, value, headers)
+		if err == nil {
 			return nil
 		}
-
-		log.Warn("produce attempt failed", "attempt", attempt, "error", lastErr)
-		if attempt < r.pipeline.Retry.MaxAttempts {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(time.Duration(r.pipeline.Retry.BackoffMs) * time.Millisecond):
-			}
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
+
+		log.Warn("produce attempt failed, retrying until Kafka accepts it", "attempt", attempt, "error", err, "retry_in", backoff.String())
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff):
+		}
+		backoff = min(backoff*2, maxRetryBackoff)
 	}
-	return lastErr
 }

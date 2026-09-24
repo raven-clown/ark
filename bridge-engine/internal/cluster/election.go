@@ -9,39 +9,41 @@ import (
 	"github.com/segmentio/kafka-go"
 )
 
-// elector wraps a Kafka consumer group over ElectionTopic, a topic with
-// exactly one partition. Kafka's own group coordinator only ever hands that
-// one partition to a single group member at a time, so whichever member
-// holds it is the cluster leader; if that member dies, the coordinator's
-// normal rebalance hands the partition to a survivor. No separate election
-// protocol needs to be written; this just observes the outcome of Kafka's.
+// elector wraps a Kafka consumer group over a topic with exactly one
+// partition. Kafka's group coordinator only ever hands that partition to a
+// single member at a time, so whichever member holds it is the leader; if
+// it dies, the coordinator's normal rebalance hands the partition to a
+// survivor.
+//
+// Holding the partition is not by itself a fence: a deposed leader can
+// still produce for a moment after a rebalance. The generation ID passed to
+// onLeadership is used as a placement epoch so readers can discard writes
+// from an older leader.
 type elector struct {
 	cg       *kafka.ConsumerGroup
+	topic    string
 	isLeader atomic.Bool
 	log      *slog.Logger
 }
 
-func newElector(brokers []string, sessionTimeout time.Duration, log *slog.Logger) (*elector, error) {
+func newElector(brokers []string, topic string, sessionTimeout time.Duration, log *slog.Logger) (*elector, error) {
 	cg, err := kafka.NewConsumerGroup(kafka.ConsumerGroupConfig{
-		ID:             ElectionTopic,
+		ID:             topic,
 		Brokers:        brokers,
-		Topics:         []string{ElectionTopic},
+		Topics:         []string{topic},
 		SessionTimeout: sessionTimeout,
 		StartOffset:    kafka.LastOffset,
 	})
 	if err != nil {
 		return nil, err
 	}
-	return &elector{cg: cg, log: log}, nil
+	return &elector{cg: cg, topic: topic, log: log}, nil
 }
 
-// run drives the election loop until ctx is done, calling onLeadership
-// every time this node becomes leader. onLeadership receives a context
-// bound to that specific election generation: it is cancelled the instant
-// leadership is lost (a rebalance moves the partition elsewhere, or the
-// group session times out), so callers must select on it and return
-// promptly rather than keep acting as leader past that point.
-func (e *elector) run(ctx context.Context, onLeadership func(genCtx context.Context)) {
+// run drives the election loop until ctx is done, calling onLeadership each
+// time this node becomes leader. Its context ends the instant leadership is
+// lost, so callers must select on it and return promptly.
+func (e *elector) run(ctx context.Context, onLeadership func(genCtx context.Context, generation int32)) {
 	defer e.cg.Close()
 
 	for {
@@ -60,10 +62,14 @@ func (e *elector) run(ctx context.Context, onLeadership func(genCtx context.Cont
 			continue
 		}
 
-		leader := len(gen.Assignments[ElectionTopic]) > 0
+		leader := len(gen.Assignments[e.topic]) > 0
 		e.isLeader.Store(leader)
 		if leader {
-			gen.Start(onLeadership)
+			generation := gen.ID
+			gen.Start(func(genCtx context.Context) {
+				onLeadership(genCtx, generation)
+				e.isLeader.Store(false)
+			})
 		}
 	}
 }

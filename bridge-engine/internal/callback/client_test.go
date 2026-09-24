@@ -66,20 +66,41 @@ func TestPostUnreachableReturnsError(t *testing.T) {
 	}
 }
 
-func TestNewCorrelationIDIsUnique(t *testing.T) {
-	a, err := NewCorrelationID()
-	if err != nil {
-		t.Fatalf("NewCorrelationID: %v", err)
-	}
-	b, err := NewCorrelationID()
-	if err != nil {
-		t.Fatalf("NewCorrelationID: %v", err)
-	}
-	if a == b {
-		t.Fatalf("expected two correlation IDs to differ, both were %q", a)
+func TestMessageCorrelationIDIsStablePerRecord(t *testing.T) {
+	a := MessageCorrelationID("orders", 3, 42)
+	if b := MessageCorrelationID("orders", 3, 42); a != b {
+		t.Fatalf("expected the same record to always get the same ID, got %q and %q", a, b)
 	}
 	if len(a) != 32 {
-		t.Errorf("expected a 32-char hex id (16 bytes), got %d chars: %q", len(a), a)
+		t.Errorf("expected a 32-char hex id, got %d chars: %q", len(a), a)
+	}
+	for _, other := range []string{
+		MessageCorrelationID("orders", 3, 43),
+		MessageCorrelationID("orders", 4, 42),
+		MessageCorrelationID("payments", 3, 42),
+	} {
+		if other == a {
+			t.Errorf("expected a different record to get a different ID, both were %q", a)
+		}
+	}
+}
+
+func TestRetryAfterIsParsed(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "7")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer server.Close()
+
+	resp, err := NewClient(5*time.Second).Post(context.Background(), server.URL, "corr", nil)
+	if err != nil {
+		t.Fatalf("Post: %v", err)
+	}
+	if resp.RetryAfter != 7*time.Second {
+		t.Errorf("expected RetryAfter 7s, got %v", resp.RetryAfter)
+	}
+	if !resp.Retryable() {
+		t.Error("expected 429 to be retryable")
 	}
 }
 

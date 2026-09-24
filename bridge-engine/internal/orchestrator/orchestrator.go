@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"reflect"
 	"sync"
+	"time"
 
 	"github.com/raven-clown/ark/bridge-engine/internal/config"
 	"github.com/raven-clown/ark/bridge-engine/internal/consumer"
@@ -26,25 +27,36 @@ type runningPipeline struct {
 // happened to trigger the start. Reconcile is called from the HTTP
 // reload handler with that request's context, which is cancelled the
 // moment the response is written; a pipeline started under it would be
-// killed within milliseconds. baseCtx is the process's own lifetime
-// instead, so a pipeline started by a reload keeps running exactly like
-// one started at boot, until the process shuts down or a later Reconcile
-// stops it.
+// killed within milliseconds.
 type Manager struct {
-	baseCtx context.Context
-	brokers []string
-	logger  *slog.Logger
+	baseCtx           context.Context
+	brokers           []string
+	replicationFactor int
+	logger            *slog.Logger
+
+	// reconcileMu serializes whole Reconcile calls. The file watcher, the
+	// reload endpoint and cluster placement can all trigger one, and two
+	// interleaved starts of the same pipeline would orphan a full set of
+	// consumers that nothing could stop.
+	reconcileMu sync.Mutex
 
 	mu        sync.RWMutex
 	pipelines map[string]*runningPipeline
+	desired   map[string]config.Pipeline
+	retrying  map[string]context.CancelFunc
+	paused    map[string]bool
 }
 
-func New(baseCtx context.Context, brokers []string, logger *slog.Logger) *Manager {
+func New(baseCtx context.Context, brokers []string, replicationFactor int, logger *slog.Logger) *Manager {
 	return &Manager{
-		baseCtx:   baseCtx,
-		brokers:   brokers,
-		logger:    logger,
-		pipelines: make(map[string]*runningPipeline),
+		baseCtx:           baseCtx,
+		brokers:           brokers,
+		replicationFactor: replicationFactor,
+		logger:            logger,
+		pipelines:         make(map[string]*runningPipeline),
+		desired:           make(map[string]config.Pipeline),
+		retrying:          make(map[string]context.CancelFunc),
+		paused:            make(map[string]bool),
 	}
 }
 
@@ -69,28 +81,67 @@ func (m *Manager) PipelineRunners(name string) []*consumer.Runner {
 	return nil
 }
 
+// SetPaused pauses or resumes a pipeline and remembers the choice, so a
+// restart caused by a reload or a cluster placement change doesn't
+// silently resume a pipeline an operator paused on purpose. It reports
+// false if no pipeline by that name is running here.
+func (m *Manager) SetPaused(name string, paused bool) bool {
+	m.mu.Lock()
+	rp, ok := m.pipelines[name]
+	if ok {
+		if paused {
+			m.paused[name] = true
+		} else {
+			delete(m.paused, name)
+		}
+	}
+	m.mu.Unlock()
+	if !ok {
+		return false
+	}
+
+	if paused {
+		consumer.Pause(rp.runners)
+	} else {
+		consumer.Resume(rp.runners)
+	}
+	return true
+}
+
 // Reconcile starts, stops, or restarts pipelines so the running set matches
 // pipelines exactly: pipelines no longer present are stopped, new ones are
-// started, and ones whose config changed are restarted (stopped, then
-// started fresh) since fields like workers, topics, or consumer_group
-// aren't safe to change on a live Runner. Unchanged pipelines are left
-// running untouched. Errors starting individual pipelines are collected and
-// returned together; a failure in one pipeline doesn't stop the rest of the
-// reconcile.
+// started, and ones whose config changed are restarted, since fields like
+// workers, topics, or consumer_group aren't safe to change on a live
+// Runner. Unchanged pipelines are left running untouched.
+//
+// A pipeline that fails to start (for example Kafka briefly unreachable)
+// is not left down: it keeps retrying in the background with backoff until
+// it starts or a later Reconcile changes or removes it. The failure is
+// still returned so the caller can report it.
 func (m *Manager) Reconcile(pipelines []config.Pipeline) []error {
+	m.reconcileMu.Lock()
+	defer m.reconcileMu.Unlock()
+
 	desired := make(map[string]config.Pipeline, len(pipelines))
 	for _, p := range pipelines {
 		desired[p.Name] = p
 	}
 
-	m.mu.RLock()
+	m.mu.Lock()
+	m.desired = desired
+	for name, cancel := range m.retrying {
+		if want, ok := desired[name]; !ok || !want.IsEnabled() {
+			cancel()
+			delete(m.retrying, name)
+		}
+	}
 	var toStop []string
 	for name := range m.pipelines {
 		if _, ok := desired[name]; !ok {
 			toStop = append(toStop, name)
 		}
 	}
-	m.mu.RUnlock()
+	m.mu.Unlock()
 
 	for _, name := range toStop {
 		m.stop(name)
@@ -113,18 +164,72 @@ func (m *Manager) Reconcile(pipelines []config.Pipeline) []error {
 		}
 		if err := m.start(p); err != nil {
 			errs = append(errs, fmt.Errorf("pipeline %q: %w", p.Name, err))
+			m.retryStart(p)
 		}
 	}
 	return errs
 }
 
+// retryStart keeps trying to start p until it succeeds, the process shuts
+// down, or a later Reconcile no longer wants this exact config.
+func (m *Manager) retryStart(p config.Pipeline) {
+	ctx, cancel := context.WithCancel(m.baseCtx)
+
+	m.mu.Lock()
+	if old, ok := m.retrying[p.Name]; ok {
+		old()
+	}
+	m.retrying[p.Name] = cancel
+	m.mu.Unlock()
+
+	go func() {
+		backoff := time.Second
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+
+			m.reconcileMu.Lock()
+			m.mu.RLock()
+			want, stillWanted := m.desired[p.Name]
+			_, running := m.pipelines[p.Name]
+			m.mu.RUnlock()
+			if ctx.Err() != nil || !stillWanted || !reflect.DeepEqual(want, p) || running {
+				m.reconcileMu.Unlock()
+				return
+			}
+			err := m.start(p)
+			m.reconcileMu.Unlock()
+
+			if err == nil {
+				m.logger.Info("pipeline started after retrying", "pipeline", p.Name, "tenant", p.Tenant)
+				m.mu.Lock()
+				delete(m.retrying, p.Name)
+				m.mu.Unlock()
+				return
+			}
+			m.logger.Error("pipeline still failing to start, will retry", "pipeline", p.Name, "tenant", p.Tenant, "error", err, "retry_in", backoff.String())
+			backoff = min(backoff*2, 30*time.Second)
+		}
+	}()
+}
+
 func (m *Manager) start(p config.Pipeline) error {
 	pctx, cancel := context.WithCancel(m.baseCtx)
 
-	runners, err := consumer.NewPipeline(pctx, m.brokers, p, m.logger)
+	runners, err := consumer.NewPipeline(pctx, m.brokers, p, m.replicationFactor, m.logger)
 	if err != nil {
 		cancel()
 		return err
+	}
+
+	m.mu.RLock()
+	paused := m.paused[p.Name]
+	m.mu.RUnlock()
+	if paused {
+		consumer.Pause(runners)
 	}
 
 	rp := &runningPipeline{cfg: p, cancel: cancel, runners: runners}
@@ -137,13 +242,7 @@ func (m *Manager) start(p config.Pipeline) error {
 			workers.Add(1)
 			go func(runner *consumer.Runner) {
 				defer workers.Done()
-				m.logger.Info("starting pipeline worker", "pipeline", runner.Name(), "tenant", runner.Tenant())
-				if err := runner.Run(pctx); err != nil {
-					m.logger.Error("pipeline worker stopped with error", "pipeline", runner.Name(), "tenant", runner.Tenant(), "error", err)
-				}
-				if err := runner.Close(); err != nil {
-					m.logger.Error("closing worker resources failed", "pipeline", runner.Name(), "tenant", runner.Tenant(), "error", err)
-				}
+				m.supervise(pctx, runner)
 			}(runner)
 		}
 		workers.Wait()
@@ -157,8 +256,35 @@ func (m *Manager) start(p config.Pipeline) error {
 	m.pipelines[p.Name] = rp
 	m.mu.Unlock()
 
-	m.logger.Info("pipeline started", "pipeline", p.Name, "tenant", p.Tenant)
+	m.logger.Info("pipeline started", "pipeline", p.Name, "tenant", p.Tenant, "workers", len(runners))
 	return nil
+}
+
+// supervise runs one worker and restarts it with backoff if it stops on its
+// own, so a transient fetch error doesn't leave the pipeline permanently
+// short a worker. It returns once ctx is cancelled.
+func (m *Manager) supervise(ctx context.Context, runner *consumer.Runner) {
+	defer func() {
+		if err := runner.Close(); err != nil {
+			m.logger.Error("closing worker resources failed", "pipeline", runner.Name(), "tenant", runner.Tenant(), "error", err)
+		}
+	}()
+
+	backoff := time.Second
+	for {
+		m.logger.Info("starting pipeline worker", "pipeline", runner.Name(), "tenant", runner.Tenant())
+		err := runner.Run(ctx)
+		if ctx.Err() != nil {
+			return
+		}
+		m.logger.Error("pipeline worker stopped, restarting it", "pipeline", runner.Name(), "tenant", runner.Tenant(), "error", err, "retry_in", backoff.String())
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+		backoff = min(backoff*2, 30*time.Second)
+	}
 }
 
 func (m *Manager) stop(name string) {
@@ -181,12 +307,19 @@ func (m *Manager) stop(name string) {
 // ShutdownAll stops every running pipeline and waits for them to finish
 // closing their Kafka resources. Call it once, during process shutdown.
 func (m *Manager) ShutdownAll() {
-	m.mu.RLock()
+	m.reconcileMu.Lock()
+	defer m.reconcileMu.Unlock()
+
+	m.mu.Lock()
+	for name, cancel := range m.retrying {
+		cancel()
+		delete(m.retrying, name)
+	}
 	names := make([]string, 0, len(m.pipelines))
 	for name := range m.pipelines {
 		names = append(names, name)
 	}
-	m.mu.RUnlock()
+	m.mu.Unlock()
 
 	for _, name := range names {
 		m.stop(name)

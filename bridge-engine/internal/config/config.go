@@ -30,6 +30,14 @@ const (
 	StrategyLeastInFlight   TargetStrategy = "least_inflight"
 )
 
+type Ordering string
+
+const (
+	OrderingPerKey       Ordering = "per_key"
+	OrderingPerPartition Ordering = "per_partition"
+	OrderingNone         Ordering = "none"
+)
+
 type RuleAction string
 
 const (
@@ -48,6 +56,27 @@ type Target struct {
 	HealthCheckURL  string         `yaml:"health_check_url"`
 	HealthCheckURLs []string       `yaml:"health_check_urls"`
 	HealthCheckSecs int            `yaml:"health_check_interval_seconds"`
+	TimeoutMs       int            `yaml:"timeout_ms"`
+	RejectStatuses  []int          `yaml:"reject_statuses"`
+}
+
+// IsReject reports whether a callback status routes the message to
+// reject_topic. With no reject_statuses configured, every 4xx except the
+// "try again later" ones (408, 425, 429) is a reject.
+func (t Target) IsReject(status int) bool {
+	if len(t.RejectStatuses) > 0 {
+		for _, s := range t.RejectStatuses {
+			if s == status {
+				return true
+			}
+		}
+		return false
+	}
+	switch status {
+	case 408, 425, 429:
+		return false
+	}
+	return status >= 400 && status < 500
 }
 
 type ConsumerSettings struct {
@@ -82,6 +111,7 @@ type Pipeline struct {
 	RejectTopic       string           `yaml:"reject_topic"`
 	ConsumerGroup     string           `yaml:"consumer_group"`
 	Workers           int              `yaml:"workers"`
+	Ordering          Ordering         `yaml:"ordering"`
 	Consumer          ConsumerSettings `yaml:"consumer"`
 	Target            Target           `yaml:"target"`
 	Concurrency       Concurrency      `yaml:"concurrency"`
@@ -93,17 +123,28 @@ type Pipeline struct {
 
 type Cluster struct {
 	Enabled                  bool   `yaml:"enabled"`
+	Name                     string `yaml:"name"`
 	NodeID                   string `yaml:"node_id"`
 	HeartbeatIntervalSeconds int    `yaml:"heartbeat_interval_seconds"`
 	NodeTimeoutSeconds       int    `yaml:"node_timeout_seconds"`
 	PlacementIntervalSeconds int    `yaml:"placement_interval_seconds"`
 }
 
+type Topics struct {
+	ReplicationFactor int `yaml:"replication_factor"`
+}
+
 type Config struct {
 	Brokers   []string   `yaml:"brokers"`
+	Topics    Topics     `yaml:"topics"`
 	Cluster   Cluster    `yaml:"cluster"`
 	Pipelines []Pipeline `yaml:"pipelines"`
 }
+
+// minBrokerSessionTimeoutSeconds is Kafka's default
+// group.min.session.timeout.ms; a lower node_timeout_seconds makes every
+// election JoinGroup fail.
+const minBrokerSessionTimeoutSeconds = 6
 
 func (p *Pipeline) IsEnabled() bool {
 	if p.Enabled == nil {
@@ -133,7 +174,13 @@ func Load(path string) (*Config, error) {
 }
 
 func applyDefaults(cfg *Config) {
+	if cfg.Topics.ReplicationFactor == 0 {
+		cfg.Topics.ReplicationFactor = 3
+	}
 	if cfg.Cluster.Enabled {
+		if cfg.Cluster.Name == "" {
+			cfg.Cluster.Name = "default"
+		}
 		if cfg.Cluster.HeartbeatIntervalSeconds == 0 {
 			cfg.Cluster.HeartbeatIntervalSeconds = 5
 		}
@@ -180,6 +227,12 @@ func applyDefaults(cfg *Config) {
 		if p.Retry.BackoffMs == 0 {
 			p.Retry.BackoffMs = 1000
 		}
+		if p.Target.TimeoutMs == 0 {
+			p.Target.TimeoutMs = 30000
+		}
+		if p.Ordering == "" {
+			p.Ordering = OrderingPerKey
+		}
 	}
 }
 
@@ -188,8 +241,26 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("brokers: at least one broker address is required")
 	}
 
-	if c.Cluster.Enabled && c.Cluster.NodeTimeoutSeconds <= c.Cluster.HeartbeatIntervalSeconds {
-		return fmt.Errorf("cluster: node_timeout_seconds (%d) must be greater than heartbeat_interval_seconds (%d)", c.Cluster.NodeTimeoutSeconds, c.Cluster.HeartbeatIntervalSeconds)
+	if c.Topics.ReplicationFactor < 1 {
+		return fmt.Errorf("topics.replication_factor must be at least 1, got %d", c.Topics.ReplicationFactor)
+	}
+
+	if c.Cluster.Enabled {
+		cl := c.Cluster
+		if cl.HeartbeatIntervalSeconds < 1 || cl.PlacementIntervalSeconds < 1 {
+			return fmt.Errorf("cluster: heartbeat_interval_seconds and placement_interval_seconds must be at least 1")
+		}
+		if cl.NodeTimeoutSeconds < minBrokerSessionTimeoutSeconds {
+			return fmt.Errorf("cluster: node_timeout_seconds (%d) must be at least %d, Kafka's default group.min.session.timeout.ms", cl.NodeTimeoutSeconds, minBrokerSessionTimeoutSeconds)
+		}
+		if cl.NodeTimeoutSeconds <= cl.HeartbeatIntervalSeconds {
+			return fmt.Errorf("cluster: node_timeout_seconds (%d) must be greater than heartbeat_interval_seconds (%d)", cl.NodeTimeoutSeconds, cl.HeartbeatIntervalSeconds)
+		}
+		for _, r := range cl.Name {
+			if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' || r == '_') {
+				return fmt.Errorf("cluster.name %q may only contain lowercase letters, digits, '-' and '_'", cl.Name)
+			}
+		}
 	}
 
 	seen := map[string]bool{}
@@ -237,6 +308,21 @@ func (c *Config) Validate() error {
 
 		if p.ConsumerGroup == "" {
 			return fmt.Errorf("pipeline %q: consumer_group is required to enable this pipeline", p.Name)
+		}
+
+		switch p.Ordering {
+		case OrderingPerKey, OrderingPerPartition, OrderingNone:
+		default:
+			return fmt.Errorf("pipeline %q: unknown ordering %q (want per_key, per_partition or none)", p.Name, p.Ordering)
+		}
+
+		if p.Target.TimeoutMs < 1 {
+			return fmt.Errorf("pipeline %q: target.timeout_ms must be positive", p.Name)
+		}
+		for _, s := range p.Target.RejectStatuses {
+			if s < 400 || s > 499 {
+				return fmt.Errorf("pipeline %q: target.reject_statuses may only contain 4xx codes, got %d", p.Name, s)
+			}
 		}
 
 		if err := validateRules(p.Name, "fast_path_rules", p.FastPathRules); err != nil {

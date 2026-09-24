@@ -10,20 +10,23 @@ import (
 	"github.com/segmentio/kafka-go"
 )
 
-func EnsureTopic(ctx context.Context, brokers []string, topic string, partitions int) error {
-	return ensureTopic(ctx, brokers, topic, partitions, nil)
+// EnsureTopic creates topic if it doesn't exist; an existing topic is left
+// exactly as it is. replicationFactor is capped at the number of brokers so
+// a single-broker dev setup still works with a production default.
+func EnsureTopic(ctx context.Context, brokers []string, topic string, partitions, replicationFactor int) error {
+	return ensureTopic(ctx, brokers, topic, partitions, replicationFactor, nil)
 }
 
 // EnsureCompactedTopic is like EnsureTopic but sets cleanup.policy=compact,
 // for internal topics that hold latest-value-per-key state (cluster
 // heartbeats, placements) rather than an event log.
-func EnsureCompactedTopic(ctx context.Context, brokers []string, topic string, partitions int) error {
-	return ensureTopic(ctx, brokers, topic, partitions, []kafka.ConfigEntry{
+func EnsureCompactedTopic(ctx context.Context, brokers []string, topic string, partitions, replicationFactor int) error {
+	return ensureTopic(ctx, brokers, topic, partitions, replicationFactor, []kafka.ConfigEntry{
 		{ConfigName: "cleanup.policy", ConfigValue: "compact"},
 	})
 }
 
-func ensureTopic(ctx context.Context, brokers []string, topic string, partitions int, configEntries []kafka.ConfigEntry) error {
+func ensureTopic(ctx context.Context, brokers []string, topic string, partitions, replicationFactor int, configEntries []kafka.ConfigEntry) error {
 	if partitions < 1 {
 		partitions = 1
 	}
@@ -33,6 +36,23 @@ func ensureTopic(ctx context.Context, brokers []string, topic string, partitions
 		return fmt.Errorf("dialing %s: %w", brokers[0], err)
 	}
 	defer conn.Close()
+
+	clusterBrokers, err := conn.Brokers()
+	if err != nil {
+		return fmt.Errorf("listing brokers: %w", err)
+	}
+	rf := replicationFactor
+	if rf < 1 {
+		rf = 1
+	}
+	if rf > len(clusterBrokers) {
+		rf = len(clusterBrokers)
+	}
+	minISR := 1
+	if rf >= 3 {
+		minISR = 2
+	}
+	configEntries = append(configEntries, kafka.ConfigEntry{ConfigName: "min.insync.replicas", ConfigValue: strconv.Itoa(minISR)})
 
 	controller, err := conn.Controller()
 	if err != nil {
@@ -49,7 +69,7 @@ func ensureTopic(ctx context.Context, brokers []string, topic string, partitions
 	err = controllerConn.CreateTopics(kafka.TopicConfig{
 		Topic:             topic,
 		NumPartitions:     partitions,
-		ReplicationFactor: 1,
+		ReplicationFactor: rf,
 		ConfigEntries:     configEntries,
 	})
 	if err != nil {

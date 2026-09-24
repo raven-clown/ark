@@ -1,11 +1,17 @@
 brokers:
   - kafka:9092
 
+# Replication for every topic ARK creates (DLQ, reject, cluster topics, and
+# a source topic if it doesn't exist yet). Capped at the broker count.
+topics:
+  replication_factor: 3
+
 # Opt-in: spread this file's pipelines' worker counts across multiple ARK
 # processes instead of running them all within this one. Every node must
 # be started from the same pipeline config. See PLAN.md, Phase 4b.
 # cluster:
 #   enabled: true
+#   name: prod                         # namespaces internal topics; must match on every node
 #   node_id: ark-1                     # defaults to hostname + a random suffix
 #   heartbeat_interval_seconds: 5
 #   node_timeout_seconds: 20
@@ -22,6 +28,9 @@ pipelines:
 
     consumer_group: order-processor-group
     workers: 3
+    # per_key (default): messages sharing a key are processed in order,
+    # different keys in parallel. per_partition or none are also allowed.
+    ordering: per_key
     consumer:
       max_poll_records: 50
       max_poll_interval_ms: 300000
@@ -31,6 +40,10 @@ pipelines:
       url: http://order-app:8080/process
       health_check_url: http://order-app:8080/
       health_check_interval_seconds: 5
+      timeout_ms: 30000
+      # Statuses routed to reject_topic. Default: every 4xx except 408, 425
+      # and 429, which are retried (honoring Retry-After).
+      # reject_statuses: [400, 404, 409, 410, 422]
 
     concurrency:
       max_in_flight: 10

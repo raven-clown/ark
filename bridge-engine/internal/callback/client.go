@@ -3,11 +3,12 @@ package callback
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 )
 
@@ -27,14 +28,40 @@ type Response struct {
 	StatusCode    int
 	Body          []byte
 	CorrelationID string
+	RetryAfter    time.Duration
 }
 
-func NewCorrelationID() (string, error) {
-	buf := make([]byte, 16)
-	if _, err := rand.Read(buf); err != nil {
-		return "", fmt.Errorf("generating correlation id: %w", err)
+// MessageCorrelationID is stable for a given Kafka record, so every retry
+// and every redelivery after a crash carries the same ID and the target
+// can use it as an idempotency key.
+func MessageCorrelationID(topic string, partition int, offset int64) string {
+	sum := sha256.Sum256([]byte(topic + "/" + strconv.Itoa(partition) + "/" + strconv.FormatInt(offset, 10)))
+	return hex.EncodeToString(sum[:16])
+}
+
+// Retryable reports statuses that mean "try again later" rather than
+// "this message is invalid", even though some are in the 4xx range.
+func (r *Response) Retryable() bool {
+	switch r.StatusCode {
+	case http.StatusRequestTimeout, http.StatusTooEarly, http.StatusTooManyRequests:
+		return true
 	}
-	return hex.EncodeToString(buf), nil
+	return r.StatusCode >= 500
+}
+
+func parseRetryAfter(v string) time.Duration {
+	if v == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
+		return time.Duration(secs) * time.Second
+	}
+	if t, err := http.ParseTime(v); err == nil {
+		if d := time.Until(t); d > 0 {
+			return d
+		}
+	}
+	return 0
 }
 
 func (c *Client) Post(ctx context.Context, url string, correlationID string, payload []byte) (*Response, error) {
@@ -60,6 +87,7 @@ func (c *Client) Post(ctx context.Context, url string, correlationID string, pay
 		StatusCode:    resp.StatusCode,
 		Body:          body,
 		CorrelationID: correlationID,
+		RetryAfter:    parseRetryAfter(resp.Header.Get("Retry-After")),
 	}, nil
 }
 

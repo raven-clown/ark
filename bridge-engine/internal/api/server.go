@@ -14,6 +14,7 @@ import (
 type Registry interface {
 	Runners() []*consumer.Runner
 	PipelineRunners(name string) []*consumer.Runner
+	SetPaused(name string, paused bool) bool
 }
 
 type staticRegistry struct {
@@ -35,6 +36,19 @@ func (s *staticRegistry) Runners() []*consumer.Runner {
 
 func (s *staticRegistry) PipelineRunners(name string) []*consumer.Runner {
 	return s.byName[name]
+}
+
+func (s *staticRegistry) SetPaused(name string, paused bool) bool {
+	runners, ok := s.byName[name]
+	if !ok {
+		return false
+	}
+	if paused {
+		consumer.Pause(runners)
+	} else {
+		consumer.Resume(runners)
+	}
+	return true
 }
 
 // Reloader re-reads the config file from disk and reconciles running
@@ -68,6 +82,7 @@ func NewServer(reg Registry, reload Reloader, clusterNode *cluster.Node) http.Ha
 		status := clusterNode.StatusSnapshot()
 		writeJSON(w, http.StatusOK, map[string]any{
 			"enabled":    true,
+			"cluster":    status.Cluster,
 			"node_id":    status.NodeID,
 			"leader":     status.Leader,
 			"live_nodes": status.LiveNodes,
@@ -98,6 +113,10 @@ func NewServer(reg Registry, reload Reloader, clusterNode *cluster.Node) http.Ha
 		name := r.PathValue("name")
 		runners := reg.PipelineRunners(name)
 		if len(runners) == 0 {
+			if clusterNode != nil && clusterNode.AssignedElsewhere(name) {
+				writeJSON(w, http.StatusOK, map[string]any{"pipeline": name, "local_workers": 0, "note": "running on other cluster nodes"})
+				return
+			}
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "pipeline not found: " + name})
 			return
 		}
@@ -115,7 +134,7 @@ func NewServer(reg Registry, reload Reloader, clusterNode *cluster.Node) http.Ha
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "pipeline not found: " + name})
 			return
 		}
-		consumer.Pause(runners)
+		reg.SetPaused(name, true)
 		writeJSON(w, http.StatusOK, map[string]string{"pipeline": name, "state": "paused"})
 	})
 
@@ -126,7 +145,7 @@ func NewServer(reg Registry, reload Reloader, clusterNode *cluster.Node) http.Ha
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "pipeline not found: " + name})
 			return
 		}
-		consumer.Resume(runners)
+		reg.SetPaused(name, false)
 		writeJSON(w, http.StatusOK, map[string]string{"pipeline": name, "state": "running"})
 	})
 

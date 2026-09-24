@@ -314,3 +314,77 @@ pipelines:
 		t.Fatalf("expected condition-required error, got %v", err)
 	}
 }
+
+func TestIsRejectDefaultsExcludeRetryableStatuses(t *testing.T) {
+	var target Target
+	for _, s := range []int{408, 425, 429, 500, 503, 200} {
+		if target.IsReject(s) {
+			t.Errorf("status %d must not be a reject by default", s)
+		}
+	}
+	for _, s := range []int{400, 404, 422} {
+		if !target.IsReject(s) {
+			t.Errorf("status %d should be a reject by default", s)
+		}
+	}
+}
+
+func TestIsRejectHonorsConfiguredStatuses(t *testing.T) {
+	target := Target{RejectStatuses: []int{422}}
+	if target.IsReject(400) {
+		t.Error("400 is not in reject_statuses, so it must not be a reject")
+	}
+	if !target.IsReject(422) {
+		t.Error("422 is in reject_statuses")
+	}
+}
+
+func TestUnknownOrderingRejected(t *testing.T) {
+	path := writeConfig(t, `
+brokers: [localhost:9092]
+pipelines:
+  - name: p
+    source_topic: a
+    destination_topic: b
+    consumer_group: g
+    ordering: sometimes
+    target:
+      url: http://x
+`)
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "ordering") {
+		t.Fatalf("expected an ordering validation error, got %v", err)
+	}
+}
+
+func TestDefaultsForOrderingTimeoutAndReplication(t *testing.T) {
+	path := writeConfig(t, `
+brokers: [localhost:9092]
+pipelines:
+  - name: p
+    source_topic: a
+    destination_topic: b
+    consumer_group: g
+    target:
+      url: http://x
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := cfg.Pipelines[0]
+	if p.Ordering != OrderingPerKey || p.Target.TimeoutMs != 30000 || cfg.Topics.ReplicationFactor != 3 {
+		t.Errorf("unexpected defaults: ordering=%q timeout_ms=%d replication_factor=%d", p.Ordering, p.Target.TimeoutMs, cfg.Topics.ReplicationFactor)
+	}
+}
+
+func TestClusterNameMustBeTopicSafe(t *testing.T) {
+	path := writeConfig(t, `
+brokers: [localhost:9092]
+cluster:
+  enabled: true
+  name: "Prod East"
+`)
+	if _, err := Load(path); err == nil || !strings.Contains(err.Error(), "cluster.name") {
+		t.Fatalf("expected a cluster.name validation error, got %v", err)
+	}
+}

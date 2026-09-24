@@ -230,7 +230,7 @@ func pausePipeline(reg api.Registry, scope Scope, audit *slog.Logger) mcp.ToolHa
 		if err := requireWritable(statuses[0].MCPAccess, in.Name); err != nil {
 			return nil, actionOut{}, err
 		}
-		consumer.Pause(reg.PipelineRunners(in.Name))
+		reg.SetPaused(in.Name, true)
 		audit.Info("mcp write", "scope", scope, "action", "pause_pipeline", "pipeline", in.Name)
 		return nil, actionOut{State: "paused"}, nil
 	}
@@ -245,7 +245,7 @@ func resumePipeline(reg api.Registry, scope Scope, audit *slog.Logger) mcp.ToolH
 		if err := requireWritable(statuses[0].MCPAccess, in.Name); err != nil {
 			return nil, actionOut{}, err
 		}
-		consumer.Resume(reg.PipelineRunners(in.Name))
+		reg.SetPaused(in.Name, false)
 		audit.Info("mcp write", "scope", scope, "action", "resume_pipeline", "pipeline", in.Name)
 		return nil, actionOut{State: "running"}, nil
 	}

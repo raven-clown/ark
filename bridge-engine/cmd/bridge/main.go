@@ -97,18 +97,18 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	mgr := orchestrator.New(ctx, cfg.Brokers, logger)
+	mgr := orchestrator.New(ctx, cfg.Brokers, cfg.Topics.ReplicationFactor, logger)
 
 	reconcile := cluster.ReconcileFunc(mgr.Reconcile)
 	var clusterNode *cluster.Node
 	if cfg.Cluster.Enabled {
-		clusterNode = cluster.New(cfg.Brokers, cfg.Cluster, mgr.Reconcile, logger)
+		clusterNode = cluster.New(cfg.Brokers, cfg.Cluster, cfg.Topics.ReplicationFactor, mgr.Reconcile, logger)
 		if err := clusterNode.Start(ctx); err != nil {
 			logger.Error("starting cluster node failed", "error", err)
 			os.Exit(1)
 		}
 		reconcile = clusterNode.ApplyConfig
-		logger.Info("cluster mode enabled", "node_id", cfg.Cluster.NodeID)
+		logger.Info("cluster mode enabled", "cluster", cfg.Cluster.Name, "node_id", clusterNode.ID())
 	}
 
 	if errs := reconcile(cfg.Pipelines); len(errs) > 0 {
