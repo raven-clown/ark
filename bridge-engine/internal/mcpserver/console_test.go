@@ -258,3 +258,30 @@ func TestConsoleProjectsCRUD(t *testing.T) {
 		t.Fatalf("delete: %d", code)
 	}
 }
+
+func TestRulesPreviewKeepsConfigFieldNames(t *testing.T) {
+	src := &memSource{p: []config.Pipeline{mustPipeline(t, pipelineYAML("orders", "orders.raw", "orders.done"))}}
+	srv := consoleServer(t, src, tap.NewHub())
+	body := map[string]any{
+		"fast_path_rules": []map[string]any{{"name": "big", "condition": "data.amount > 1000", "action": "transform_route", "destination_override": "orders.big"}},
+		"data_rules":      map[string]any{"on_violation": "tag", "fields": []map[string]any{{"path": "amount", "type": "number", "min": 0}}},
+	}
+	code, out := call(t, srv, "POST", "/api/v1/pipelines/orders/rules/preview", "alice", body)
+	if code != 200 || out["state"] != "awaiting_confirmation" {
+		t.Fatalf("preview: %d %v", code, out)
+	}
+	call(t, srv, "POST", "/api/v1/config/confirm", "alice", map[string]string{"confirm_token": out["confirm_token"].(string)})
+	p := src.Pipelines()[0]
+	if len(p.FastPathRules) != 1 || p.FastPathRules[0].DestinationOverride != "orders.big" || p.DataRules.OnViolation != "tag" {
+		t.Fatalf("rules not applied with their config names: %+v %+v", p.FastPathRules, p.DataRules)
+	}
+	code, got := call(t, srv, "GET", "/api/v1/pipelines/orders/rules", "alice", nil)
+	fr := got["fast_path_rules"].([]any)[0].(map[string]any)
+	if code != 200 || fr["destination_override"] != "orders.big" {
+		t.Fatalf("rules read back as %v", got)
+	}
+	code, bad := call(t, srv, "POST", "/api/v1/pipelines/orders/rules/test", "alice", map[string]any{"condition": "data.amount >"})
+	if code != 200 || bad["error"] == nil {
+		t.Fatalf("a broken condition should report an error: %v", bad)
+	}
+}

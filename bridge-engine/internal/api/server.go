@@ -184,9 +184,9 @@ func requiredScope(r *http.Request) (scope authz.Scope, public bool) {
 		return "", true
 	case r.Method == http.MethodGet || r.Method == http.MethodHead:
 		return authz.ScopeViewer, false
-	case r.Method == http.MethodPost && (r.URL.Path == "/api/v1/config/validate" || strings.HasSuffix(r.URL.Path, "/test-message") || r.URL.Path == "/api/v1/assistant/chat"):
+	case r.Method == http.MethodPost && (r.URL.Path == "/api/v1/config/validate" || strings.HasSuffix(r.URL.Path, "/test-message") || strings.HasSuffix(r.URL.Path, "/rules/test") || r.URL.Path == "/api/v1/assistant/chat"):
 		return authz.ScopeViewer, false
-	case strings.HasPrefix(r.URL.Path, "/api/v1/config/") || strings.HasSuffix(r.URL.Path, "/scale"):
+	case strings.HasPrefix(r.URL.Path, "/api/v1/config/") || strings.HasSuffix(r.URL.Path, "/scale") || strings.HasSuffix(r.URL.Path, "/rules/preview"):
 		return authz.ScopeAdmin, false
 	default:
 		return authz.ScopeOperator, false

@@ -4,11 +4,12 @@ import { api, ApiError, streamEvents, type Diagnosis, type DLQEntry, type Pipeli
 import { useT, type Key } from '../i18n'
 import type { TailFocus } from './Canvas'
 import { ConfigEditor } from './ConfigEditor'
+import { RulesTab } from './RulesTab'
 import { FindingCard, Icon, type IconName } from './Icon'
 import { CountUp } from './fx'
 import { RateChart, useHistory } from './Metrics'
 
-type Tab = 'health' | 'tail' | 'dlq' | 'reject' | 'config' | 'actions'
+type Tab = 'health' | 'tail' | 'rules' | 'dlq' | 'reject' | 'config' | 'actions'
 
 interface Props {
   name: string
@@ -27,6 +28,7 @@ export function PipelinePanel({ name, tab, focus, onClose, onChanged, toast }: P
   const tabs: [Tab, Key][] = [
     ['health', 'panel.health'],
     ['tail', 'panel.tail'],
+    ['rules', 'panel.rules'],
     ['dlq', 'panel.dlq'],
     ['reject', 'panel.rejects'],
     ['config', 'panel.config'],
@@ -55,6 +57,7 @@ export function PipelinePanel({ name, tab, focus, onClose, onChanged, toast }: P
       <div className="body">
         {active === 'health' && <HealthTab name={name} onOpen={setActive} toast={toast} />}
         {active === 'tail' && <TailTab key={name + JSON.stringify(focus)} name={name} focus={focus} />}
+        {active === 'rules' && <RulesTab name={name} onChanged={onChanged} />}
         {active === 'dlq' && <EntriesTab name={name} kind="dlq" toast={toast} />}
         {active === 'reject' && <EntriesTab name={name} kind="reject" toast={toast} />}
         {active === 'config' && <ConfigTab name={name} onChanged={onChanged} />}

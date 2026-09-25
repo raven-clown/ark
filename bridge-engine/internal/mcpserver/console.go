@@ -152,6 +152,7 @@ func (c *Console) Handler() *http.ServeMux {
 
 	c.projectsRoutes(mux)
 	c.assistantRoutes(mux)
+	c.rulesRoutes(mux)
 	mux.HandleFunc("GET /api/v1/history", c.historyRoute)
 	mux.HandleFunc("GET /api/v1/node", c.nodeRoute)
 	mux.HandleFunc("GET /api/v1/whoami", func(w http.ResponseWriter, r *http.Request) {

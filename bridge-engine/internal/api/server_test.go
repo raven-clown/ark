@@ -72,6 +72,10 @@ func TestConsoleRouteScopes(t *testing.T) {
 		{"POST", "/api/v1/config/reload", authz.ScopeAdmin},
 		{"POST", "/api/v1/pipelines/orders/scale", authz.ScopeAdmin},
 		{"POST", "/api/v1/pipelines/orders/restart", authz.ScopeOperator},
+		{"POST", "/api/v1/pipelines/orders/rules/test", authz.ScopeViewer},
+		{"POST", "/api/v1/pipelines/orders/rules/preview", authz.ScopeAdmin},
+		{"POST", "/api/v1/assistant/chat", authz.ScopeViewer},
+		{"PUT", "/api/v1/config/projects/x", authz.ScopeAdmin},
 		{"DELETE", "/api/v1/anything-new", authz.ScopeOperator},
 	}
 	for _, c := range cases {
