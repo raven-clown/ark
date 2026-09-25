@@ -18,6 +18,10 @@ func (s staticSource) ApplyProjects(context.Context, []config.Project) error {
 	return nil
 }
 func (s staticSource) DefaultModel() *config.AssistantModel { return nil }
+func (s staticSource) Settings() Settings                   { return Settings{Timezone: "UTC"} }
+func (s staticSource) ApplySettings(context.Context, Settings) error {
+	return nil
+}
 
 func testDeps() Deps {
 	return Deps{Config: staticSource{p: []config.Pipeline{

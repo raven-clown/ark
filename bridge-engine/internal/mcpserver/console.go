@@ -15,6 +15,7 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/consumer"
 	"github.com/raven-clown/ark/bridge-engine/internal/events"
 	"github.com/raven-clown/ark/bridge-engine/internal/tap"
+	"github.com/raven-clown/ark/bridge-engine/internal/tuning"
 )
 
 // Console serves what the ARK console needs over REST: the same overview,
@@ -153,6 +154,40 @@ func (c *Console) Handler() *http.ServeMux {
 	c.projectsRoutes(mux)
 	c.assistantRoutes(mux)
 	c.rulesRoutes(mux)
+	mux.HandleFunc("GET /api/v1/config/settings", func(w http.ResponseWriter, r *http.Request) {
+		st := d.Config.Settings()
+		writeJSON(w, http.StatusOK, map[string]any{"settings": st, "knobs": tuning.Describe(), "mode": d.Config.Mode(), "editable": d.Config.Mode() == "file"})
+	})
+	mux.HandleFunc("PUT /api/v1/config/settings", func(w http.ResponseWriter, r *http.Request) {
+		var in Settings
+		if !readJSON(w, r, &in) {
+			return
+		}
+		if _, err := time.LoadLocation(in.Timezone); err != nil || in.Timezone == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "timezone must be an IANA name such as UTC or Asia/Bangkok"})
+			return
+		}
+		if err := in.Tuning.Validate(); err != nil {
+			writeJSON(w, http.StatusBadRequest, errBody(err))
+			return
+		}
+		if in.Model != nil {
+			if in.Model.MaxSteps == 0 {
+				in.Model.MaxSteps = 8
+			}
+			if err := config.ValidateModel("assistant.model", in.Model); err != nil {
+				writeJSON(w, http.StatusBadRequest, errBody(err))
+				return
+			}
+		}
+		restart := in.Timezone != d.Config.Settings().Timezone
+		if err := d.Config.ApplySettings(r.Context(), in); err != nil {
+			writeJSON(w, http.StatusConflict, errBody(err))
+			return
+		}
+		c.audit(r, "settings updated", "")
+		writeJSON(w, http.StatusOK, map[string]any{"state": "applied", "restart_needed": restart})
+	})
 	mux.HandleFunc("GET /api/v1/history", c.historyRoute)
 	mux.HandleFunc("GET /api/v1/node", c.nodeRoute)
 	mux.HandleFunc("GET /api/v1/whoami", func(w http.ResponseWriter, r *http.Request) {

@@ -6,9 +6,8 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/config"
 	"github.com/raven-clown/ark/bridge-engine/internal/dlq"
 	"github.com/raven-clown/ark/bridge-engine/internal/producer"
+	"github.com/raven-clown/ark/bridge-engine/internal/tuning"
 )
-
-const standbyMaxEntries = 200
 
 // standbyBrowsers lets a node inspect, retry and discard dead-letter and
 // reject entries of a pipeline it isn't running itself, so in a cluster any
@@ -51,11 +50,11 @@ func (m *Manager) SyncStandbyBrowsers(pipelines []config.Pipeline) {
 		log := m.logger.With("pipeline", p.Name, "tenant", p.Tenant, "standby", true)
 		sb := &standbyBrowsers{cfg: p, source: producer.New(m.deps.Brokers, p.SourceTopic), cancel: cancel}
 		if p.DeadLetterTopic != "" {
-			sb.dlq = dlq.NewBrowser(m.deps.Brokers, p.DeadLetterTopic, m.deps.DLQState, standbyMaxEntries, sb.source, log)
+			sb.dlq = dlq.NewBrowser(m.deps.Brokers, p.DeadLetterTopic, m.deps.DLQState, tuning.DLQBrowserEntries(), sb.source, log)
 			go sb.dlq.Run(ctx)
 		}
 		if p.RejectTopic != "" {
-			sb.reject = dlq.NewBrowser(m.deps.Brokers, p.RejectTopic, m.deps.DLQState, standbyMaxEntries, sb.source, log)
+			sb.reject = dlq.NewBrowser(m.deps.Brokers, p.RejectTopic, m.deps.DLQState, tuning.DLQBrowserEntries(), sb.source, log)
 			go sb.reject.Run(ctx)
 		}
 		m.standby[name] = sb

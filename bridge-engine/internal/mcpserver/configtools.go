@@ -20,8 +20,6 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/kafkaadmin"
 )
 
-const confirmTTL = 10 * time.Minute
-
 type pendingChange struct {
 	action   string
 	pipeline config.Pipeline
@@ -32,7 +30,7 @@ type pendingChange struct {
 
 // confirmations holds previewed config changes until the human behind the
 // agent confirms them. A token only works for the caller that previewed
-// it, only once, only within confirmTTL, and only if the pipeline hasn't
+// it, only once, only within tuning.ConfirmToken(), and only if the pipeline hasn't
 // changed in between.
 type confirmations struct {
 	mu sync.Mutex

@@ -284,6 +284,7 @@ export function App() {
                 setToken('')
                 setAuthed(false)
               }}
+              toast={toast}
             />
           )}
           {chatOpen && <AssistantPanel onClose={() => setChatOpen(false)} />}

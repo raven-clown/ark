@@ -12,6 +12,7 @@ import (
 
 	"github.com/raven-clown/ark/bridge-engine/internal/cluster"
 	"github.com/raven-clown/ark/bridge-engine/internal/config"
+	"github.com/raven-clown/ark/bridge-engine/internal/mcpserver"
 )
 
 // fileSource applies MCP config changes on a single node by rewriting the
@@ -24,6 +25,7 @@ type fileSource struct {
 	current  []config.Pipeline
 	projects []config.Project
 	model    *config.AssistantModel
+	settings mcpserver.Settings
 }
 
 func (f *fileSource) Mode() string { return "file" }
@@ -32,6 +34,21 @@ func (f *fileSource) set(cfg *config.Config) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.current, f.projects, f.model = cfg.Pipelines, cfg.Projects, cfg.Assistant.Model
+	f.settings = mcpserver.Settings{Timezone: cfg.Timezone, Model: cfg.Assistant.Model, Tuning: cfg.Tuning}
+}
+
+func (f *fileSource) Settings() mcpserver.Settings {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.settings
+}
+
+// ApplySettings writes the timezone, default model and tuning into the
+// config file. A timezone change shows after a restart.
+func (f *fileSource) ApplySettings(_ context.Context, s mcpserver.Settings) error {
+	return f.write(func(cfg *config.Config) {
+		cfg.Timezone, cfg.Assistant.Model, cfg.Tuning = s.Timezone, s.Model, s.Tuning
+	})
 }
 
 func (f *fileSource) Projects() []config.Project {
@@ -111,8 +128,9 @@ func (f *fileSource) write(change func(*config.Config)) error {
 // clusterSource applies MCP config changes by publishing them to the
 // cluster config topic, which every node applies.
 type clusterSource struct {
-	node  *cluster.Node
-	model *config.AssistantModel
+	node     *cluster.Node
+	model    *config.AssistantModel
+	settings mcpserver.Settings
 }
 
 func (c clusterSource) Mode() string                 { return "cluster" }
@@ -128,3 +146,7 @@ func (c clusterSource) ApplyProjects(ctx context.Context, projects []config.Proj
 	return c.node.PublishProjects(ctx, projects)
 }
 func (c clusterSource) DefaultModel() *config.AssistantModel { return c.model }
+func (c clusterSource) Settings() mcpserver.Settings         { return c.settings }
+func (c clusterSource) ApplySettings(context.Context, mcpserver.Settings) error {
+	return fmt.Errorf("in cluster mode each node reads its engine settings from its own config file; change them there and reload")
+}

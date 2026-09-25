@@ -6,17 +6,19 @@ package kafkatail
 import (
 	"context"
 	"errors"
+
 	"log/slog"
 	"time"
 
 	"github.com/segmentio/kafka-go"
+
+	"github.com/raven-clown/ark/bridge-engine/internal/tuning"
 )
 
 // idleCatchUp is how long a read may go quiet before the existing records
 // are considered fully read. It covers a topic whose last records were
 // removed by compaction, where there is nothing left to see "lag reach 0"
 // on.
-const idleCatchUp = 2 * time.Second
 
 // Compacted tails partition 0 of topic from the beginning until ctx ends.
 // It calls onRecord for every record and onCaughtUp exactly once, after the
@@ -49,7 +51,7 @@ func Compacted(ctx context.Context, brokers []string, topic string, log *slog.Lo
 	for {
 		fetchCtx, cancel := ctx, context.CancelFunc(func() {})
 		if !caughtUp {
-			fetchCtx, cancel = context.WithTimeout(ctx, idleCatchUp)
+			fetchCtx, cancel = context.WithTimeout(ctx, tuning.CompactedIdle())
 		}
 		msg, err := reader.FetchMessage(fetchCtx)
 		cancel()

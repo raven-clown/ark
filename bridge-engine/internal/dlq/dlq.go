@@ -15,6 +15,7 @@ import (
 
 	"github.com/raven-clown/ark/bridge-engine/internal/kafkaadmin"
 	"github.com/raven-clown/ark/bridge-engine/internal/producer"
+	"github.com/raven-clown/ark/bridge-engine/internal/tuning"
 )
 
 // RedriveCountHeader counts how many times a message has been resent from
@@ -99,14 +100,12 @@ func (b *Browser) Run(ctx context.Context) {
 	wg.Wait()
 }
 
-const pruneInterval = 10 * time.Minute
-
 // pruneState periodically drops state for entries retention has removed.
 func (b *Browser) pruneState(ctx context.Context, partition int) {
 	if b.state == nil {
 		return
 	}
-	ticker := time.NewTicker(pruneInterval)
+	ticker := time.NewTicker(tuning.DLQPrune())
 	defer ticker.Stop()
 	for {
 		select {

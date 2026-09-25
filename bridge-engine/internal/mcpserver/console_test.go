@@ -53,6 +53,10 @@ func (s *memSource) ApplyProjects(_ context.Context, p []config.Project) error {
 
 func (s *memSource) DefaultModel() *config.AssistantModel { return nil }
 
+func (s *memSource) Settings() Settings { return Settings{Timezone: "UTC"} }
+
+func (s *memSource) ApplySettings(context.Context, Settings) error { return nil }
+
 func pipelineYAML(name, source, dest string) string {
 	return `name: ` + name + `
 source_topic: ` + source + `

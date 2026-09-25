@@ -9,6 +9,7 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/config"
 	"github.com/raven-clown/ark/bridge-engine/internal/dlq"
 	"github.com/raven-clown/ark/bridge-engine/internal/events"
+	"github.com/raven-clown/ark/bridge-engine/internal/tuning"
 )
 
 // Severity levels, worst last.
@@ -58,9 +59,6 @@ type Diagnosis struct {
 }
 
 const (
-	stuckAfter        = 30 * time.Second
-	stalledAfter      = 2 * time.Minute
-	recentWindow      = 15 * time.Minute
 	maxEventsInAnswer = 15
 )
 
@@ -118,7 +116,7 @@ func diagnose(d Deps, p config.Pipeline) Diagnosis {
 	}
 
 	log := d.events()
-	since := time.Now().Add(-recentWindow)
+	since := time.Now().Add(-tuning.DiagnosisWindow())
 	diag.RecentEvents = d.localizeEvents(log.Recent(p.Name, time.Time{}, maxEventsInAnswer))
 	latest := func(kinds ...events.Kind) (events.Event, bool) {
 		ev := log.Recent(p.Name, since, 1, kinds...)
@@ -175,7 +173,7 @@ func diagnose(d Deps, p config.Pipeline) Diagnosis {
 		add(f)
 	}
 
-	if n.OldestUncommittedSeconds >= stuckAfter.Seconds() {
+	if n.OldestUncommittedSeconds >= tuning.DiagnosisStuck().Seconds() {
 		f := Finding{Severity: SeverityWarning, What: fmt.Sprintf("A message has been in progress for %s and is holding back commits of every later message on its partition.", time.Duration(n.OldestUncommittedSeconds*float64(time.Second)).Round(time.Second))}
 		if ev, ok := latest(events.MessageRetrying); ok {
 			f.Why = fmt.Sprintf("It is being retried in place (partition %s, offset %s): %s", ev.Details["partition"], ev.Details["offset"], ev.Message)
@@ -185,13 +183,13 @@ func diagnose(d Deps, p config.Pipeline) Diagnosis {
 		} else {
 			f.Why = "The callback may be slow; average callback latency is " + fmt.Sprintf("%.0fms", n.AvgCallbackMs) + "."
 		}
-		if n.OldestUncommittedSeconds >= 5*stuckAfter.Seconds() {
+		if n.OldestUncommittedSeconds >= 5*tuning.DiagnosisStuck().Seconds() {
 			f.Severity = SeverityCritical
 		}
 		add(f)
 	}
 
-	if p.IsEnabled() && !n.Paused && n.BreakerState != "open" && n.Lag > 0 && !lastActivity.IsZero() && time.Since(lastActivity) > stalledAfter {
+	if p.IsEnabled() && !n.Paused && n.BreakerState != "open" && n.Lag > 0 && !lastActivity.IsZero() && time.Since(lastActivity) > tuning.DiagnosisStalled() {
 		add(Finding{Severity: SeverityWarning,
 			What:    fmt.Sprintf("%d messages are waiting but nothing has completed for %s.", n.Lag, time.Since(lastActivity).Round(time.Second)),
 			Why:     "Workers are running and not paused, so they are either blocked on one message or not getting partitions assigned.",
@@ -201,7 +199,7 @@ func diagnose(d Deps, p config.Pipeline) Diagnosis {
 	if ev, ok := latest(events.TargetRateLimited); ok {
 		count := len(log.Recent(p.Name, since, 1000, events.TargetRateLimited))
 		add(Finding{Severity: SeverityWarning,
-			What:    fmt.Sprintf("The target asked ARK to slow down %d time(s) in the last %s (HTTP 429/425/408).", count, recentWindow),
+			What:    fmt.Sprintf("The target asked ARK to slow down %d time(s) in the last %s (HTTP 429/425/408).", count, tuning.DiagnosisWindow()),
 			Why:     "Latest: " + ev.Message,
 			Actions: []string{"Lower concurrency.max_in_flight or workers so ARK sends less at once, or raise the target's capacity/limits.", "Nothing is lost: ARK waits and retries without using up retry attempts."}})
 	}
@@ -222,7 +220,7 @@ func diagnose(d Deps, p config.Pipeline) Diagnosis {
 
 	if restarts := log.Recent(p.Name, since, 100, events.WorkerRestarted); len(restarts) > 0 {
 		add(Finding{Severity: SeverityWarning,
-			What:    fmt.Sprintf("Workers restarted on their own %d time(s) in the last %s.", len(restarts), recentWindow),
+			What:    fmt.Sprintf("Workers restarted on their own %d time(s) in the last %s.", len(restarts), tuning.DiagnosisWindow()),
 			Why:     restarts[0].Message,
 			Actions: []string{"Usually a Kafka connectivity problem; use explain_error on the message."}})
 	}

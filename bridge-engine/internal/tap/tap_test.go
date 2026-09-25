@@ -3,6 +3,8 @@ package tap
 import (
 	"strings"
 	"testing"
+
+	"github.com/raven-clown/ark/bridge-engine/internal/tuning"
 )
 
 func TestWatchingOnlyWhileSubscribed(t *testing.T) {
@@ -45,8 +47,8 @@ func TestSlowWatcherDropsInsteadOfBlocking(t *testing.T) {
 
 func TestSetValueTruncates(t *testing.T) {
 	var r Record
-	r.SetValue([]byte(strings.Repeat("x", MaxValueBytes+10)))
-	if len(r.Value) != MaxValueBytes || !r.Truncated {
+	r.SetValue([]byte(strings.Repeat("x", tuning.TailValueBytes()+10)))
+	if len(r.Value) != tuning.TailValueBytes() || !r.Truncated {
 		t.Fatalf("len=%d truncated=%v", len(r.Value), r.Truncated)
 	}
 }

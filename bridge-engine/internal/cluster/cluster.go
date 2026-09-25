@@ -20,6 +20,7 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/events"
 	"github.com/raven-clown/ark/bridge-engine/internal/kafkaadmin"
 	"github.com/raven-clown/ark/bridge-engine/internal/producer"
+	"github.com/raven-clown/ark/bridge-engine/internal/tuning"
 )
 
 // Topics are namespaced by cluster.name so separate ARK deployments sharing
@@ -173,7 +174,7 @@ func (n *Node) Start(ctx context.Context, seed []config.Pipeline) error {
 	// Give the first ApplyConfig the current placement to work from, so a
 	// joining node starts with its real share instead of starting at full
 	// workers and being narrowed a moment later (two restarts per join).
-	deadline := time.Now().Add(placementCatchUpTimeout)
+	deadline := time.Now().Add(tuning.ClusterCatchUp())
 	for !n.placer.caughtUp.Load() && time.Now().Before(deadline) {
 		select {
 		case <-ctx.Done():
@@ -195,8 +196,6 @@ func (n *Node) Start(ctx context.Context, seed []config.Pipeline) error {
 
 	return nil
 }
-
-const placementCatchUpTimeout = 10 * time.Second
 
 const partitionRefresh = time.Minute
 

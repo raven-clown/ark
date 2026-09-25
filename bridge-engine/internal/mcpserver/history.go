@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"context"
+
 	"net/http"
 	"runtime"
 	"strconv"
@@ -9,11 +10,8 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
-)
 
-const (
-	historyEvery = 5 * time.Second
-	historyKeep  = 720 // one hour at historyEvery
+	"github.com/raven-clown/ark/bridge-engine/internal/tuning"
 )
 
 // Sample is one point of a pipeline's history on this node: rates since
@@ -51,7 +49,7 @@ func newHistory() *history {
 // RunHistory samples every pipeline's numbers until ctx ends, so the
 // console can chart the last hour as soon as it opens.
 func (c *Console) RunHistory(ctx context.Context) {
-	t := time.NewTicker(historyEvery)
+	t := time.NewTicker(tuning.HistorySample())
 	defer t.Stop()
 	for {
 		c.hist.sample(c.d, time.Now())
@@ -100,8 +98,8 @@ func (h *history) sample(d Deps, now time.Time) {
 			pt.P50Ms, pt.P95Ms, pt.P99Ms = quantileMs(prevBuckets, cur, 0.5), quantileMs(prevBuckets, cur, 0.95), quantileMs(prevBuckets, cur, 0.99)
 		}
 		series := append(h.data[p.Name], pt)
-		if len(series) > historyKeep {
-			series = series[len(series)-historyKeep:]
+		if keep := max(1, int(tuning.HistoryKeep()/tuning.HistorySample())); len(series) > keep {
+			series = series[len(series)-keep:]
 		}
 		h.data[p.Name] = series
 	}
@@ -133,7 +131,7 @@ func (c *Console) historyRoute(w http.ResponseWriter, r *http.Request) {
 		minutes = 15
 	}
 	from := time.Now().Add(-time.Duration(minutes) * time.Minute)
-	out := map[string]any{"timezone": c.d.loc().String(), "every_seconds": int(historyEvery.Seconds())}
+	out := map[string]any{"timezone": c.d.loc().String(), "every_seconds": int(tuning.HistorySample().Seconds())}
 	series := map[string][]Sample{}
 	for _, p := range c.d.visiblePipelines() {
 		if want := r.URL.Query().Get("pipeline"); want != "" && want != p.Name {

@@ -16,10 +16,10 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/authz"
 	"github.com/raven-clown/ark/bridge-engine/internal/config"
 	"github.com/raven-clown/ark/bridge-engine/internal/llm"
+	"github.com/raven-clown/ark/bridge-engine/internal/tuning"
 )
 
 const (
-	chatSessionTTL = 2 * time.Hour
 	maxChatSession = 200
 )
 
@@ -122,7 +122,7 @@ func (a *assistant) session(ctx context.Context, id string, caller authz.Caller,
 	defer a.mu.Unlock()
 	now := time.Now()
 	for k, s := range a.sessions {
-		if now.Sub(s.used) > chatSessionTTL {
+		if now.Sub(s.used) > tuning.AssistantSession() {
 			_ = s.cs.Close()
 			delete(a.sessions, k)
 		}

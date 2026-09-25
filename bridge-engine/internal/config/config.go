@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/raven-clown/ark/bridge-engine/internal/tuning"
 )
 
 type MCPAccess string
@@ -237,12 +239,15 @@ type Config struct {
 	// Timezone (IANA name, e.g. Asia/Bangkok) used when showing times over
 	// the API and MCP. Times are always ISO 8601 with an offset; storage and
 	// logs stay in UTC. Default UTC.
-	Timezone  string     `yaml:"timezone"`
-	Assistant Assistant  `yaml:"assistant"`
-	Topics    Topics     `yaml:"topics"`
-	Cluster   Cluster    `yaml:"cluster"`
-	Projects  []Project  `yaml:"projects,omitempty"`
-	Pipelines []Pipeline `yaml:"pipelines"`
+	Timezone  string    `yaml:"timezone"`
+	Assistant Assistant `yaml:"assistant"`
+	Topics    Topics    `yaml:"topics"`
+	Cluster   Cluster   `yaml:"cluster"`
+	// Tuning holds engine-wide knobs; every one defaults to the value
+	// ARK used before it was configurable.
+	Tuning    tuning.Values `yaml:"tuning,omitempty"`
+	Projects  []Project     `yaml:"projects,omitempty"`
+	Pipelines []Pipeline    `yaml:"pipelines"`
 }
 
 // minBrokerSessionTimeoutSeconds is Kafka's default
@@ -391,6 +396,9 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	if err := c.Tuning.Validate(); err != nil {
+		return err
+	}
 	if err := ValidateModel("assistant.model", c.Assistant.Model); err != nil {
 		return err
 	}

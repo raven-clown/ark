@@ -8,6 +8,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/raven-clown/ark/bridge-engine/internal/tuning"
 )
 
 // Stages a record can describe.
@@ -26,9 +28,6 @@ const (
 	ToOverride    = "override" // post/fast path destination_override topic
 	ToWebhook     = "webhook"
 )
-
-// MaxValueBytes caps how much of a payload a record carries.
-const MaxValueBytes = 4096
 
 type Record struct {
 	Time          time.Time         `json:"time"`
@@ -51,10 +50,10 @@ type Record struct {
 	Reason        string            `json:"reason,omitempty"`
 }
 
-// SetValue stores v, cut to MaxValueBytes.
+// SetValue stores v, cut to tuning.tail_value_bytes.
 func (r *Record) SetValue(v []byte) {
-	if len(v) > MaxValueBytes {
-		v = v[:MaxValueBytes]
+	if limit := tuning.TailValueBytes(); len(v) > limit {
+		v = v[:limit]
 		r.Truncated = true
 	}
 	r.Value = string(v)

@@ -14,6 +14,7 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/config"
 	"github.com/raven-clown/ark/bridge-engine/internal/events"
 	"github.com/raven-clown/ark/bridge-engine/internal/kafkatail"
+	"github.com/raven-clown/ark/bridge-engine/internal/tuning"
 )
 
 // Pipeline config in cluster mode lives in a compacted topic keyed by
@@ -148,7 +149,7 @@ func (n *Node) startConfig(ctx context.Context, seed []config.Pipeline) error {
 	go n.watchConfig(ctx)
 
 	wait := func(done func() bool) error {
-		deadline := time.Now().Add(placementCatchUpTimeout)
+		deadline := time.Now().Add(tuning.ClusterCatchUp())
 		for !done() && time.Now().Before(deadline) {
 			select {
 			case <-ctx.Done():

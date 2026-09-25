@@ -23,6 +23,7 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/rules"
 	"github.com/raven-clown/ark/bridge-engine/internal/tap"
 	"github.com/raven-clown/ark/bridge-engine/internal/targetpool"
+	"github.com/raven-clown/ark/bridge-engine/internal/tuning"
 )
 
 type counters struct {
@@ -82,8 +83,6 @@ type shared struct {
 	rejectBrowser *dlq.Browser
 }
 
-const dlqBrowserMaxEntries = 200
-
 // Deps are the process-wide dependencies every pipeline shares.
 type Deps struct {
 	Brokers           []string
@@ -128,11 +127,11 @@ func newShared(ctx context.Context, deps Deps, p config.Pipeline, log *slog.Logg
 
 	if p.DeadLetterTopic != "" {
 		s.dlq = producer.New(brokers, p.DeadLetterTopic)
-		s.dlqBrowser = dlq.NewBrowser(brokers, p.DeadLetterTopic, deps.DLQState, dlqBrowserMaxEntries, s.source, log)
+		s.dlqBrowser = dlq.NewBrowser(brokers, p.DeadLetterTopic, deps.DLQState, tuning.DLQBrowserEntries(), s.source, log)
 	}
 	if p.RejectTopic != "" {
 		s.reject = producer.New(brokers, p.RejectTopic)
-		s.rejectBrowser = dlq.NewBrowser(brokers, p.RejectTopic, deps.DLQState, dlqBrowserMaxEntries, s.source, log)
+		s.rejectBrowser = dlq.NewBrowser(brokers, p.RejectTopic, deps.DLQState, tuning.DLQBrowserEntries(), s.source, log)
 	}
 
 	return s, nil
@@ -346,11 +345,9 @@ type job struct {
 
 // finalCommitTimeout bounds the commits made while a worker drains after
 // its context is cancelled; those commits can't use the cancelled context.
-const finalCommitTimeout = 10 * time.Second
 
 // maxRetryBackoff caps the in-place retry delay for a message that can't be
 // completed, so a recovered dependency is picked up within this long.
-const maxRetryBackoff = 30 * time.Second
 
 func (r *Runner) Run(ctx context.Context) error {
 	r.counters.running.Store(true)
@@ -485,7 +482,7 @@ func (r *Runner) processUntilDone(ctx context.Context, msg kafka.Message) error 
 			return ctx.Err()
 		case <-time.After(backoff):
 		}
-		backoff = min(backoff*2, maxRetryBackoff)
+		backoff = min(backoff*2, tuning.RetryBackoffCap())
 	}
 }
 
@@ -513,7 +510,7 @@ func (r *Runner) commitInOrder(queue chan *job, done chan<- error) {
 			continue
 		}
 
-		commitCtx, cancel := context.WithTimeout(context.Background(), finalCommitTimeout)
+		commitCtx, cancel := context.WithTimeout(context.Background(), tuning.FinalCommitTimeout())
 		if err := r.reader.CommitMessages(commitCtx, j.msg); err != nil {
 			r.log.Error("committing offset failed", "error", err, "offset", j.msg.Offset, "partition", j.msg.Partition)
 		}
@@ -579,7 +576,6 @@ func (r *Runner) reportLag(ctx context.Context) {
 
 // maxRetryAfter caps how long a target's Retry-After header can hold a
 // message, so a misconfigured target can't stall a partition for hours.
-const maxRetryAfter = 5 * time.Minute
 
 func (r *Runner) process(ctx context.Context, msg kafka.Message) error {
 	correlationID := callback.MessageCorrelationID(msg.Topic, msg.Partition, msg.Offset)
@@ -702,7 +698,7 @@ func (r *Runner) process(ctx context.Context, msg kafka.Message) error {
 			if wait <= 0 {
 				wait = time.Duration(r.pipeline.Retry.BackoffMs) * time.Millisecond
 			}
-			wait = min(wait, maxRetryAfter)
+			wait = min(wait, tuning.RetryAfterCap())
 			metrics.Backpressured.WithLabelValues(r.pipeline.Name, r.workerLabel, r.pipeline.Tenant).Inc()
 			log.Warn("target asked to retry later", "status_code", resp.StatusCode, "retry_in", wait.String())
 			events.Record(r.pipeline.Name, events.TargetRateLimited, fmt.Sprintf("target %s answered %d, waiting %s before trying again", url, resp.StatusCode, wait), map[string]string{"partition": strconv.Itoa(msg.Partition), "offset": strconv.FormatInt(msg.Offset, 10)})
@@ -954,6 +950,6 @@ func (r *Runner) sendWithRetry(ctx context.Context, target *producer.Producer, k
 			return ctx.Err()
 		case <-time.After(backoff):
 		}
-		backoff = min(backoff*2, maxRetryBackoff)
+		backoff = min(backoff*2, tuning.RetryBackoffCap())
 	}
 }

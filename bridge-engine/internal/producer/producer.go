@@ -3,9 +3,10 @@ package producer
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/segmentio/kafka-go"
+
+	"github.com/raven-clown/ark/bridge-engine/internal/tuning"
 )
 
 type Producer struct {
@@ -15,7 +16,6 @@ type Producer struct {
 // batchTimeout replaces kafka-go's 1s default. Every Send is synchronous,
 // and a partly-filled batch only flushes on this timeout, so the default
 // added up to a second of latency to every single produce.
-const batchTimeout = 5 * time.Millisecond
 
 func New(brokers []string, topic string) *Producer {
 	return &Producer{
@@ -25,7 +25,7 @@ func New(brokers []string, topic string) *Producer {
 			Balancer:               &kafka.Hash{},
 			RequiredAcks:           kafka.RequireAll,
 			AllowAutoTopicCreation: true,
-			BatchTimeout:           batchTimeout,
+			BatchTimeout:           tuning.ProducerBatchTimeout(),
 		},
 	}
 }

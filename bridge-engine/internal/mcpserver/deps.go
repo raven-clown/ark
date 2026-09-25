@@ -10,6 +10,7 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/config"
 	"github.com/raven-clown/ark/bridge-engine/internal/dlq"
 	"github.com/raven-clown/ark/bridge-engine/internal/events"
+	"github.com/raven-clown/ark/bridge-engine/internal/tuning"
 )
 
 // ConfigSource is where the MCP config tools read the current pipelines
@@ -24,6 +25,17 @@ type ConfigSource interface {
 	ApplyProjects(ctx context.Context, projects []config.Project) error
 	// DefaultModel is assistant.model, for pipelines outside a project.
 	DefaultModel() *config.AssistantModel
+	// Settings and ApplySettings read and change this node's engine-wide
+	// settings; ApplySettings fails where they can't be changed remotely.
+	Settings() Settings
+	ApplySettings(ctx context.Context, s Settings) error
+}
+
+// Settings are the engine-wide values the console can edit.
+type Settings struct {
+	Timezone string                 `json:"timezone"`
+	Model    *config.AssistantModel `json:"assistant_model,omitempty"`
+	Tuning   tuning.Values          `json:"tuning"`
 }
 
 type Deps struct {

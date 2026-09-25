@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { api, type ArkEvent } from '../api'
 import { LANGS, useT, type Lang } from '../i18n'
 import { ConfigEditor } from './ConfigEditor'
+import { EngineSettings } from './EngineSettings'
 import { Icon } from './Icon'
 
 function useLoad<T>(path: string, every = 0) {
@@ -203,7 +204,7 @@ export function TopicsView() {
   )
 }
 
-export function SettingsView(props: { lang: Lang; setLang: (l: Lang) => void; motion: boolean; setMotion: (m: boolean) => void; timezone: string; onSignOut: () => void }) {
+export function SettingsView(props: { lang: Lang; setLang: (l: Lang) => void; motion: boolean; setMotion: (m: boolean) => void; timezone: string; onSignOut: () => void; toast: (m: string, e?: boolean) => void }) {
   const t = useT()
   return (
     <div className="page">
@@ -237,6 +238,9 @@ export function SettingsView(props: { lang: Lang; setLang: (l: Lang) => void; mo
             {t('signout')}
           </button>
         </div>
+      </div>
+      <div style={{ marginTop: 16 }}>
+        <EngineSettings toast={props.toast} />
       </div>
     </div>
   )

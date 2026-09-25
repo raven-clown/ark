@@ -8,16 +8,15 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/config"
 	"github.com/raven-clown/ark/bridge-engine/internal/dlq"
 	"github.com/raven-clown/ark/bridge-engine/internal/events"
+	"github.com/raven-clown/ark/bridge-engine/internal/tuning"
 )
-
-const redriveInterval = 10 * time.Second
 
 // RunRedrive resends dead-lettered messages of pipelines that configure
 // dead_letter_redrive, once each is old enough and hasn't been redriven
 // max_times already. shouldRun gates it, so in a cluster only the leader
 // redrives; the shared DLQ state store makes each entry go out only once.
 func (m *Manager) RunRedrive(ctx context.Context, shouldRun func() bool) {
-	ticker := time.NewTicker(redriveInterval)
+	ticker := time.NewTicker(tuning.RedriveCheck())
 	defer ticker.Stop()
 	for {
 		select {

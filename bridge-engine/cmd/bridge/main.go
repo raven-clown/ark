@@ -18,8 +18,10 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/config"
 	"github.com/raven-clown/ark/bridge-engine/internal/consumer"
 	"github.com/raven-clown/ark/bridge-engine/internal/dlq"
+	"github.com/raven-clown/ark/bridge-engine/internal/events"
 	"github.com/raven-clown/ark/bridge-engine/internal/mcpserver"
 	"github.com/raven-clown/ark/bridge-engine/internal/orchestrator"
+	"github.com/raven-clown/ark/bridge-engine/internal/tuning"
 )
 
 // configReloader re-reads the config file and reconciles the running
@@ -42,6 +44,7 @@ func (c *configReloader) Reload() error {
 	if err != nil {
 		return err
 	}
+	tuning.Set(cfg.Tuning)
 	if c.loaded != nil {
 		c.loaded(cfg)
 	}
@@ -144,6 +147,8 @@ func main() {
 		logger.Error("loading config failed", "error", err)
 		os.Exit(1)
 	}
+	tuning.Set(cfg.Tuning)
+	events.Default = events.New(tuning.EventLogEntries())
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -213,7 +218,7 @@ func main() {
 	reload := &configReloader{path: *configPath, reconcile: reconcile, log: logger}
 	var configSource mcpserver.ConfigSource
 	if clusterNode != nil {
-		configSource = clusterSource{node: clusterNode, model: cfg.Assistant.Model}
+		configSource = clusterSource{node: clusterNode, model: cfg.Assistant.Model, settings: mcpserver.Settings{Timezone: cfg.Timezone, Model: cfg.Assistant.Model, Tuning: cfg.Tuning}}
 		// A reload publishes the file's projects too.
 		reload.loaded = func(c *config.Config) {
 			pubCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -223,7 +228,8 @@ func main() {
 			}
 		}
 	} else {
-		fs := &fileSource{path: *configPath, reload: reload, current: cfg.Pipelines, projects: cfg.Projects, model: cfg.Assistant.Model}
+		fs := &fileSource{path: *configPath, reload: reload}
+		fs.set(cfg)
 		reload.loaded = fs.set
 		configSource = fs
 	}

@@ -10,6 +10,7 @@ import (
 
 	"github.com/raven-clown/ark/bridge-engine/internal/config"
 	"github.com/raven-clown/ark/bridge-engine/internal/events"
+	"github.com/raven-clown/ark/bridge-engine/internal/tuning"
 )
 
 const actionDelete = "delete_pipeline"
@@ -65,7 +66,7 @@ func previewChange(ctx context.Context, d Deps, cf *confirmations, action, user,
 	if preview.Change == "unchanged" {
 		return applyOut{State: "unchanged", Preview: &preview}, nil
 	}
-	token := cf.put(pendingChange{action: action, pipeline: p, baseHash: pipelineHash(existing), userID: user, expires: time.Now().Add(confirmTTL)})
+	token := cf.put(pendingChange{action: action, pipeline: p, baseHash: pipelineHash(existing), userID: user, expires: time.Now().Add(tuning.ConfirmToken())})
 	return applyOut{State: "awaiting_confirmation", Preview: &preview, ConfirmToken: token}, nil
 }
 
@@ -83,7 +84,7 @@ func previewDelete(d Deps, cf *confirmations, user, name string) (applyOut, erro
 	}
 	preview := validationOut{Valid: true, Change: "delete", AppliesTo: d.Config.Mode(), Diff: []string{"pipeline " + name + ": removed"},
 		Warnings: []Finding{{Severity: SeverityWarning, What: "Deleting stops the pipeline on every node. Its topics and consumer group offsets stay in Kafka, so creating it again later resumes where it stopped."}}}
-	token := cf.put(pendingChange{action: actionDelete, pipeline: *existing, baseHash: pipelineHash(existing), userID: user, expires: time.Now().Add(confirmTTL)})
+	token := cf.put(pendingChange{action: actionDelete, pipeline: *existing, baseHash: pipelineHash(existing), userID: user, expires: time.Now().Add(tuning.ConfirmToken())})
 	return applyOut{State: "awaiting_confirmation", Preview: &preview, ConfirmToken: token}, nil
 }
 
