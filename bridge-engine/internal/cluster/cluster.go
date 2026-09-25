@@ -84,6 +84,8 @@ type Node struct {
 	configVersion  atomic.Int64
 	cfgMu          sync.Mutex
 	distributed    map[string]config.Pipeline
+	projects       map[string]config.Project
+	seedProjects   []config.Project
 
 	mu         sync.Mutex
 	base       []config.Pipeline // last config seen via ApplyConfig
@@ -108,6 +110,7 @@ func New(brokers []string, cfg config.Cluster, replicationFactor int, reconcile 
 		log:               log,
 		hbView:            newHeartbeatView(),
 		distributed:       make(map[string]config.Pipeline),
+		projects:          make(map[string]config.Project),
 	}
 	n.configVersion.Store(-1)
 	return n

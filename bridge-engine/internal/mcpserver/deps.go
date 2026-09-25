@@ -20,6 +20,10 @@ type ConfigSource interface {
 	Apply(ctx context.Context, pipelines []config.Pipeline) error
 	// Mode is "file" or "cluster", so answers can say where a change goes.
 	Mode() string
+	Projects() []config.Project
+	ApplyProjects(ctx context.Context, projects []config.Project) error
+	// DefaultModel is assistant.model, for pipelines outside a project.
+	DefaultModel() *config.AssistantModel
 }
 
 type Deps struct {
@@ -36,6 +40,9 @@ type Deps struct {
 	// AllPipelines lifts the mcp_access filter, for the console's REST
 	// API where access is governed by the API tokens instead.
 	AllPipelines bool
+	// Project limits everything to one project's pipelines (a project MCP
+	// endpoint or the assistant working in a project).
+	Project string
 }
 
 func (d Deps) loc() *time.Location {
@@ -88,8 +95,24 @@ func (d Deps) events() *events.Log {
 	return events.Default
 }
 
+// projectAccess is the AI access ceiling a pipeline's project sets; a
+// pipeline outside any project has no extra ceiling.
+func (d Deps) projectAccess(project string) config.AIAccess {
+	if project == "" || d.Config == nil {
+		return config.AIAccessConfigure
+	}
+	for _, p := range d.Config.Projects() {
+		if p.Name == project {
+			return p.AIAccess
+		}
+	}
+	return config.AIAccessNone
+}
+
 // visiblePipelines is every configured pipeline an MCP client may see:
-// everything except mcp_access: none.
+// everything except mcp_access: none or a project with ai_access: none,
+// limited to d.Project when set. A project with ai_access: read_only
+// lowers its pipelines to read_only here, so every write check applies it.
 func (d Deps) visiblePipelines() []config.Pipeline {
 	if d.Config == nil {
 		return nil
@@ -99,9 +122,17 @@ func (d Deps) visiblePipelines() []config.Pipeline {
 	}
 	var out []config.Pipeline
 	for _, p := range d.Config.Pipelines() {
-		if p.MCPAccess != config.MCPAccessNone {
-			out = append(out, p)
+		if d.Project != "" && p.Project != d.Project {
+			continue
 		}
+		acc := d.projectAccess(p.Project)
+		if p.MCPAccess == config.MCPAccessNone || acc == config.AIAccessNone {
+			continue
+		}
+		if acc == config.AIAccessReadOnly && p.MCPAccess == config.MCPAccessReadWrite {
+			p.MCPAccess = config.MCPAccessReadOnly
+		}
+		out = append(out, p)
 	}
 	return out
 }

@@ -45,6 +45,11 @@ func previewChange(ctx context.Context, d Deps, cf *confirmations, action, user,
 		return applyOut{}, fmt.Errorf("pipeline %s already exists; use apply_pipeline_config to change it", p.Name)
 	}
 	if !d.AllPipelines {
+		for _, proj := range []string{p.Project, projectOf(existing)} {
+			if acc := d.projectAccess(proj); acc != config.AIAccessConfigure {
+				return applyOut{}, fmt.Errorf("project %s allows AI access up to %s; changing its pipelines needs configure", proj, acc)
+			}
+		}
 		if existing != nil && existing.MCPAccess != config.MCPAccessReadWrite {
 			return applyOut{}, fmt.Errorf("pipeline %s has mcp_access: %s; only an operator editing the config directly can change it", p.Name, existing.MCPAccess)
 		}
@@ -133,4 +138,11 @@ func confirmChange(ctx context.Context, d Deps, cf *confirmations, user, token s
 	}
 	events.Record(pc.pipeline.Name, events.ConfigApplied, fmt.Sprintf("pipeline config %s through %s (%s scope)", verb, via, scope), nil)
 	return applyOut{State: "applied"}, nil
+}
+
+func projectOf(p *config.Pipeline) string {
+	if p == nil {
+		return ""
+	}
+	return p.Project
 }

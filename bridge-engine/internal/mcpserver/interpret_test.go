@@ -13,6 +13,11 @@ type staticSource struct{ p []config.Pipeline }
 func (s staticSource) Pipelines() []config.Pipeline                   { return s.p }
 func (s staticSource) Apply(context.Context, []config.Pipeline) error { return nil }
 func (s staticSource) Mode() string                                   { return "file" }
+func (s staticSource) Projects() []config.Project                     { return nil }
+func (s staticSource) ApplyProjects(context.Context, []config.Project) error {
+	return nil
+}
+func (s staticSource) DefaultModel() *config.AssistantModel { return nil }
 
 func testDeps() Deps {
 	return Deps{Config: staticSource{p: []config.Pipeline{

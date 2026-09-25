@@ -16,11 +16,22 @@ import (
 // operator token can't be driven by a request holding a different token,
 // even if the session ID leaks.
 func NewHTTPHandler(d Deps, tokens *TokenStore) http.Handler {
+	return newEndpointHandler(d, tokens, nil)
+}
+
+// newEndpointHandler serves MCP for d with tokens, offering only tools
+// (all tools when empty).
+func newEndpointHandler(d Deps, tokens *TokenStore, tools []string) http.Handler {
 	cf := newConfirmations()
 	servers := map[Scope]*mcp.Server{
 		ScopeViewer:   buildServer(ScopeViewer, d, cf),
 		ScopeOperator: buildServer(ScopeOperator, d, cf),
 		ScopeAdmin:    buildServer(ScopeAdmin, d, cf),
+	}
+	if drop := removedTools(tools); len(drop) > 0 {
+		for _, s := range servers {
+			s.RemoveTools(drop...)
+		}
 	}
 
 	mcpHandler := mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {

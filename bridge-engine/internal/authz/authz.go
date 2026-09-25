@@ -118,3 +118,11 @@ func CallerFrom(ctx context.Context) (Caller, bool) {
 	c, ok := ctx.Value(callerKey{}).(Caller)
 	return c, ok
 }
+
+// NewTokenStore builds a store where every token in csv (comma-separated)
+// has the same scope, for an endpoint with its own token list.
+func NewTokenStore(csv string, scope Scope) *TokenStore {
+	store := &TokenStore{}
+	store.load(csv, scope)
+	return store
+}

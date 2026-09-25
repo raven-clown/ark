@@ -34,7 +34,7 @@ type configReloader struct {
 	log       *slog.Logger
 	// loaded is told about every config that passed validation, so the MCP
 	// config tools see what's actually applied.
-	loaded func([]config.Pipeline)
+	loaded func(*config.Config)
 }
 
 func (c *configReloader) Reload() error {
@@ -43,7 +43,7 @@ func (c *configReloader) Reload() error {
 		return err
 	}
 	if c.loaded != nil {
-		c.loaded(cfg.Pipelines)
+		c.loaded(cfg)
 	}
 	if errs := c.reconcile(cfg.Pipelines); len(errs) > 0 {
 		for _, e := range errs {
@@ -176,6 +176,7 @@ func main() {
 				logger.Error("applying cluster pipeline config failed to start a pipeline", "error", err)
 			}
 		})
+		clusterNode.SetSeedProjects(cfg.Projects)
 		if err := clusterNode.Start(ctx, cfg.Pipelines); err != nil {
 			logger.Error("starting cluster node failed", "error", err)
 			os.Exit(1)
@@ -212,9 +213,17 @@ func main() {
 	reload := &configReloader{path: *configPath, reconcile: reconcile, log: logger}
 	var configSource mcpserver.ConfigSource
 	if clusterNode != nil {
-		configSource = clusterSource{node: clusterNode}
+		configSource = clusterSource{node: clusterNode, model: cfg.Assistant.Model}
+		// A reload publishes the file's projects too.
+		reload.loaded = func(c *config.Config) {
+			pubCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			defer cancel()
+			if err := clusterNode.PublishProjects(pubCtx, c.Projects); err != nil {
+				logger.Error("publishing projects to the cluster failed", "error", err)
+			}
+		}
 	} else {
-		fs := &fileSource{path: *configPath, reload: reload, current: cfg.Pipelines}
+		fs := &fileSource{path: *configPath, reload: reload, current: cfg.Pipelines, projects: cfg.Projects, model: cfg.Assistant.Model}
 		reload.loaded = fs.set
 		configSource = fs
 	}
@@ -249,6 +258,10 @@ func main() {
 	for intent, words := range cfg.Assistant.Lexicon {
 		mcpserver.ExtendLexicon(intent, words...)
 	}
+	projectDeps := deps
+	projectDeps.Audit = logger.With("component", "mcp-audit")
+	rootMux.Handle("/mcp/", mcpserver.NewProjectHandler(projectDeps))
+
 	mcpTokens := mcpserver.LoadTokenStoreFromEnv()
 	if mcpTokens.Enabled() {
 		auditLog := logger.With("component", "mcp-audit")

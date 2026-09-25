@@ -149,6 +149,7 @@ func (c *Console) Handler() *http.ServeMux {
 		writeJSON(w, http.StatusOK, map[string]any{"pipeline": p.Name, "workers": in.Workers, "applies_to": d.Config.Mode()})
 	}))
 
+	c.projectsRoutes(mux)
 	mux.HandleFunc("GET /api/v1/history", c.historyRoute)
 	mux.HandleFunc("GET /api/v1/node", c.nodeRoute)
 	mux.HandleFunc("GET /api/v1/whoami", func(w http.ResponseWriter, r *http.Request) {

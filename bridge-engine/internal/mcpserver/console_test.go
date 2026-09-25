@@ -18,8 +18,9 @@ import (
 )
 
 type memSource struct {
-	mu sync.Mutex
-	p  []config.Pipeline
+	mu       sync.Mutex
+	p        []config.Pipeline
+	projects []config.Project
 }
 
 func (s *memSource) Pipelines() []config.Pipeline {
@@ -36,6 +37,21 @@ func (s *memSource) Apply(_ context.Context, p []config.Pipeline) error {
 }
 
 func (s *memSource) Mode() string { return "file" }
+
+func (s *memSource) Projects() []config.Project {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]config.Project(nil), s.projects...)
+}
+
+func (s *memSource) ApplyProjects(_ context.Context, p []config.Project) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.projects = p
+	return nil
+}
+
+func (s *memSource) DefaultModel() *config.AssistantModel { return nil }
 
 func pipelineYAML(name, source, dest string) string {
 	return `name: ` + name + `
@@ -212,4 +228,33 @@ func TestTailStreamsFilteredRecords(t *testing.T) {
 		return
 	}
 	t.Fatal("stream ended without a record")
+}
+
+func TestConsoleProjectsCRUD(t *testing.T) {
+	src := &memSource{p: []config.Pipeline{mustPipeline(t, pipelineYAML("orders", "orders.raw", "orders.done"))}}
+	srv := consoleServer(t, src, tap.NewHub())
+	body := map[string]any{"ai_access": "operate", "mcp_endpoints": []map[string]any{{"name": "ops", "access": "operate", "tokens_env": "ARK_MCP_COMMERCE_OPS"}}}
+	if code, out := call(t, srv, "PUT", "/api/v1/config/projects/commerce", "alice", body); code != 200 {
+		t.Fatalf("create: %d %v", code, out)
+	}
+	if len(src.Projects()) != 1 || src.Projects()[0].AIAccess != config.AIAccessOperate {
+		t.Fatalf("not stored: %+v", src.Projects())
+	}
+	if code, _ := call(t, srv, "PUT", "/api/v1/config/projects/Bad", "alice", body); code != 400 {
+		t.Fatalf("invalid name accepted: %d", code)
+	}
+	code, out := call(t, srv, "GET", "/api/v1/projects", "alice", nil)
+	if code != 200 || len(out["projects"].([]any)) != 1 {
+		t.Fatalf("list: %d %v", code, out)
+	}
+	p := src.p[0]
+	p.Project = "commerce"
+	src.p = []config.Pipeline{p}
+	if code, _ := call(t, srv, "DELETE", "/api/v1/config/projects/commerce", "alice", nil); code != 409 {
+		t.Fatalf("deleted a project that still has pipelines: %d", code)
+	}
+	src.p = nil
+	if code, _ := call(t, srv, "DELETE", "/api/v1/config/projects/commerce", "alice", nil); code != 200 || len(src.Projects()) != 0 {
+		t.Fatalf("delete: %d", code)
+	}
 }

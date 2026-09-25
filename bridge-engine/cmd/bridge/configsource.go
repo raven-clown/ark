@@ -20,16 +20,36 @@ type fileSource struct {
 	path   string
 	reload *configReloader
 
-	mu      sync.Mutex
-	current []config.Pipeline
+	mu       sync.Mutex
+	current  []config.Pipeline
+	projects []config.Project
+	model    *config.AssistantModel
 }
 
 func (f *fileSource) Mode() string { return "file" }
 
-func (f *fileSource) set(pipelines []config.Pipeline) {
+func (f *fileSource) set(cfg *config.Config) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.current = pipelines
+	f.current, f.projects, f.model = cfg.Pipelines, cfg.Projects, cfg.Assistant.Model
+}
+
+func (f *fileSource) Projects() []config.Project {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]config.Project(nil), f.projects...)
+}
+
+func (f *fileSource) DefaultModel() *config.AssistantModel {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.model
+}
+
+// ApplyProjects writes projects into the config file the same way Apply
+// writes pipelines.
+func (f *fileSource) ApplyProjects(ctx context.Context, projects []config.Project) error {
+	return f.write(func(cfg *config.Config) { cfg.Projects = projects })
 }
 
 func (f *fileSource) Pipelines() []config.Pipeline {
@@ -44,6 +64,10 @@ func (f *fileSource) Pipelines() []config.Pipeline {
 // cluster settings), keeps the previous file as <path>.bak, and reloads.
 // Comments in the file are not preserved.
 func (f *fileSource) Apply(_ context.Context, pipelines []config.Pipeline) error {
+	return f.write(func(cfg *config.Config) { cfg.Pipelines = pipelines })
+}
+
+func (f *fileSource) write(change func(*config.Config)) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
@@ -51,7 +75,7 @@ func (f *fileSource) Apply(_ context.Context, pipelines []config.Pipeline) error
 	if err != nil {
 		return err
 	}
-	cfg.Pipelines = pipelines
+	change(cfg)
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
@@ -86,10 +110,21 @@ func (f *fileSource) Apply(_ context.Context, pipelines []config.Pipeline) error
 
 // clusterSource applies MCP config changes by publishing them to the
 // cluster config topic, which every node applies.
-type clusterSource struct{ node *cluster.Node }
+type clusterSource struct {
+	node  *cluster.Node
+	model *config.AssistantModel
+}
 
 func (c clusterSource) Mode() string                 { return "cluster" }
 func (c clusterSource) Pipelines() []config.Pipeline { return c.node.Pipelines() }
 func (c clusterSource) Apply(ctx context.Context, pipelines []config.Pipeline) error {
+	if err := config.ValidateProjects(c.node.Projects(), pipelines); err != nil {
+		return err
+	}
 	return c.node.PublishConfig(ctx, pipelines)
 }
+func (c clusterSource) Projects() []config.Project { return c.node.Projects() }
+func (c clusterSource) ApplyProjects(ctx context.Context, projects []config.Project) error {
+	return c.node.PublishProjects(ctx, projects)
+}
+func (c clusterSource) DefaultModel() *config.AssistantModel { return c.model }

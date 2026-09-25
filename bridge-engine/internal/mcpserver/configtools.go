@@ -184,6 +184,16 @@ func validate(ctx context.Context, d Deps, src string) (config.Pipeline, *config
 		return p, nil, out
 	}
 
+	if d.Project != "" {
+		switch {
+		case p.Project == "":
+			p.Project = d.Project
+		case p.Project != d.Project:
+			out.Errors = append(out.Errors, fmt.Sprintf("this endpoint belongs to project %q; it can't create or move pipelines into project %q", d.Project, p.Project))
+			return p, nil, out
+		}
+	}
+
 	current := d.Config.Pipelines()
 	var existing *config.Pipeline
 	merged := make([]config.Pipeline, 0, len(current)+1)
@@ -206,6 +216,9 @@ func validate(ctx context.Context, d Deps, src string) (config.Pipeline, *config
 	}
 
 	if err := config.ValidatePipelines(merged); err != nil {
+		out.Errors = append(out.Errors, err.Error())
+	}
+	if err := config.ValidateProjects(d.Config.Projects(), merged); err != nil {
 		out.Errors = append(out.Errors, err.Error())
 	}
 	for _, q := range merged {

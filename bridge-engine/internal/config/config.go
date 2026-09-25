@@ -112,8 +112,10 @@ type FastPathRule struct {
 }
 
 type Pipeline struct {
-	Name              string           `yaml:"name"`
-	Tenant            string           `yaml:"tenant"`
+	Name   string `yaml:"name"`
+	Tenant string `yaml:"tenant"`
+	// Project is the project this pipeline belongs to (see projects).
+	Project           string           `yaml:"project,omitempty"`
 	MCPAccess         MCPAccess        `yaml:"mcp_access"`
 	SourceTopic       string           `yaml:"source_topic"`
 	DestinationTopic  string           `yaml:"destination_topic"`
@@ -225,6 +227,9 @@ type Topics struct {
 // and Chinese ones, e.g. {diagnose: ["langsam", "lento"]}.
 type Assistant struct {
 	Lexicon map[string][]string `yaml:"lexicon"`
+	// Model is the default model for the console's assistant, used by
+	// pipelines outside a project and projects without their own.
+	Model *AssistantModel `yaml:"model,omitempty"`
 }
 
 type Config struct {
@@ -236,6 +241,7 @@ type Config struct {
 	Assistant Assistant  `yaml:"assistant"`
 	Topics    Topics     `yaml:"topics"`
 	Cluster   Cluster    `yaml:"cluster"`
+	Projects  []Project  `yaml:"projects,omitempty"`
 	Pipelines []Pipeline `yaml:"pipelines"`
 }
 
@@ -295,6 +301,12 @@ func applyDefaults(cfg *Config) {
 
 	for i := range cfg.Pipelines {
 		ApplyPipelineDefaults(&cfg.Pipelines[i])
+	}
+	for i := range cfg.Projects {
+		ApplyProjectDefaults(&cfg.Projects[i])
+	}
+	if cfg.Assistant.Model != nil && cfg.Assistant.Model.MaxSteps == 0 {
+		cfg.Assistant.Model.MaxSteps = 8
 	}
 }
 
@@ -379,6 +391,12 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	if err := ValidateModel("assistant.model", c.Assistant.Model); err != nil {
+		return err
+	}
+	if err := ValidateProjects(c.Projects, c.Pipelines); err != nil {
+		return err
+	}
 	return ValidatePipelines(c.Pipelines)
 }
 
