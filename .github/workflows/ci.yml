@@ -14,7 +14,7 @@ jobs:
         working-directory: bridge-engine
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: bridge-engine/go.mod
           check-latest: true
@@ -36,7 +36,7 @@ jobs:
           cache-dependency-path: bridge-ui/package-lock.json
       - run: npm ci
       - run: npm run build
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: bridge-ui/go.mod
           check-latest: true
@@ -50,7 +50,7 @@ jobs:
         working-directory: bridge-engine
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: bridge-engine/go.mod
           check-latest: true
@@ -64,7 +64,7 @@ jobs:
         working-directory: bridge-engine
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: bridge-engine/go.mod
           check-latest: true
