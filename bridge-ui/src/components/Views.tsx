@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { api, type ArkEvent } from '../api'
 import { LANGS, useT, type Lang } from '../i18n'
 import { ConfigEditor } from './ConfigEditor'
+import { Icon } from './Icon'
 
 function useLoad<T>(path: string, every = 0) {
   const [data, setData] = useState<T | null>(null)
@@ -46,10 +47,12 @@ export function EventsView({ pipelines }: { pipelines: string[] }) {
   const { data, error } = useLoad<{ events: ArkEvent[] | null; note: string }>(`/events?${q}`, 4000)
   return (
     <div className="page">
-      <h1>{t('nav.events')}</h1>
-      <p className="lead">{t('events.title')}</p>
-      <div className="row" style={{ marginBottom: 14 }}>
-        <select className="select" style={{ width: 240 }} value={pipeline} onChange={(e) => setPipeline(e.target.value)}>
+      <div className="page-head">
+        <div>
+          <h1>{t('nav.events')}</h1>
+          <p className="lead">{t('events.title')}</p>
+        </div>
+        <select className="select" style={{ width: 220 }} value={pipeline} onChange={(e) => setPipeline(e.target.value)}>
           <option value="">{t('events.all')}</option>
           {pipelines.map((p) => (
             <option key={p}>{p}</option>
@@ -57,8 +60,14 @@ export function EventsView({ pipelines }: { pipelines: string[] }) {
         </select>
       </div>
       {error && <p className="err">{error}</p>}
-      {data && (data.events ?? []).length === 0 && <div className="empty">{t('events.empty')}</div>}
+      {data && (data.events ?? []).length === 0 && (
+        <div className="empty">
+          <Icon name="events" className="" />
+          {t('events.empty')}
+        </div>
+      )}
       {data && (data.events ?? []).length > 0 && (
+        <div className="table-wrap">
         <table className="list">
           <tbody>
             {(data.events ?? []).map((e, i) => (
@@ -66,7 +75,7 @@ export function EventsView({ pipelines }: { pipelines: string[] }) {
                 <td className="mono">{e.time}</td>
                 <td className="mono">{e.pipeline}</td>
                 <td>
-                  <span className={`stage ${kindTone[e.kind] === 'err' ? 'dlq' : kindTone[e.kind] === 'warn' ? 'reject' : kindTone[e.kind] === 'ok' ? 'destination' : ''}`}>{e.kind}</span>
+                  <span className={`tag ${kindTone[e.kind] === 'err' ? 'dlq' : kindTone[e.kind] === 'warn' ? 'reject' : kindTone[e.kind] === 'ok' ? 'destination' : ''}`}>{e.kind.replace(/_/g, ' ')}</span>
                 </td>
                 <td>
                   {e.message}
@@ -83,6 +92,7 @@ export function EventsView({ pipelines }: { pipelines: string[] }) {
             ))}
           </tbody>
         </table>
+        </div>
       )}
       {data && <p className="small dim">{data.note}</p>}
     </div>
@@ -104,14 +114,26 @@ export function ClusterView() {
   const { data, error } = useLoad<ClusterOut>('/cluster', 4000)
   return (
     <div className="page">
-      <h1>{t('nav.cluster')}</h1>
+      <div className="page-head">
+        <div>
+          <h1>{t('nav.cluster')}</h1>
+          {data?.enabled && (
+            <p className="lead">
+              {data.cluster} · {t('cluster.version')} {data.config_version}
+            </p>
+          )}
+        </div>
+      </div>
       {error && <p className="err">{error}</p>}
-      {data && !data.enabled && <p className="lead">{t('cluster.off')}</p>}
+      {data && !data.enabled && (
+        <div className="empty card">
+          <Icon name="cluster" className="" />
+          {t('cluster.off')}
+        </div>
+      )}
       {data?.enabled && (
         <>
-          <p className="lead">
-            {data.cluster} · {t('cluster.version')} {data.config_version}
-          </p>
+          <div className="table-wrap">
           <table className="list">
             <thead>
               <tr>
@@ -126,12 +148,16 @@ export function ClusterView() {
                   <td className="mono">{n}</td>
                   <td className="mono">{data.node_config_versions?.[n] ?? ''}</td>
                   <td>
-                    {n === data.node_id && <span className="chip">{t('cluster.thisNode')}</span>} {n === data.node_id && data.leader && <span className="chip healthy">{t('cluster.leader')}</span>}
+                    <span className="row">
+                      {n === data.node_id && <span className="pill">{t('cluster.thisNode')}</span>}
+                      {n === data.node_id && data.leader && <span className="pill healthy">{t('cluster.leader')}</span>}
+                    </span>
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
+          </div>
         </>
       )}
     </div>
@@ -143,9 +169,14 @@ export function TopicsView() {
   const { data, error } = useLoad<{ name: string; partitions: number; used_by?: string[] }[]>('/topics', 10000)
   return (
     <div className="page">
-      <h1>{t('nav.topics')}</h1>
+      <div className="page-head">
+        <div>
+          <h1>{t('nav.topics')}</h1>
+        </div>
+      </div>
       {error && <p className="err">{error}</p>}
       {data && (
+        <div className="table-wrap">
         <table className="list">
           <thead>
             <tr>
@@ -166,6 +197,7 @@ export function TopicsView() {
             ))}
           </tbody>
         </table>
+        </div>
       )}
     </div>
   )
@@ -175,8 +207,12 @@ export function SettingsView(props: { lang: Lang; setLang: (l: Lang) => void; mo
   const t = useT()
   return (
     <div className="page">
-      <h1>{t('nav.settings')}</h1>
-      <div className="stack" style={{ maxWidth: 480, marginTop: 16 }}>
+      <div className="page-head">
+        <div>
+          <h1>{t('nav.settings')}</h1>
+        </div>
+      </div>
+      <div className="card stack" style={{ maxWidth: 520, gap: 18 }}>
         <div className="field">
           <label>{t('settings.lang')}</label>
           <select className="select" value={props.lang} onChange={(e) => props.setLang(e.target.value as Lang)}>
@@ -187,7 +223,7 @@ export function SettingsView(props: { lang: Lang; setLang: (l: Lang) => void; mo
             ))}
           </select>
         </div>
-        <label className="row" style={{ cursor: 'pointer' }}>
+        <label className="check">
           <input type="checkbox" checked={props.motion} onChange={(e) => props.setMotion(e.target.checked)} />
           {t('settings.motion')}
         </label>
@@ -197,6 +233,7 @@ export function SettingsView(props: { lang: Lang; setLang: (l: Lang) => void; mo
         </div>
         <div>
           <button className="btn danger" onClick={props.onSignOut}>
+            <Icon name="signout" className="" />
             {t('signout')}
           </button>
         </div>

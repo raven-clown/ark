@@ -2,6 +2,7 @@ import { useState } from 'react'
 
 import { api, ApiError, type ApplyOut, type ValidationOut } from '../api'
 import { useT } from '../i18n'
+import { FindingCard } from './Icon'
 
 // ConfigEditor edits one pipeline as YAML with the same two-step flow as
 // the MCP config tools: preview shows the diff and warnings, and only an
@@ -101,7 +102,10 @@ export function ConfigEditor({ initial, onApplied }: { initial: string; onApplie
       {result && (
         <div className="preview stack">
           <div className="row">
-            <b className={result.valid ? 'ok' : 'err'}>{result.valid ? t('cfg.valid') : t('cfg.invalid')}</b>
+            <span className={`pill ${result.valid ? 'healthy' : 'down'}`}>
+              <i className={`dot ${result.valid ? 'healthy' : 'down'}`} style={{ animation: 'none' }} />
+              {result.valid ? t('cfg.valid') : t('cfg.invalid')}
+            </span>
             <span className="muted small">
               {result.change} · {t('cfg.appliesTo')}: {result.applies_to}
             </span>
@@ -125,10 +129,7 @@ export function ConfigEditor({ initial, onApplied }: { initial: string; onApplie
             <div className="stack">
               <div className="small dim">{t('cfg.warnings')}</div>
               {result.warnings.map((w, i) => (
-                <div key={i} className={`finding ${w.severity}`}>
-                  <div className="what">{w.what}</div>
-                  {w.why && <div className="why">{w.why}</div>}
-                </div>
+                <FindingCard key={i} severity={w.severity} what={w.what} why={w.why} />
               ))}
             </div>
           )}

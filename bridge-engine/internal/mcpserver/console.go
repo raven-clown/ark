@@ -37,7 +37,7 @@ type Restarter interface {
 
 func NewConsole(d Deps) *Console {
 	d.AllPipelines = true
-	return &Console{d: d, cf: newConfirmations(), hist: &history{data: map[string][]Sample{}, last: map[string]PipelineStats{}}}
+	return &Console{d: d, cf: newConfirmations(), hist: newHistory()}
 }
 
 // Handler returns the console routes. Mount it behind api.Guard.
@@ -150,6 +150,10 @@ func (c *Console) Handler() *http.ServeMux {
 	}))
 
 	mux.HandleFunc("GET /api/v1/history", c.historyRoute)
+	mux.HandleFunc("GET /api/v1/node", c.nodeRoute)
+	mux.HandleFunc("GET /api/v1/whoami", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]string{"scope": string(callerOf(r).Scope)})
+	})
 
 	mux.HandleFunc("GET /api/v1/topics", func(w http.ResponseWriter, r *http.Request) {
 		topics, err := listTopics(r.Context(), d)

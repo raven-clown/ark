@@ -33,7 +33,7 @@ var (
 	CallbackDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "ark_callback_duration_seconds",
 		Help:    "Latency of HTTP callback calls to a pipeline's target.",
-		Buckets: prometheus.DefBuckets,
+		Buckets: []float64{0.0005, 0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30},
 	}, []string{"pipeline", "tenant"})
 
 	DataRuleViolations = prometheus.NewCounterVec(prometheus.CounterOpts{

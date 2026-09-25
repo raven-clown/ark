@@ -14,6 +14,10 @@ export const SERIES = {
   rejected: { color: '#B08A1F', dash: 'dashed' as const },
   dlq: { color: '#E2466B', dash: 'dotted' as const },
   single: { color: '#1AA578', dash: 'solid' as const },
+  // Percentiles are one ordered measure: a single-hue ramp, darker = lower.
+  p50: { color: '#1AA578', dash: 'solid' as const },
+  p95: { color: '#5CCFA3', dash: 'dashed' as const },
+  p99: { color: '#A6E9CE', dash: 'dotted' as const },
 }
 
 const SURFACE = '#101318'

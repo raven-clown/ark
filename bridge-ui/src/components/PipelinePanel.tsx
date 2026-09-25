@@ -4,7 +4,9 @@ import { api, ApiError, streamEvents, type Diagnosis, type DLQEntry, type Pipeli
 import { useT, type Key } from '../i18n'
 import type { TailFocus } from './Canvas'
 import { ConfigEditor } from './ConfigEditor'
-import { ThroughputChart, useHistory } from './Metrics'
+import { FindingCard, Icon, type IconName } from './Icon'
+import { CountUp } from './fx'
+import { RateChart, useHistory } from './Metrics'
 
 type Tab = 'health' | 'tail' | 'dlq' | 'reject' | 'config' | 'actions'
 
@@ -33,20 +35,25 @@ export function PipelinePanel({ name, tab, focus, onClose, onChanged, toast }: P
   return (
     <aside className="drawer">
       <header>
-        <h2>{name}</h2>
-        <button className="btn ghost sm" onClick={onClose}>
-          {t('common.close')}
+        <div className="t">
+          <h2>{name}</h2>
+          <p>{t('nav.pipelines')}</p>
+        </div>
+        <button className="btn ghost icon-btn" aria-label={t('common.close')} onClick={onClose}>
+          <Icon name="close" className="" />
         </button>
       </header>
-      <nav className="tabs">
-        {tabs.map(([id, label]) => (
-          <button key={id} className={active === id ? 'active' : ''} onClick={() => setActive(id)}>
-            {t(label)}
-          </button>
-        ))}
-      </nav>
+      <div className="tabbar">
+        <div className="seg">
+          {tabs.map(([id, label]) => (
+            <button key={id} className={active === id ? 'active' : ''} onClick={() => setActive(id)}>
+              {t(label)}
+            </button>
+          ))}
+        </div>
+      </div>
       <div className="body">
-        {active === 'health' && <HealthTab name={name} />}
+        {active === 'health' && <HealthTab name={name} onOpen={setActive} toast={toast} />}
         {active === 'tail' && <TailTab key={name + JSON.stringify(focus)} name={name} focus={focus} />}
         {active === 'dlq' && <EntriesTab name={name} kind="dlq" toast={toast} />}
         {active === 'reject' && <EntriesTab name={name} kind="reject" toast={toast} />}
@@ -77,67 +84,200 @@ function usePoll<T>(path: string, every: number) {
   return { data, error, reload: load }
 }
 
-function HealthTab({ name }: { name: string }) {
+function pctChange(now: number, base: number) {
+  if (base <= 0) return null
+  return ((now - base) / base) * 100
+}
+
+function traceLine(r: TapRecord): { cls: string; tag: string; text: string } {
+  if (r.stage === 'in') return { cls: 'call', tag: 'IN', text: `${r.topic ?? ''} p${r.partition ?? '?'}@${r.offset ?? '?'} ${r.key ? `key=${r.key}` : ''}` }
+  if (r.stage === 'callback') {
+    const bad = !r.status || r.status >= 400
+    return { cls: bad ? 'err' : 'call', tag: bad ? 'ERR' : 'CALL', text: `#${r.attempt} ${r.status ?? ''} ${r.duration_ms?.toFixed(1) ?? ''}ms ${r.reason ?? ''}` }
+  }
+  if (r.to === 'dlq') return { cls: 'err', tag: 'DLQ', text: r.reason ?? `→ ${r.topic}` }
+  if (r.to === 'reject') return { cls: 'rej', tag: 'REJ', text: r.reason ?? `→ ${r.topic}` }
+  return { cls: 'ok', tag: 'OK', text: `→ ${r.topic ?? r.target ?? r.to}${r.rule ? ` (rule ${r.rule})` : ''}` }
+}
+
+function HealthTab({ name, onOpen, toast }: { name: string; onOpen: (tab: Tab) => void; toast: (m: string, e?: boolean) => void }) {
   const t = useT()
-  const { data, error } = usePoll<Diagnosis>(`/pipelines/${encodeURIComponent(name)}/diagnosis`, 5000)
-  const hist = useHistory(name, 15)
-  const samples = hist.data?.pipelines[name] ?? []
+  const enc = encodeURIComponent(name)
+  const { data, error } = usePoll<Diagnosis>(`/pipelines/${enc}/diagnosis`, 5000)
+  const workers = usePoll<WorkerStatus[]>(`/pipelines/${enc}`, 3000)
+  const hist = useHistory(name, 60)
+  const [trace, setTrace] = useState<(TapRecord & { n: number })[]>([])
+  const [busy, setBusy] = useState(false)
+  const n = useRef(0)
+
+  useEffect(() => {
+    const ctl = new AbortController()
+    streamEvents(`/pipelines/${enc}/tail?max_per_sec=20`, ctl.signal, (event, raw) => {
+      if (event !== 'record') return
+      const rec = JSON.parse(raw) as TapRecord
+      if (rec.stage === 'in') return
+      const k = n.current++
+      setTrace((cur) => [...cur, { ...rec, n: k }].slice(-9))
+    }).catch(() => {})
+    return () => ctl.abort()
+  }, [enc])
+
   if (error) return <p className="err">{error}</p>
   if (!data) return <p className="muted">{t('common.loading')}</p>
-  const n = data.numbers
+  const samples = hist.data?.pipelines[name] ?? []
+  const recent = samples.slice(-3)
+  const rateNow = recent.length ? recent.reduce((a, x) => a + x.processed_per_sec + x.rejected_per_sec + x.dead_lettered_per_sec, 0) / recent.length : 0
+  const rateHour = samples.length ? samples.reduce((a, x) => a + x.processed_per_sec + x.rejected_per_sec + x.dead_lettered_per_sec, 0) / samples.length : 0
+  const change = pctChange(rateNow, rateHour)
+  const withCalls = samples.filter((x) => x.p99_ms > 0)
+  const lastLat = withCalls[withCalls.length - 1]
+  const ws = Array.isArray(workers.data) ? workers.data : []
+  const running = ws.filter((w) => w.running).length
+  const top = (data.findings ?? [])[0]
+  const rest = (data.findings ?? []).slice(1)
+  const last15 = samples.filter((x) => Date.parse(x.time) >= Date.now() - 15 * 60 * 1000)
+
+  const retryAll = async () => {
+    setBusy(true)
+    try {
+      const entries = await api<DLQEntry[]>(`/pipelines/${enc}/dlq`)
+      let ok = 0
+      for (const e of entries) {
+        try {
+          await api(`/pipelines/${enc}/dlq/${encodeURIComponent(e.id)}/retry`, { method: 'POST', body: {} })
+          ok++
+        } catch {
+          // counted below
+        }
+      }
+      toast(`${ok}/${entries.length} ${t('dlq.retry')} · ${t('act.done')}`, ok < entries.length)
+    } catch (e) {
+      toast(e instanceof ApiError && e.status === 403 ? t('common.noAccess') : (e as Error).message, true)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <div className="stack">
-      <div className="row">
-        <span className={`chip ${data.health}`}>
-          <i />
-          {t(`health.${data.health}`)}
-        </span>
-        <span className="muted">{data.summary}</span>
+      <div className={`hbox ${data.health}`}>
+        <div className="top">
+          <span className="micro">{t('health.status')}</span>
+          <span className={`st ${data.health}`}>{t(`health.${data.health}`)}</span>
+        </div>
+        <p>{top ? top.what : data.summary}</p>
+        {top?.why && <p className="small muted">{top.why}</p>}
       </div>
-      <div className="numbers">
-        <div>
-          <b>{n.processed}</b>
-          <span>{t('stat.processed')}</span>
+
+      <div className="kpis rise-in">
+        <div className="kpi spot">
+          <span className="micro">{t('kpi.throughput')}</span>
+          <b>
+            <CountUp value={rateNow} decimals={1} />
+            <small>msg/s</small>
+          </b>
+          <span className="sub">
+            {change === null ? '·' : <span className={`delta ${change >= 0 ? 'up' : 'down'}`}>{change >= 0 ? '▲' : '▼'} {Math.abs(change).toFixed(1)}%</span>} {t('kpi.vs1h')}
+          </span>
         </div>
-        <div>
-          <b className={n.lag > 0 ? 'warn' : ''}>{n.lag}</b>
-          <span>{t('stat.lag')}</span>
+        <div className="kpi spot">
+          <span className="micro">{t('kpi.lag')}</span>
+          <b className={data.numbers.lag > 0 ? 'warn' : ''}>
+            <CountUp value={data.numbers.lag} />
+            <small>msg</small>
+          </b>
+          <span className="sub">{data.numbers.lag > 0 ? t('kpi.backlog') : t('kpi.nominal')}</span>
         </div>
-        <div>
-          <b>{n.avg_callback_ms.toFixed(1)}</b>
-          <span>{t('stat.latency')}</span>
+        <div className="kpi spot">
+          <span className="micro">{t('kpi.p99')}</span>
+          <b>
+            {lastLat ? lastLat.p99_ms.toFixed(1) : data.numbers.avg_callback_ms.toFixed(1)}
+            <small>ms</small>
+          </b>
+          <span className="sub">{lastLat ? `p50 ${lastLat.p50_ms.toFixed(1)} · p95 ${lastLat.p95_ms.toFixed(1)}` : 'avg'}</span>
         </div>
-        <div>
-          <b className={n.rejected > 0 ? 'warn' : ''}>{n.rejected}</b>
-          <span>{t('stat.rejected')}</span>
-        </div>
-        <div>
-          <b className={n.pending_dlq_entries > 0 ? 'err' : ''}>{n.pending_dlq_entries}</b>
-          <span>{t('stat.dlq')}</span>
-        </div>
-        <div>
-          <b>{n.local_workers}</b>
-          <span>{t('stat.workers')}</span>
+        <div className="kpi spot">
+          <span className="micro">{t('kpi.workers')}</span>
+          <b>
+            {running} / {ws.length}
+          </b>
+          <span className="sub">{ws[0]?.consumer_group ?? ''}</span>
         </div>
       </div>
-      {samples.length > 1 && (
-        <div className="card chart-card">
-          <h3>{t('metrics.throughput')} · 15 min</h3>
-          <ThroughputChart samples={samples} height={180} motion />
+
+      <div className="wbar">
+        <div className="row between">
+          <span className="micro">{t('workers.title')}</span>
+          <span className="micro" style={{ color: 'var(--frost)' }}>
+            {running}/{ws.length} {t('workers.running')}
+          </span>
         </div>
+        <div className="segs">
+          {ws.map((w) => (
+            <i key={w.worker} title={`worker ${w.worker}`} className={!w.running ? 'stopped' : w.paused ? 'paused' : w.breaker_state === 'open' ? 'open' : ''} />
+          ))}
+        </div>
+      </div>
+
+      <div className="panel-card">
+        <div className="ph">
+          <span className="micro">{t('rate.title')}</span>
+          <span className="live">
+            <i />
+            {t('top.live')}
+          </span>
+        </div>
+        {last15.length > 1 ? <RateChart samples={last15} /> : <div className="empty small">{t('metrics.noData')}</div>}
+      </div>
+
+      <div>
+        <div className="row between" style={{ marginBottom: 7 }}>
+          <span className="micro">{t('trace.title')}</span>
+          <button className="btn ghost sm" onClick={() => onOpen('tail')}>
+            {t('trace.open')} →
+          </button>
+        </div>
+        <div className="terminal">
+          {trace.length === 0 && <div className="dim">{t('trace.waiting')}</div>}
+          {trace.map((r) => {
+            const l = traceLine(r)
+            return (
+              <div key={r.n} className="l">
+                <span className="dim">{r.time.slice(11, 19)}</span>
+                <span className={l.cls}>[{l.tag}]</span>
+                <span>{l.text}</span>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+
+      <div className="btn-row">
+        <button className="btn" disabled={busy} onClick={async () => {
+          try {
+            await api(`/pipelines/${enc}/restart`, { method: 'POST', body: {} })
+            toast(t('act.done'))
+          } catch (e) {
+            toast(e instanceof ApiError && e.status === 403 ? t('common.noAccess') : (e as Error).message, true)
+          }
+        }}>
+          <Icon name="restart" className="" />
+          {t('act.restart')}
+        </button>
+        <button className="btn" onClick={() => onOpen('tail')}>
+          <Icon name="search" className="" />
+          {t('panel.tail')}
+        </button>
+      </div>
+      {data.numbers.pending_dlq_entries > 0 && (
+        <button className="btn danger block" disabled={busy} onClick={retryAll}>
+          <Icon name="restart" className="" />
+          {t('act.retryAll')} ({data.numbers.pending_dlq_entries})
+        </button>
       )}
-      {(data.findings ?? []).map((f, i) => (
-        <div key={i} className={`finding ${f.severity}`}>
-          <div className="what">{f.what}</div>
-          {f.why && <div className="why">{f.why}</div>}
-          {f.suggested_actions && (
-            <ul>
-              {f.suggested_actions.map((a, j) => (
-                <li key={j}>{a}</li>
-              ))}
-            </ul>
-          )}
-        </div>
+
+      {rest.map((f, i) => (
+        <FindingCard key={i} severity={f.severity} what={f.what} why={f.why} actions={f.suggested_actions} />
       ))}
     </div>
   )
@@ -190,40 +330,54 @@ function TailTab({ name, focus }: { name: string; focus?: TailFocus }) {
 
   return (
     <div>
-      <div className="tail-controls">
-        <select className="select" value={stage} onChange={(e) => setStage(e.target.value)}>
+      <div className="tail-bar">
+        <select className="select" style={{ width: 150 }} value={stage} onChange={(e) => setStage(e.target.value)}>
           <option value="">{t('tail.all')}</option>
           <option value="in">{t('tail.in')}</option>
           <option value="callback">{t('tail.callback')}</option>
           <option value="out">{t('tail.out')}</option>
         </select>
         <input className="input" placeholder={t('tail.filter')} value={filter} onChange={(e) => setFilter(e.target.value)} />
-        <button className="btn" onClick={() => setPaused(!paused)}>
-          {paused ? t('tail.resume') : t('tail.pause')}
-        </button>
-        <button className="btn ghost" onClick={() => setRecords([])}>
-          {t('tail.clear')}
-        </button>
+        <div className="row" style={{ flexWrap: 'nowrap' }}>
+          <button className="btn icon-btn" title={paused ? t('tail.resume') : t('tail.pause')} onClick={() => setPaused(!paused)}>
+            <Icon name={paused ? 'play' : 'pause'} className="" />
+          </button>
+          <button className="btn icon-btn" title={t('tail.clear')} onClick={() => setRecords([])}>
+            <Icon name="trash" className="" />
+          </button>
+        </div>
       </div>
       {error && <p className="err">{error}</p>}
-      <p className="small dim">
-        {to && stage === 'out' ? `→ ${to} · ` : ''}
-        {info ? `${info.local_workers} ${t('stat.workers')} · ` : ''}
-        {shown.length} · {skipped > 0 ? `${skipped} ${t('tail.skipped')}` : ''}
-      </p>
-      {shown.length === 0 && !error && <div className="empty">{t('tail.waiting')}</div>}
-      <div className="tail-list">
+      <div className="tail-meta">
+        <span className={`live ${paused || error ? 'off' : ''}`}>
+          <i />
+          {paused ? t('tail.pause') : 'Live'}
+          {to && stage === 'out' ? ` · ${to}` : ''}
+        </span>
+        <span>
+          {info ? `${info.local_workers} ${t('stat.workers')} · ` : ''}
+          {shown.length}
+          {skipped > 0 ? ` · ${skipped} ${t('tail.skipped')}` : ''}
+        </span>
+      </div>
+      {shown.length === 0 && !error && (
+        <div className="empty">
+          <Icon name="search" className="" />
+          {t('tail.waiting')}
+        </div>
+      )}
+      {shown.length > 0 && <div className="tail-list">
         {shown.map((r) => {
           const label = r.stage === 'out' ? r.to ?? 'out' : r.stage
           return (
-            <div key={r.n} className="tail-row" onClick={() => setOpen(open === r.n ? null : r.n)}>
+            <div key={r.n} className={`tail-row ${open === r.n ? 'open' : ''}`} onClick={() => setOpen(open === r.n ? null : r.n)}>
               <div className="line">
                 <span className="t">{r.time.slice(11, 23)}</span>
-                <span className={`stage ${label}`}>{label}</span>
+                <span className={`tag ${label}`}>{label}</span>
                 <span className="v">
                   {r.stage === 'callback' ? `#${r.attempt} ${r.target ?? ''}` : r.reason ? r.reason : r.value}
                 </span>
-                <span className={`status ${r.status && r.status >= 400 ? 'err' : 'dim'}`}>
+                <span className={`status ${r.status && r.status >= 400 ? 'bad' : ''}`}>
                   {r.status ? r.status : ''}
                   {r.duration_ms ? ` ${r.duration_ms.toFixed(1)}ms` : ''}
                 </span>
@@ -232,7 +386,7 @@ function TailTab({ name, focus }: { name: string; focus?: TailFocus }) {
                 <>
                   <pre>{JSON.stringify(r, (k, v) => (k === 'n' ? undefined : v), 2)}</pre>
                   {r.correlation_id && (
-                    <div style={{ padding: '0 10px 10px' }}>
+                    <div style={{ padding: '0 12px 12px' }}>
                       <button
                         className="btn sm"
                         onClick={(e) => {
@@ -249,7 +403,7 @@ function TailTab({ name, focus }: { name: string; focus?: TailFocus }) {
             </div>
           )
         })}
-      </div>
+      </div>}
     </div>
   )
 }
@@ -269,7 +423,13 @@ function EntriesTab({ name, kind, toast }: { name: string; kind: 'dlq' | 'reject
   }
   if (error) return <p className="err">{error}</p>
   if (!data) return <p className="muted">{t('common.loading')}</p>
-  if (data.length === 0) return <div className="empty">{t('dlq.empty')}</div>
+  if (data.length === 0)
+    return (
+      <div className="empty">
+        <Icon name="inbox" className="" />
+        {t('dlq.empty')}
+      </div>
+    )
   return (
     <div className="stack">
       {data.map((e) => (
@@ -287,7 +447,12 @@ function EntriesTab({ name, kind, toast }: { name: string; kind: 'dlq' | 'reject
               </button>
             </span>
           </div>
-          {e.reason && <div className={kind === 'dlq' ? 'err' : 'warn'}>{e.reason}</div>}
+          {e.reason && (
+            <div className={`reason ${kind === 'dlq' ? 'err' : 'warn'}`}>
+              <i className={`dot ${kind === 'dlq' ? 'down' : 'degraded'}`} style={{ marginTop: 6, animation: 'none' }} />
+              {e.reason}
+            </div>
+          )}
           <pre>{e.value}</pre>
         </div>
       ))}
@@ -327,78 +492,73 @@ function ActionsTab({ name, onChanged, onDeleted, toast }: { name: string; onCha
     }
   }
   const p = `/pipelines/${encodeURIComponent(name)}`
+  const Row = ({ icon, title, hint, danger, children }: { icon: IconName; title: string; hint: string; danger?: boolean; children: React.ReactNode }) => (
+    <div className={`action spot ${danger ? 'danger' : ''}`}>
+      <div className="ico">
+        <Icon name={icon} className="" />
+      </div>
+      <div>
+        <b className={danger ? 'err' : ''}>{title}</b>
+        <p>{hint}</p>
+      </div>
+      <div className="row" style={{ flexWrap: 'nowrap' }}>
+        {children}
+      </div>
+    </div>
+  )
   return (
     <div className="stack">
-      <div className="card stack">
-        <div className="row" style={{ justifyContent: 'space-between' }}>
-          <b>{paused ? t('act.resume') : t('act.pause')}</b>
-          <button className="btn" disabled={busy} onClick={() => run(() => api(`${p}/${paused ? 'resume' : 'pause'}`, { method: 'POST', body: {} }), t('act.done'))}>
-            {paused ? t('act.resume') : t('act.pause')}
+      <Row icon={paused ? 'play' : 'pause'} title={paused ? t('act.resume') : t('act.pause')} hint={t('act.pauseHint')}>
+        <button className="btn" disabled={busy} onClick={() => run(() => api(`${p}/${paused ? 'resume' : 'pause'}`, { method: 'POST', body: {} }), t('act.done'))}>
+          {paused ? t('act.resume') : t('act.pause')}
+        </button>
+      </Row>
+      <Row icon="restart" title={t('act.restart')} hint={t('act.restartHint')}>
+        <button className="btn" disabled={busy} onClick={() => run(() => api(`${p}/restart`, { method: 'POST', body: {} }), t('act.done'))}>
+          {t('act.restart')}
+        </button>
+      </Row>
+      <Row icon="scale" title={t('act.scale')} hint={t('act.scaleHint')}>
+        <input className="input" type="number" min={1} max={1024} style={{ width: 72 }} value={workers ?? current} onChange={(e) => setWorkers(Number(e.target.value))} />
+        <button className="btn" disabled={busy || workers === null || workers === current} onClick={() => run(() => api(`${p}/scale`, { body: { workers } }), t('act.done'))}>
+          {t('act.scale')}
+        </button>
+      </Row>
+      <Row icon="trash" danger title={t('act.delete')} hint={confirmDelete ? confirmDelete.warnings.join(' ') : t('act.deleteHint')}>
+        {!confirmDelete ? (
+          <button
+            className="btn danger"
+            disabled={busy}
+            onClick={async () => {
+              try {
+                const out = await api<{ confirm_token: string; preview: { warnings?: { what: string }[] } }>('/config/preview', { body: { delete: name } })
+                setConfirmDelete({ token: out.confirm_token, warnings: (out.preview.warnings ?? []).map((w) => w.what) })
+              } catch (e) {
+                toast(e instanceof ApiError && e.status === 403 ? t('common.noAccess') : (e as Error).message, true)
+              }
+            }}
+          >
+            {t('act.delete')}
           </button>
-        </div>
-        <span className="muted small">{t('act.pauseHint')}</span>
-      </div>
-      <div className="card stack">
-        <div className="row" style={{ justifyContent: 'space-between' }}>
-          <b>{t('act.restart')}</b>
-          <button className="btn" disabled={busy} onClick={() => run(() => api(`${p}/restart`, { method: 'POST', body: {} }), t('act.done'))}>
-            {t('act.restart')}
-          </button>
-        </div>
-        <span className="muted small">{t('act.restartHint')}</span>
-      </div>
-      <div className="card stack">
-        <div className="row" style={{ justifyContent: 'space-between' }}>
-          <b>{t('act.scale')}</b>
-          <span className="row">
-            <input className="input" type="number" min={1} max={1024} style={{ width: 90 }} value={workers ?? current} onChange={(e) => setWorkers(Number(e.target.value))} />
-            <button className="btn" disabled={busy || workers === null || workers === current} onClick={() => run(() => api(`${p}/scale`, { body: { workers } }), t('act.done'))}>
-              {t('act.scale')}
+        ) : (
+          <>
+            <button className="btn ghost sm" onClick={() => setConfirmDelete(null)}>
+              {t('common.no')}
             </button>
-          </span>
-        </div>
-        <span className="muted small">{t('act.scaleHint')}</span>
-      </div>
-      <div className="card stack">
-        <div className="row" style={{ justifyContent: 'space-between' }}>
-          <b className="err">{t('act.delete')}</b>
-          {!confirmDelete ? (
             <button
-              className="btn danger"
-              disabled={busy}
-              onClick={async () => {
-                try {
-                  const out = await api<{ confirm_token: string; preview: { warnings?: { what: string }[] } }>('/config/preview', { body: { delete: name } })
-                  setConfirmDelete({ token: out.confirm_token, warnings: (out.preview.warnings ?? []).map((w) => w.what) })
-                } catch (e) {
-                  toast(e instanceof ApiError && e.status === 403 ? t('common.noAccess') : (e as Error).message, true)
-                }
-              }}
+              className="btn danger sm"
+              onClick={() =>
+                run(async () => {
+                  await api('/config/confirm', { body: { confirm_token: confirmDelete.token } })
+                  onDeleted()
+                }, t('act.done'))
+              }
             >
-              {t('act.delete')}
+              {t('common.sure')} {t('common.yes')}
             </button>
-          ) : (
-            <span className="row">
-              <span className="warn small">{t('common.sure')}</span>
-              <button className="btn ghost sm" onClick={() => setConfirmDelete(null)}>
-                {t('common.no')}
-              </button>
-              <button
-                className="btn danger sm"
-                onClick={() =>
-                  run(async () => {
-                    await api('/config/confirm', { body: { confirm_token: confirmDelete.token } })
-                    onDeleted()
-                  }, t('act.done'))
-                }
-              >
-                {t('common.yes')}
-              </button>
-            </span>
-          )}
-        </div>
-        <span className="muted small">{confirmDelete ? confirmDelete.warnings.join(' ') : t('act.deleteHint')}</span>
-      </div>
+          </>
+        )}
+      </Row>
     </div>
   )
 }
