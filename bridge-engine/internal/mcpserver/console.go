@@ -25,6 +25,7 @@ type Console struct {
 	d    Deps
 	cf   *confirmations
 	hist *history
+	chat *assistant
 	// Tap is where live tail records come from; nil means tap.Default.
 	Tap *tap.Hub
 }
@@ -150,6 +151,7 @@ func (c *Console) Handler() *http.ServeMux {
 	}))
 
 	c.projectsRoutes(mux)
+	c.assistantRoutes(mux)
 	mux.HandleFunc("GET /api/v1/history", c.historyRoute)
 	mux.HandleFunc("GET /api/v1/node", c.nodeRoute)
 	mux.HandleFunc("GET /api/v1/whoami", func(w http.ResponseWriter, r *http.Request) {
