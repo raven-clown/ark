@@ -1025,36 +1025,36 @@ the calling agent to self-restrict):**
 
 Direction set on 2026-09-24.
 
-- [ ] **Projects.** A project groups several pipelines (for example
+- [x] **Projects.** A project groups several pipelines (for example
       "orders": ingest, fraud check, notify, usually chained). Everything
       in the console and the API can be scoped to a project. Stored with
       the pipeline config (file or cluster config topic).
-- [ ] **AI access per project, set from the console.** For each project:
+- [x] **AI access per project, set from the console.** For each project:
       none / read only / operate (pause, resume, retry) / change config.
       A pipeline's `mcp_access` stays as a stricter per-pipeline ceiling.
-- [ ] **Several MCP endpoints per project,** each with its own tokens,
+- [x] **Several MCP endpoints per project,** each with its own tokens,
       access level and optionally a subset of tools, for example one for
       the ops team's agent that can operate, one for a support chatbot
       that can only read. Served under `/mcp/<project>/<endpoint>`.
-- [ ] **Any AI model.** MCP already works with any MCP-capable client.
+- [x] **Any AI model.** MCP already works with any MCP-capable client.
       For the console's built-in assistant, a provider layer: Anthropic,
       OpenAI, Google Gemini, and any OpenAI-compatible API (which covers
       most others: DeepSeek, Qwen, Mistral, Groq, OpenRouter, Together,
       Azure OpenAI, Ollama, vLLM, LM Studio). Provider, model, base URL and
       API key reference chosen per project; keys kept out of the config
       file (environment or a secret store).
-- [ ] **Understand, then act, for the built-in assistant.** A first model
+- [x] **Understand, then act, for the built-in assistant.** A first model
       pass that rewrites the user's words into a precise request (using
       `interpret_request`) and decides whether to ask back, then a second
       pass that calls tools and answers; more passes allowed when results
       raise new questions.
-- [ ] **Languages.** Built in: Thai, English, simplified and traditional
+- [x] **Languages.** Built in: Thai, English, simplified and traditional
       Chinese; more by config (`assistant.lexicon`, done) and a console
       setting for the UI language.
-- [ ] **Time.** Everything ISO 8601; storage and logs in UTC; display in
-      the configured `timezone` (done for MCP, to do for REST and the
-      console).
-- [ ] **Everything configurable.** Move the remaining hard-coded values
+- [x] **Time.** Everything ISO 8601; storage and logs in UTC; display in
+      the configured `timezone` across MCP, REST (events, history, tail)
+      and the console, which also shows a clock in that zone.
+- [x] **Everything configurable.** Move the remaining hard-coded values
       to config: circuit breaker (done per pipeline), DLQ browser size,
       event log size, redrive and prune intervals, retry backoff cap,
       Retry-After cap, final commit timeout, producer batch timeout,
@@ -1119,15 +1119,18 @@ show data moving, never as decoration.
       connect (`GET /api/v1/topology`, chained pipelines share topic
       nodes). Also overview, diagnosis, tuning, data check and
       test-message over REST.
-- [ ] An AI chat endpoint (or a documented way for the console to run an
-      MCP client against ARK) so the assistant panel has no separate
-      logic of its own.
+- [x] An AI chat endpoint (`POST /api/v1/assistant/chat`) that runs the
+      MCP tools in-process, so the assistant panel has no separate logic.
 
 **Frontend work:**
-- [ ] `bridge-ui` as its own deployable (own image, talks to the engine
+- [x] `bridge-ui` as its own deployable (own image, talks to the engine
       REST/stream API only, never to Kafka directly), with login.
-- [ ] Canvas with animated flows, editor, rule builder, live tail,
-      operate, cluster, history and assistant views as above.
+- [x] Canvas with animated flows, rule builder, live tail, operate,
+      cluster, history (metrics) and assistant views as above; projects
+      and engine settings pages.
+- [ ] Drag-and-drop block editor on the canvas. Today pipelines are
+      created with a guided form and edited as YAML or through the rule
+      builder, all with preview and confirm.
 - **Exit criteria:** an operator can create, change, watch, debug and
   control every pipeline from the console alone, and the flow animation
   and live tail reflect real traffic, verified against docker-compose

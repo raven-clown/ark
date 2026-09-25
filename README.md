@@ -113,9 +113,59 @@ Then ask *"how is the orders pipeline doing?"* or *"is there any weird
 data in orders?"* in English, Thai, or Chinese. ARK answers with what is
 happening, why, and what to do.
 
+**5. Open the console.** Go to [http://localhost:8088](http://localhost:8088)
+and sign in with `demo-admin-token`. You'll see the pipeline with data
+flowing through it; click it to see its health, tail it live, browse dead
+letters, or change its rules.
+
 > The demo tokens are for trying ARK on your machine. Set your own with
 > `ARK_API_ADMIN_TOKENS` and `ARK_MCP_ADMIN_TOKENS` before running it
 > anywhere else, and point `ARK_CONFIG` at your own config file.
+
+## ARK Console
+
+One place to see and run everything, with no Grafana or Kafka tooling on
+the side.
+
+<p align="center">
+  <img src="docs/img/console-canvas.png" alt="The pipeline canvas: topics, pipelines and targets connected by lines with data flowing along them" width="860">
+</p>
+
+- **Pipeline canvas.** Every pipeline, topic and target, chained pipelines
+  joined through their shared topic. Dots move along each line at the real
+  message rate; click a line to watch what crosses it.
+- **Everything about one pipeline.** Health with the reason and next step,
+  throughput against the last hour, p99 latency, a live tail of every
+  message (in, each callback attempt, where it went and why), dead letters
+  and rejects with retry and discard, the config, and pause, restart,
+  scale and delete.
+- **Visual rule builder.** Pick a field from real messages, an operator and
+  a value, and see how many recent messages would match before you save.
+- **Metrics.** Throughput, lag and callback latency percentiles over the
+  last hour, plus the node's own resources.
+- **Projects.** Group pipelines, decide how far AI may go with them, give
+  agents their own MCP endpoints, and choose each project's AI model.
+- **Ask ARK.** Chat with an assistant backed by the model you choose. It
+  works out what you mean first, asks back when it must, and uses the
+  same tools as any MCP agent, within your permissions.
+- **Settings.** Timezone, default AI model and every engine tuning value.
+- In English, Thai, and simplified and traditional Chinese.
+
+<table>
+<tr>
+<td width="50%"><img src="docs/img/console-pipeline.png" alt="A pipeline's health, KPIs, live rate and trace"></td>
+<td width="50%"><img src="docs/img/console-rules.png" alt="Building a rule and seeing how many recent messages match"></td>
+</tr>
+<tr>
+<td><img src="docs/img/console-projects.png" alt="Projects with AI access, MCP endpoints and model"></td>
+<td><img src="docs/img/console-assistant.png" alt="Asking ARK a question in Thai"></td>
+</tr>
+</table>
+
+The console is its own small service (`bridge-ui`): it serves the web app
+and forwards `/api/v1/` to an ARK engine, so the browser never talks to
+Kafka. Sign in with any `ARK_API_*` token; what you can do follows its
+scope.
 
 ## How it works
 
@@ -456,6 +506,72 @@ call with the confirm token applies it. Every write is audit-logged.
 </details>
 
 <details>
+<summary><b>Projects and AI access</b></summary>
+
+```yaml
+projects:
+  - name: commerce
+    ai_access: operate           # none | read_only | operate | configure
+    mcp_endpoints:
+      - name: ops                # served at /mcp/commerce/ops
+        access: operate
+        tokens_env: ARK_MCP_COMMERCE_OPS_TOKENS
+      - name: support
+        access: read_only
+        tokens_env: ARK_MCP_COMMERCE_SUPPORT_TOKENS
+        tools: [get_overview, diagnose_pipeline, explain_error]
+    assistant: {provider: anthropic, model: claude-opus-5, api_key_env: ANTHROPIC_API_KEY}
+
+pipelines:
+  - name: orders
+    project: commerce
+    # ...
+```
+
+A project's `ai_access` is a ceiling everywhere, the global `/mcp`
+included: `none` hides its pipelines from agents, `read_only` lets them
+look but not touch, `operate` adds pause, resume, retry and discard, and
+`configure` adds creating and changing pipelines (always after a
+confirmed preview). Each endpoint gets its own tokens from the
+environment variable it names, never from the file, and only sees its
+project. Projects can be managed from the console.
+
+</details>
+
+<details>
+<summary><b>The assistant, with any model</b></summary>
+
+Set a default model under `assistant.model`, or one per project:
+
+| Provider | Example |
+|---|---|
+| Anthropic | `{provider: anthropic, model: claude-opus-5}` (key from `ANTHROPIC_API_KEY`) |
+| OpenAI | `{provider: openai, model: gpt-5}` (key from `OPENAI_API_KEY`) |
+| Google Gemini | `{provider: gemini, model: gemini-2.5-pro}` (key from `GEMINI_API_KEY`) |
+| Anything OpenAI-compatible | `{provider: openai_compatible, model: qwen3, base_url: "http://localhost:11434/v1"}` (DeepSeek, Mistral, Groq, OpenRouter, Together, Azure OpenAI, Ollama, vLLM, LM Studio, ...) |
+
+`api_key_env` changes which variable holds the key. The console's Ask ARK
+panel (and `POST /api/v1/assistant/chat`) answers in two passes: first
+the model restates what you mean, or asks one question back; then it
+looks things up and acts through ARK's MCP tools. Its permissions are the
+lower of your API token's scope and the project's `ai_access`.
+
+</details>
+
+<details>
+<summary><b>Tuning</b></summary>
+
+Every internal limit and interval has a default and can be changed under
+`tuning:` in the config or on the console's Settings page: retry backoff
+and Retry-After caps, commit and batch timeouts, DLQ browser size,
+diagnosis thresholds, metric history, event log size, live tail payload
+size, confirm token and assistant session lifetimes, and cluster
+catch-up. See [`config.example.yaml`](bridge-engine/config.example.yaml)
+for the full list with defaults.
+
+</details>
+
+<details>
 <summary><b>Running more than one ARK</b></summary>
 
 Without anything special, more copies with the same `consumer_group`
@@ -517,6 +633,11 @@ separate from the MCP tokens.
 | `GET /api/v1/config/pipelines`, `/config/schema` | Current config as YAML, and the schema |
 | `POST /api/v1/config/validate` | Check a pipeline without applying it |
 | `POST /api/v1/config/preview`, `/config/confirm` | Create, change or delete a pipeline in two steps (admin) |
+| `GET /api/v1/pipelines/{name}/rules`, `POST .../rules/test`, `.../rules/preview` | Read rules, test a condition on recent messages, change rules (admin) |
+| `GET /api/v1/history` | Per-pipeline rates, lag and latency percentiles over the last hour |
+| `GET /api/v1/projects`, `PUT`/`DELETE /api/v1/config/projects/{name}` | Projects, their endpoints and models (changes need admin) |
+| `POST /api/v1/assistant/chat` | Ask the assistant (acts within your scope) |
+| `GET`/`PUT /api/v1/config/settings` | Timezone, default model and tuning (changes need admin) |
 
 </details>
 
@@ -537,14 +658,12 @@ tenant.
 
 ## Roadmap
 
-- **ARK Console:** one web UI to run everything: design pipelines on a
-  drag-and-drop canvas with live data flowing through it, build rules
-  visually, tail messages between stages, restart and scale, and manage
-  AI access.
-- **Projects:** group pipelines into projects, each with its own AI access
-  level and its own MCP endpoints.
-- **Bring any model:** connect the built-in assistant to any provider
-  (Anthropic, OpenAI, Gemini, or any OpenAI-compatible API).
+- **Drag-and-drop pipeline editor:** build a pipeline by dropping blocks
+  on the canvas (today: a guided form, the YAML editor and the rule
+  builder).
+- **Longer history:** keep metrics beyond the last hour and per partition.
+- **Batched callbacks:** send several messages per HTTP call for targets
+  that support it.
 
 The full plan, with the reasoning behind every decision, is in
 [PLAN.md](PLAN.md).
@@ -554,7 +673,7 @@ The full plan, with the reasoning behind every decision, is in
 | Path | What's there |
 |---|---|
 | [`bridge-engine/`](bridge-engine) | The Go engine: consumer, rules, callback client, producer, REST API, MCP server, cluster |
-| [`bridge-ui/`](bridge-ui) | The ARK Console (in progress) |
+| [`bridge-ui/`](bridge-ui) | The ARK Console: a React app and a small Go server |
 | [`brand/`](brand) | Logo and colors |
 | [`docs/`](docs) | The website |
 

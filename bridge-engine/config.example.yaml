@@ -17,9 +17,69 @@ topics:
 #   node_timeout_seconds: 20
 #   placement_interval_seconds: 5
 
+# Times ARK shows (API, MCP, console) are ISO 8601 in this IANA zone.
+timezone: UTC
+
+# The console's assistant. Any provider: anthropic, openai, gemini, or
+# openai_compatible for anything that speaks the OpenAI chat format
+# (DeepSeek, Qwen, Mistral, Groq, OpenRouter, Ollama, vLLM, LM Studio, ...).
+# Keys are read from the environment variable named here, never the file.
+# assistant:
+#   model:
+#     provider: anthropic
+#     model: claude-opus-5
+#     api_key_env: ANTHROPIC_API_KEY
+#   # local example:
+#   # model: {provider: openai_compatible, model: qwen3, base_url: "http://localhost:11434/v1"}
+#   lexicon:                          # extra words that signal an intent, any language
+#     diagnose: [langsam, lento]
+
+# Projects group pipelines and set how far AI may go with them: none,
+# read_only, operate (pause, resume, retry, discard) or configure (also
+# create and change pipelines after a confirmed preview). That level is a
+# ceiling everywhere, including the global /mcp endpoint. Each project can
+# have its own MCP endpoints at /mcp/<project>/<endpoint>, each with its
+# own tokens (from the environment variable it names), access and tools.
+# projects:
+#   - name: commerce
+#     description: Orders and fraud checks
+#     ai_access: operate
+#     mcp_endpoints:
+#       - name: ops                    # an ops agent that can operate
+#         access: operate
+#         tokens_env: ARK_MCP_COMMERCE_OPS_TOKENS
+#       - name: support                # a support bot that can only look
+#         access: read_only
+#         tokens_env: ARK_MCP_COMMERCE_SUPPORT_TOKENS
+#         tools: [get_overview, diagnose_pipeline, explain_error]
+#     assistant: {provider: openai, model: gpt-5, api_key_env: OPENAI_API_KEY}
+
+# Engine-wide knobs. Every one defaults to the value shown; leave out what
+# you don't need to change. (restart) ones are read at startup.
+# tuning:
+#   retry_backoff_cap_seconds: 30      # longest wait between in-place retries
+#   retry_after_cap_seconds: 300       # longest Retry-After ARK will honor
+#   final_commit_timeout_seconds: 10
+#   producer_batch_timeout_ms: 5       # (restart)
+#   dlq_browser_entries: 200           # (restart)
+#   dlq_prune_minutes: 10              # (restart)
+#   redrive_check_seconds: 10          # (restart)
+#   diagnosis_stuck_seconds: 30
+#   diagnosis_stalled_seconds: 120
+#   diagnosis_window_minutes: 15
+#   history_sample_seconds: 5          # (restart)
+#   history_keep_minutes: 60
+#   event_log_entries: 2000            # (restart)
+#   tail_value_bytes: 4096
+#   confirm_token_minutes: 10
+#   assistant_session_minutes: 120
+#   cluster_catch_up_seconds: 10       # (restart)
+#   compacted_idle_seconds: 2
+
 pipelines:
   - name: order-processor
     tenant: team-a
+    # project: commerce                # see projects above
     mcp_access: read_write
     source_topic: orders.raw
     destination_topic: orders.processed
