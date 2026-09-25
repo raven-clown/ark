@@ -17,6 +17,9 @@ go vet ./...
 go test ./...
 go install github.com/securego/gosec/v2/cmd/gosec@latest   # first time only
 $(go env GOPATH)/bin/gosec ./...
+# CI also runs semgrep; run it from the repo root (a venv avoids pip conflicts):
+python3 -m venv /tmp/sg && /tmp/sg/bin/pip install -q semgrep   # first time only
+/tmp/sg/bin/semgrep scan --config auto --error --quiet bridge-engine
 ```
 
 If gosec flags something real (e.g. an unsigned-to-signed integer
