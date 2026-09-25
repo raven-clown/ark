@@ -1105,14 +1105,20 @@ show data moving, never as decoration.
   step before any change.
 
 **Backend work this needs (engine side):**
-- [ ] Live tail stream: an SSE or WebSocket endpoint per pipeline stage,
-      sampled and rate-limited so tailing never slows the pipeline, and
-      token-scoped like the rest of the API.
-- [ ] Config CRUD over REST (validate, preview diff, apply with a
-      confirm token), sharing code with the MCP config tools.
-- [ ] Restart and scale endpoints; events over REST
+- [x] Live tail stream: `GET /api/v1/pipelines/{name}/tail` (SSE) with
+      stage, destination, key and correlation ID filters and a per-watcher
+      rate cap. Publishing is one atomic load while nobody watches, and a
+      slow watcher drops records instead of slowing the pipeline. In
+      cluster mode each node streams its own workers.
+- [x] Config CRUD over REST: `GET /api/v1/config/pipelines`,
+      `POST /api/v1/config/validate`, `/preview` (create, update or
+      delete) and `/confirm`, sharing the preview/confirm code with the
+      MCP config tools. Confirm tokens are bound to the caller's token.
+- [x] Restart and scale endpoints; events over REST
       (`GET /api/v1/events`); topology endpoint describing how pipelines
-      connect.
+      connect (`GET /api/v1/topology`, chained pipelines share topic
+      nodes). Also overview, diagnosis, tuning, data check and
+      test-message over REST.
 - [ ] An AI chat endpoint (or a documented way for the console to run an
       MCP client against ARK) so the assistant panel has no separate
       logic of its own.

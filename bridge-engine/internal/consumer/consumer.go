@@ -21,6 +21,7 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/metrics"
 	"github.com/raven-clown/ark/bridge-engine/internal/producer"
 	"github.com/raven-clown/ark/bridge-engine/internal/rules"
+	"github.com/raven-clown/ark/bridge-engine/internal/tap"
 	"github.com/raven-clown/ark/bridge-engine/internal/targetpool"
 )
 
@@ -591,6 +592,17 @@ func (r *Runner) process(ctx context.Context, msg kafka.Message) error {
 		}
 	}
 
+	if r.watching() {
+		rec := r.tapRecord(tap.StageIn, correlationID, msg.Key, nil)
+		rec.Topic, rec.Partition, rec.Offset = msg.Topic, &msg.Partition, &msg.Offset
+		rec.Headers = make(map[string]string, len(msg.Headers))
+		for _, h := range msg.Headers {
+			rec.Headers[h.Key] = string(h.Value)
+		}
+		rec.SetValue(msg.Value)
+		tap.Default.Publish(rec)
+	}
+
 	if c := r.shared.dataRules; c != nil {
 		original := make(map[string]string, len(msg.Headers))
 		for _, h := range msg.Headers {
@@ -664,6 +676,17 @@ func (r *Runner) process(ctx context.Context, msg kafka.Message) error {
 		r.counters.callbackNanos.Add(elapsed.Nanoseconds())
 		r.counters.callbackCount.Add(1)
 		metrics.CallbackDuration.WithLabelValues(r.pipeline.Name, r.pipeline.Tenant).Observe(elapsed.Seconds())
+		if r.watching() {
+			rec := r.tapRecord(tap.StageCallback, correlationID, msg.Key, nil)
+			rec.Target, rec.Attempt, rec.DurationMs = url, realAttempts, float64(elapsed.Microseconds())/1000
+			if resp != nil {
+				rec.Status = resp.StatusCode
+			}
+			if lastErr != nil {
+				rec.Reason = lastErr.Error()
+			}
+			tap.Default.Publish(rec)
+		}
 
 		if lastErr == nil && r.pipeline.Target.IsReject(resp.StatusCode) {
 			r.recordBreaker(true, "")
@@ -735,6 +758,7 @@ func (r *Runner) process(ctx context.Context, msg kafka.Message) error {
 	if err := r.sendWithRetry(ctx, r.shared.dest, msg.Key, resp.Body, headers, log); err != nil {
 		return fmt.Errorf("producing result: %w", err)
 	}
+	r.tapOut(tap.ToDestination, r.pipeline.DestinationTopic, "", "", resp.StatusCode, msg.Key, resp.Body, headers)
 
 	r.counters.processed.Add(1)
 	metrics.Processed.WithLabelValues(r.pipeline.Name, r.workerLabel, r.pipeline.Tenant).Inc()
@@ -776,6 +800,11 @@ func (r *Runner) route(ctx context.Context, target *producer.Producer, key, valu
 	if err := r.sendWithRetry(ctx, target, key, value, headers, log); err != nil {
 		return fmt.Errorf("routing to %s: %w", outcome, err)
 	}
+	if outcome == "rejected" {
+		r.tapOut(tap.ToReject, r.pipeline.RejectTopic, "", reason, statusCode, key, value, headers)
+	} else {
+		r.tapOut(tap.ToDLQ, r.pipeline.DeadLetterTopic, "", reason, statusCode, key, value, headers)
+	}
 	switch outcome {
 	case "rejected":
 		r.counters.rejected.Add(1)
@@ -788,6 +817,23 @@ func (r *Runner) route(ctx context.Context, target *producer.Producer, key, valu
 	}
 	log.Info("message "+outcome, "status_code", statusCode, "reason", reason)
 	return nil
+}
+
+func (r *Runner) watching() bool { return tap.Default.Watching(r.pipeline.Name) }
+
+func (r *Runner) tapRecord(stage, correlationID string, key []byte, headers map[string]string) tap.Record {
+	return tap.Record{Pipeline: r.pipeline.Name, Stage: stage, CorrelationID: correlationID, Key: string(key), Headers: headers}
+}
+
+// tapOut tells anyone tailing this pipeline where a message went.
+func (r *Runner) tapOut(to, topic, rule, reason string, status int, key, value []byte, headers map[string]string) {
+	if !r.watching() {
+		return
+	}
+	rec := r.tapRecord(tap.StageOut, headers[callback.CorrelationIDHeader], key, headers)
+	rec.To, rec.Topic, rec.Rule, rec.Reason, rec.Status = to, topic, rule, reason, status
+	rec.SetValue(value)
+	tap.Default.Publish(rec)
 }
 
 // recordBreaker feeds a callback result to the circuit breaker and records
@@ -817,6 +863,7 @@ func (r *Runner) applyRuleAction(ctx context.Context, rule *config.FastPathRule,
 		if err := r.sendWithRetry(ctx, r.shared.dest, key, value, headers, log); err != nil {
 			return fmt.Errorf("pass_through producing result: %w", err)
 		}
+		r.tapOut(tap.ToDestination, r.pipeline.DestinationTopic, rule.Name, "", 0, key, value, headers)
 		r.counters.processed.Add(1)
 		metrics.Processed.WithLabelValues(r.pipeline.Name, r.workerLabel, r.pipeline.Tenant).Inc()
 		return nil
@@ -826,6 +873,7 @@ func (r *Runner) applyRuleAction(ctx context.Context, rule *config.FastPathRule,
 
 	case config.ActionDrop:
 		log.Info("message dropped", "rule", rule.Name)
+		r.tapOut(tap.ToDropped, "", rule.Name, fmt.Sprintf("rule %q matched with action drop", rule.Name), 0, key, value, headers)
 		return nil
 
 	case config.ActionDeadLetter:
@@ -837,6 +885,7 @@ func (r *Runner) applyRuleAction(ctx context.Context, rule *config.FastPathRule,
 			if err := r.sendWithRetry(ctx, target, key, value, headers, log); err != nil {
 				return fmt.Errorf("routing to %s: %w", rule.DestinationOverride, err)
 			}
+			r.tapOut(tap.ToOverride, rule.DestinationOverride, rule.Name, "", 0, key, value, headers)
 			r.counters.processed.Add(1)
 			metrics.Processed.WithLabelValues(r.pipeline.Name, r.workerLabel, r.pipeline.Tenant).Inc()
 			log.Info("message routed", "rule", rule.Name, "destination", rule.DestinationOverride)
@@ -844,6 +893,12 @@ func (r *Runner) applyRuleAction(ctx context.Context, rule *config.FastPathRule,
 		}
 		if err := r.webhookWithRetry(ctx, rule.WebhookOverride, headers[callback.CorrelationIDHeader], value, log); err != nil {
 			return fmt.Errorf("routing to webhook %s: %w", rule.WebhookOverride, err)
+		}
+		if r.watching() {
+			rec := r.tapRecord(tap.StageOut, headers[callback.CorrelationIDHeader], key, headers)
+			rec.To, rec.Target, rec.Rule = tap.ToWebhook, rule.WebhookOverride, rule.Name
+			rec.SetValue(value)
+			tap.Default.Publish(rec)
 		}
 		r.counters.processed.Add(1)
 		metrics.Processed.WithLabelValues(r.pipeline.Name, r.workerLabel, r.pipeline.Tenant).Inc()

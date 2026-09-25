@@ -5,6 +5,7 @@
 package authz
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
@@ -98,4 +99,22 @@ func IsLoopback(r *http.Request) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// Caller is who made a request, as established by the API guard.
+type Caller struct {
+	ID    string
+	Scope Scope
+}
+
+type callerKey struct{}
+
+func WithCaller(ctx context.Context, c Caller) context.Context {
+	return context.WithValue(ctx, callerKey{}, c)
+}
+
+// CallerFrom returns the caller the guard stored on ctx.
+func CallerFrom(ctx context.Context) (Caller, bool) {
+	c, ok := ctx.Value(callerKey{}).(Caller)
+	return c, ok
 }

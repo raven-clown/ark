@@ -334,6 +334,30 @@ func (m *Manager) stop(name string) {
 	events.Record(name, events.PipelineStopped, "pipeline stopped on this node (removed, disabled, or restarting with a changed config)", nil)
 }
 
+// Restart stops a pipeline's workers on this node and starts them again
+// with the same config, for example to clear a stuck connection. Nothing
+// is lost: uncommitted messages are consumed again. It reports whether the
+// pipeline was running here.
+func (m *Manager) Restart(name string) (bool, error) {
+	m.reconcileMu.Lock()
+	defer m.reconcileMu.Unlock()
+
+	m.mu.RLock()
+	rp, ok := m.pipelines[name]
+	m.mu.RUnlock()
+	if !ok {
+		return false, nil
+	}
+	cfg := rp.cfg
+	events.Record(name, events.PipelineStopped, "pipeline restarting on this node at an operator's request", nil)
+	m.stop(name)
+	if err := m.start(cfg); err != nil {
+		m.retryStart(cfg)
+		return true, fmt.Errorf("stopped, but starting again failed (retrying in the background): %w", err)
+	}
+	return true, nil
+}
+
 // launch starts one supervised worker under its own cancel, so it can be
 // removed later without touching the pipeline's other workers.
 func (m *Manager) launch(rp *runningPipeline, runner *consumer.Runner) {

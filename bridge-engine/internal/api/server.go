@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
@@ -181,13 +182,24 @@ func requiredScope(r *http.Request) (scope authz.Scope, public bool) {
 	switch {
 	case r.Method == http.MethodGet && (r.URL.Path == "/healthz" || r.URL.Path == "/metrics"):
 		return "", true
-	case r.Method == http.MethodPost && r.URL.Path == "/api/v1/config/reload":
-		return authz.ScopeAdmin, false
 	case r.Method == http.MethodGet || r.Method == http.MethodHead:
 		return authz.ScopeViewer, false
+	case r.Method == http.MethodPost && (r.URL.Path == "/api/v1/config/validate" || strings.HasSuffix(r.URL.Path, "/test-message")):
+		return authz.ScopeViewer, false
+	case strings.HasPrefix(r.URL.Path, "/api/v1/config/") || strings.HasSuffix(r.URL.Path, "/scale"):
+		return authz.ScopeAdmin, false
 	default:
 		return authz.ScopeOperator, false
 	}
+}
+
+// Guard protects next with the same token rules as the rest of the API and
+// puts the caller on the request context (authz.CallerFrom).
+func Guard(tokens *authz.TokenStore, next http.Handler) http.Handler {
+	if tokens == nil {
+		tokens = &authz.TokenStore{}
+	}
+	return guard(tokens, next)
 }
 
 func guard(tokens *authz.TokenStore, next http.Handler) http.Handler {
@@ -200,7 +212,7 @@ func guard(tokens *authz.TokenStore, next http.Handler) http.Handler {
 
 		if !tokens.Enabled() {
 			if authz.IsLoopback(r) {
-				next.ServeHTTP(w, r)
+				next.ServeHTTP(w, r.WithContext(authz.WithCaller(r.Context(), authz.Caller{ID: "localhost", Scope: authz.ScopeAdmin})))
 				return
 			}
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "REST API tokens are not configured (ARK_API_VIEWER_TOKENS / ARK_API_OPERATOR_TOKENS / ARK_API_ADMIN_TOKENS), so only requests from localhost are accepted"})
@@ -218,7 +230,7 @@ func guard(tokens *authz.TokenStore, next http.Handler) http.Handler {
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": "this action needs the " + string(min) + " scope, token has " + string(scope)})
 			return
 		}
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, r.WithContext(authz.WithCaller(r.Context(), authz.Caller{ID: authz.UserID(token), Scope: scope})))
 	})
 }
 

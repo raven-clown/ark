@@ -59,7 +59,7 @@ func (f *fileSource) Apply(_ context.Context, pipelines []config.Pipeline) error
 	if err != nil {
 		return err
 	}
-	header := fmt.Sprintf("# Written by ARK at %s after a confirmed change made through MCP.\n# The previous version is in %s.bak.\n", time.Now().UTC().Format(time.RFC3339), filepath.Base(f.path))
+	header := fmt.Sprintf("# Written by ARK at %s after a confirmed change made through MCP or the console.\n# The previous version is in %s.bak.\n", time.Now().UTC().Format(time.RFC3339), filepath.Base(f.path))
 
 	info, err := os.Stat(f.path)
 	if err != nil {

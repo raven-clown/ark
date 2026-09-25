@@ -488,8 +488,8 @@ cluster:
 
 Every route except `/healthz` and `/metrics` needs a bearer token.
 `ARK_API_VIEWER_TOKENS` can read, `ARK_API_OPERATOR_TOKENS` can also
-pause, resume, retry and discard, and `ARK_API_ADMIN_TOKENS` can also
-reload config. With none set, the API only answers localhost. These are
+pause, resume, restart, retry and discard, and `ARK_API_ADMIN_TOKENS` can
+also change config (preview, confirm, scale, reload). With none set, the API only answers localhost. These are
 separate from the MCP tokens.
 
 | Route | What it does |
@@ -505,6 +505,18 @@ separate from the MCP tokens.
 | `POST /api/v1/config/reload` | Re-read the config |
 | `GET /api/v1/cluster` | Members, leader, config versions |
 | `GET /api/v1/cluster/pipelines` | Cluster-wide pipeline numbers |
+| `GET /api/v1/overview` | Health of every pipeline and what needs attention |
+| `GET /api/v1/events` | What happened and why (`pipeline`, `since_minutes`, `kinds`, `limit`) |
+| `GET /api/v1/topology` | How pipelines, topics and targets connect |
+| `GET /api/v1/topics` | Kafka topics and which pipelines use them |
+| `GET /api/v1/pipelines/{name}/tail` | Live tail as Server-Sent Events (`stage`, `to`, `key`, `correlation_id`, `max_per_sec`) |
+| `GET /api/v1/pipelines/{name}/diagnosis`, `/tuning`, `/data-check` | What's wrong and why, sizing advice, odd data |
+| `POST /api/v1/pipelines/{name}/test-message` | What the pipeline would do with a message |
+| `POST /api/v1/pipelines/{name}/restart` | Restart its workers on this node |
+| `POST /api/v1/pipelines/{name}/scale` | Change `workers` (admin) |
+| `GET /api/v1/config/pipelines`, `/config/schema` | Current config as YAML, and the schema |
+| `POST /api/v1/config/validate` | Check a pipeline without applying it |
+| `POST /api/v1/config/preview`, `/config/confirm` | Create, change or delete a pipeline in two steps (admin) |
 
 </details>
 

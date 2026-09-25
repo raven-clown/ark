@@ -229,25 +229,30 @@ func main() {
 	if clusterNode != nil {
 		registry = clusterRegistry{Manager: mgr, node: clusterNode, log: logger}
 	}
-	rootMux.Handle("/", api.NewServer(registry, reload, clusterNode, apiTokens))
-
 	displayLocation, _ := time.LoadLocation(cfg.Timezone) // validated in config.Load
+	deps := mcpserver.Deps{
+		Registry:          registry,
+		Config:            configSource,
+		Brokers:           cfg.Brokers,
+		ReplicationFactor: cfg.Topics.ReplicationFactor,
+		Cluster:           clusterNode,
+		Version:           version,
+		Location:          displayLocation,
+	}
+	consoleDeps := deps
+	consoleDeps.Audit = logger.With("component", "console-audit")
+	consoleRoutes := mcpserver.NewConsole(consoleDeps).Handler()
+	rootMux.Handle("/", withConsole(consoleRoutes, api.Guard(apiTokens, consoleRoutes),
+		api.NewServer(registry, reload, clusterNode, apiTokens)))
 	for intent, words := range cfg.Assistant.Lexicon {
 		mcpserver.ExtendLexicon(intent, words...)
 	}
 	mcpTokens := mcpserver.LoadTokenStoreFromEnv()
 	if mcpTokens.Enabled() {
 		auditLog := logger.With("component", "mcp-audit")
-		rootMux.Handle("/mcp", mcpserver.NewHTTPHandler(mcpserver.Deps{
-			Registry:          registry,
-			Config:            configSource,
-			Brokers:           cfg.Brokers,
-			ReplicationFactor: cfg.Topics.ReplicationFactor,
-			Cluster:           clusterNode,
-			Audit:             auditLog,
-			Version:           version,
-			Location:          displayLocation,
-		}, mcpTokens))
+		mcpDeps := deps
+		mcpDeps.Audit = auditLog
+		rootMux.Handle("/mcp", mcpserver.NewHTTPHandler(mcpDeps, mcpTokens))
 		logger.Info("mcp server enabled", "path", "/mcp")
 	} else {
 		logger.Info("mcp server disabled: no ARK_MCP_*_TOKENS set")
@@ -278,4 +283,17 @@ func main() {
 
 	mgr.ShutdownAll()
 	logger.Info("bridge shut down")
+}
+
+// withConsole sends requests matching one of the console's routes to
+// console and everything else to apiHandler. Both are behind the API token
+// guard.
+func withConsole(routes *http.ServeMux, console, apiHandler http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, pattern := routes.Handler(r); pattern != "" {
+			console.ServeHTTP(w, r)
+			return
+		}
+		apiHandler.ServeHTTP(w, r)
+	})
 }

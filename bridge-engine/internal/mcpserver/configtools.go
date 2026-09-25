@@ -17,7 +17,6 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/raven-clown/ark/bridge-engine/internal/config"
-	"github.com/raven-clown/ark/bridge-engine/internal/events"
 	"github.com/raven-clown/ark/bridge-engine/internal/kafkaadmin"
 )
 
@@ -223,7 +222,7 @@ func validate(ctx context.Context, d Deps, src string) (config.Pipeline, *config
 			out.Warnings = append(out.Warnings, Finding{Severity: SeverityWarning, What: fmt.Sprintf("workers (%d) is more than %s's %d partitions; extra workers will idle.", p.Workers, p.SourceTopic, parts)})
 		}
 	}
-	if p.MCPAccess == config.MCPAccessNone {
+	if p.MCPAccess == config.MCPAccessNone && !d.AllPipelines {
 		out.Warnings = append(out.Warnings, Finding{Severity: SeverityWarning, What: "mcp_access: none hides this pipeline from AI agents entirely after it's applied, including from this conversation."})
 	}
 	out.Warnings = append(out.Warnings, reviewConfig(d, p)...)
@@ -248,81 +247,6 @@ type applyOut struct {
 	Preview      *validationOut `json:"preview,omitempty"`
 	ConfirmToken string         `json:"confirm_token,omitempty"`
 	NextStep     string         `json:"next_step,omitempty"`
-}
-
-func applyTool(d Deps, cf *confirmations, action string, scope Scope) mcp.ToolHandlerFor[applyIn, applyOut] {
-	return func(ctx context.Context, req *mcp.CallToolRequest, in applyIn) (*mcp.CallToolResult, applyOut, error) {
-		user := callerID(req)
-
-		if in.ConfirmToken != "" {
-			pc, err := cf.take(in.ConfirmToken, user)
-			if err != nil {
-				return nil, applyOut{}, err
-			}
-			if pc.action != action {
-				return nil, applyOut{}, fmt.Errorf("that confirm_token was issued by %s, not %s", pc.action, action)
-			}
-			var current *config.Pipeline
-			pipelines := d.Config.Pipelines()
-			for i := range pipelines {
-				if pipelines[i].Name == pc.pipeline.Name {
-					c := pipelines[i]
-					current = &c
-				}
-			}
-			if pipelineHash(current) != pc.baseHash {
-				return nil, applyOut{}, fmt.Errorf("pipeline %s changed since the preview; preview it again", pc.pipeline.Name)
-			}
-			updated := make([]config.Pipeline, 0, len(pipelines)+1)
-			replaced := false
-			for _, q := range pipelines {
-				if q.Name == pc.pipeline.Name {
-					updated = append(updated, pc.pipeline)
-					replaced = true
-					continue
-				}
-				updated = append(updated, q)
-			}
-			if !replaced {
-				updated = append(updated, pc.pipeline)
-			}
-			if err := d.Config.Apply(ctx, updated); err != nil {
-				return nil, applyOut{}, fmt.Errorf("applying: %w", err)
-			}
-			d.Audit.Info("mcp write", "scope", scope, "action", action, "pipeline", pc.pipeline.Name, "applies_to", d.Config.Mode())
-			events.Record(pc.pipeline.Name, events.ConfigApplied, fmt.Sprintf("pipeline config %s through MCP (%s scope)", map[bool]string{true: "updated", false: "created"}[replaced], scope), nil)
-			return nil, applyOut{State: "applied", NextStep: "Call diagnose_pipeline in a few seconds to confirm it's running as expected."}, nil
-		}
-
-		if in.YAML == "" {
-			return nil, applyOut{}, fmt.Errorf("yaml is required for the preview call")
-		}
-		p, existing, preview := validate(ctx, d, in.YAML)
-		if action == "create_pipeline" && existing != nil {
-			return nil, applyOut{}, fmt.Errorf("pipeline %s already exists; use apply_pipeline_config to change it", p.Name)
-		}
-		if existing != nil && existing.MCPAccess != config.MCPAccessReadWrite {
-			return nil, applyOut{}, fmt.Errorf("pipeline %s has mcp_access: %s; only an operator editing the config directly can change it", p.Name, existing.MCPAccess)
-		}
-		if existing == nil {
-			if _, hidden := hiddenPipeline(d, p.Name); hidden {
-				return nil, applyOut{}, fmt.Errorf("a pipeline named %s exists but isn't visible to MCP", p.Name)
-			}
-		}
-		if !preview.Valid {
-			return nil, applyOut{State: "invalid", Preview: &preview, NextStep: "Fix the errors and preview again."}, nil
-		}
-		if preview.Change == "unchanged" {
-			return nil, applyOut{State: "unchanged", Preview: &preview}, nil
-		}
-		token := cf.put(pendingChange{action: action, pipeline: p, baseHash: pipelineHash(existing), userID: user, expires: time.Now().Add(confirmTTL)})
-		return nil, applyOut{
-			State:        "awaiting_confirmation",
-			Preview:      &preview,
-			ConfirmToken: token,
-			NextStep:     "Show the user the diff and warnings in plain words and ask them to confirm. Only after they explicitly agree, call this tool again with just confirm_token. The token expires in 10 minutes.",
-		}, nil
-	}
 }
 
 func hiddenPipeline(d Deps, name string) (config.Pipeline, bool) {

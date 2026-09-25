@@ -33,6 +33,9 @@ type Deps struct {
 	Version           string
 	// Location is the configured display timezone; nil means UTC.
 	Location *time.Location
+	// AllPipelines lifts the mcp_access filter, for the console's REST
+	// API where access is governed by the API tokens instead.
+	AllPipelines bool
 }
 
 func (d Deps) loc() *time.Location {
@@ -90,6 +93,9 @@ func (d Deps) events() *events.Log {
 func (d Deps) visiblePipelines() []config.Pipeline {
 	if d.Config == nil {
 		return nil
+	}
+	if d.AllPipelines {
+		return d.Config.Pipelines()
 	}
 	var out []config.Pipeline
 	for _, p := range d.Config.Pipelines() {

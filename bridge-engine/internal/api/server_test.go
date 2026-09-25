@@ -58,3 +58,26 @@ func TestTokenScopesEnforced(t *testing.T) {
 		}
 	}
 }
+
+func TestConsoleRouteScopes(t *testing.T) {
+	cases := []struct {
+		method, path string
+		want         authz.Scope
+	}{
+		{"GET", "/api/v1/config/pipelines", authz.ScopeViewer},
+		{"POST", "/api/v1/config/validate", authz.ScopeViewer},
+		{"POST", "/api/v1/pipelines/orders/test-message", authz.ScopeViewer},
+		{"POST", "/api/v1/config/preview", authz.ScopeAdmin},
+		{"POST", "/api/v1/config/confirm", authz.ScopeAdmin},
+		{"POST", "/api/v1/config/reload", authz.ScopeAdmin},
+		{"POST", "/api/v1/pipelines/orders/scale", authz.ScopeAdmin},
+		{"POST", "/api/v1/pipelines/orders/restart", authz.ScopeOperator},
+		{"DELETE", "/api/v1/anything-new", authz.ScopeOperator},
+	}
+	for _, c := range cases {
+		r := httptest.NewRequest(c.method, c.path, nil)
+		if got, _ := requiredScope(r); got != c.want {
+			t.Errorf("%s %s needs %s, want %s", c.method, c.path, got, c.want)
+		}
+	}
+}

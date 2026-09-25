@@ -49,7 +49,7 @@ func main() {
 		})
 		_, _ = w.Write(out)
 	})
-	log.Printf("demo-echo listening on %s", addr)
+	log.Printf("demo-echo listening on %s", addr) // #nosec G706 -- addr is the operator-set DEMO_ECHO_ADDR
 	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	log.Fatal(srv.ListenAndServe())
 }
