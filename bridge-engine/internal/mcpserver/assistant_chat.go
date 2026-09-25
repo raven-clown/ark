@@ -342,12 +342,12 @@ func (c *Console) assistantRoutes(mux *http.ServeMux) {
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 		defer cancel()
-		out, err := a.Chat(ctx, callerOf(r), in.ConversationID, in.Project, in.Message)
+		answer, err := a.Chat(ctx, callerOf(r), in.ConversationID, in.Project, in.Message)
 		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "conversation_id": out.ConversationID})
+			writeJSON(w, http.StatusBadRequest, errBody(err))
 			return
 		}
-		writeJSON(w, http.StatusOK, out)
+		writeJSON(w, http.StatusOK, answer)
 	})
 	mux.HandleFunc("GET /api/v1/assistant/status", func(w http.ResponseWriter, r *http.Request) {
 		project := r.URL.Query().Get("project")

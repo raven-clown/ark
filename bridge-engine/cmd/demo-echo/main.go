@@ -47,7 +47,8 @@ func main() {
 			"processed_by":   "demo-echo",
 			"processed_at":   time.Now().UTC().Format(time.RFC3339),
 		})
-		_, _ = w.Write(out)
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		_, _ = w.Write(out) // nosemgrep: go.lang.security.audit.xss.no-direct-write-to-responsewriter.no-direct-write-to-responsewriter -- JSON from json.Marshal, served as application/json
 	})
 	log.Printf("demo-echo listening on %s", addr) // #nosec G706 -- addr is the operator-set DEMO_ECHO_ADDR
 	srv := &http.Server{Addr: addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}

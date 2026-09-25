@@ -326,7 +326,8 @@ func (c *Console) tail(w http.ResponseWriter, r *http.Request, p config.Pipeline
 	w.Header().Set("X-Accel-Buffering", "no")
 	w.WriteHeader(http.StatusOK)
 	local := len(c.d.Registry.PipelineRunners(p.Name))
-	fmt.Fprintf(w, "event: hello\ndata: {\"pipeline\":%q,\"local_workers\":%d}\n\n", p.Name, local)
+	// The stream is text/event-stream carrying JSON, never HTML.
+	fmt.Fprintf(w, "event: hello\ndata: {\"pipeline\":%q,\"local_workers\":%d}\n\n", p.Name, local) // nosemgrep: go.lang.security.audit.xss.no-fprintf-to-responsewriter.no-fprintf-to-responsewriter
 	flusher.Flush()
 
 	ping := time.NewTicker(15 * time.Second)
@@ -340,7 +341,7 @@ func (c *Console) tail(w http.ResponseWriter, r *http.Request, p config.Pipeline
 		case <-ping.C:
 			dropped := sub.Dropped() - lastDropped
 			lastDropped = sub.Dropped()
-			fmt.Fprintf(w, "event: ping\ndata: {\"skipped\":%d,\"dropped\":%d}\n\n", skipped, dropped)
+			fmt.Fprintf(w, "event: ping\ndata: {\"skipped\":%d,\"dropped\":%d}\n\n", skipped, dropped) // nosemgrep: go.lang.security.audit.xss.no-fprintf-to-responsewriter.no-fprintf-to-responsewriter
 			skipped = 0
 			flusher.Flush()
 		case rec := <-sub.C:
@@ -357,7 +358,7 @@ func (c *Console) tail(w http.ResponseWriter, r *http.Request, p config.Pipeline
 			sent++
 			rec.Time = c.d.localize(rec.Time)
 			b, _ := json.Marshal(rec)
-			fmt.Fprintf(w, "event: record\ndata: %s\n\n", b)
+			fmt.Fprintf(w, "event: record\ndata: %s\n\n", b) // nosemgrep: go.lang.security.audit.xss.no-fprintf-to-responsewriter.no-fprintf-to-responsewriter
 			flusher.Flush()
 		}
 	}
