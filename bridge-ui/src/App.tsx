@@ -10,6 +10,7 @@ import { MetricsView } from './components/Metrics'
 import { ProjectsView } from './components/ProjectsView'
 import { AssistantPanel } from './components/Assistant'
 import { PipelinePanel } from './components/PipelinePanel'
+import { Designer } from './components/Designer'
 import { ClusterView, EventsView, NewPipelineModal, SettingsView, TopicsView } from './components/Views'
 import { detectLang, LangContext, translate, type Key, type Lang } from './i18n'
 
@@ -40,7 +41,7 @@ export function App() {
   const [view, setView] = useState<View>('pipelines')
   const [overview, setOverview] = useState<Overview | null>(null)
   const [selected, setSelected] = useState<{ name: string; tab?: string; focus?: TailFocus } | null>(null)
-  const [creating, setCreating] = useState(false)
+  const [creating, setCreating] = useState<'' | 'designer' | 'simple'>('')
   const [refreshKey, setRefreshKey] = useState(0)
   const [search, setSearch] = useState('')
   const [chatOpen, setChatOpen] = useState(false)
@@ -251,7 +252,7 @@ export function App() {
                 selected={selected?.name}
                 refreshKey={refreshKey}
                 onSelect={(name, tab, focus) => setSelected({ name, tab, focus })}
-                onNew={() => setCreating(true)}
+                onNew={() => setCreating('designer')}
               />
               {selected && (
                 <PipelinePanel
@@ -290,9 +291,20 @@ export function App() {
           {chatOpen && <AssistantPanel onClose={() => setChatOpen(false)} />}
         </main>
       </div>
-      {creating && (
+      {creating === 'designer' && (
+        <Designer
+          onClose={() => setCreating('')}
+          onSimple={() => setCreating('simple')}
+          onApplied={() => {
+            setRefreshKey((k) => k + 1)
+            loadOverview()
+          }}
+        />
+      )}
+      {creating === 'simple' && (
         <NewPipelineModal
-          onClose={() => setCreating(false)}
+          onClose={() => setCreating('')}
+          onDesigner={() => setCreating('designer')}
           onApplied={() => {
             setRefreshKey((k) => k + 1)
             loadOverview()

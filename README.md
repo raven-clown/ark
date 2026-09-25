@@ -139,6 +139,9 @@ the side.
   message (in, each callback attempt, where it went and why), dead letters
   and rejects with retry and discard, the config, and pause, restart,
   scale and delete.
+- **Pipeline designer.** Drag blocks onto a board (source, data check,
+  rules before and after the call, your app, result, reject, dead letter),
+  set each one up, and review the generated config before it is applied.
 - **Visual rule builder.** Pick a field from real messages, an operator and
   a value, and see how many recent messages would match before you save.
 - **Metrics.** Throughput, lag and callback latency percentiles over the
@@ -159,6 +162,9 @@ the side.
 <tr>
 <td><img src="docs/img/console-projects.png" alt="Projects with AI access, MCP endpoints and model"></td>
 <td><img src="docs/img/console-assistant.png" alt="Asking ARK a question in Thai"></td>
+</tr>
+<tr>
+<td colspan="2"><img src="docs/img/console-designer.png" alt="The pipeline designer: blocks from source to result with reject and dead letter to the sides"></td>
 </tr>
 </table>
 
@@ -658,9 +664,8 @@ tenant.
 
 ## Roadmap
 
-- **Drag-and-drop pipeline editor:** build a pipeline by dropping blocks
-  on the canvas (today: a guided form, the YAML editor and the rule
-  builder).
+- **Designer for existing pipelines:** open any running pipeline in the
+  block designer, not only new ones.
 - **Longer history:** keep metrics beyond the last hour and per partition.
 - **Batched callbacks:** send several messages per HTTP call for targets
   that support it.

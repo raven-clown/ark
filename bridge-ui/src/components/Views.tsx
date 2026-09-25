@@ -246,7 +246,7 @@ export function SettingsView(props: { lang: Lang; setLang: (l: Lang) => void; mo
   )
 }
 
-export function NewPipelineModal({ onClose, onApplied }: { onClose: () => void; onApplied: () => void }) {
+export function NewPipelineModal({ onClose, onApplied, onDesigner }: { onClose: () => void; onApplied: () => void; onDesigner: () => void }) {
   const t = useT()
   const [f, setF] = useState({ name: '', source: '', target: '', destination: '', dlq: '', reject: '', group: '' })
   const [yaml, setYaml] = useState<string | null>(null)
@@ -308,6 +308,9 @@ export function NewPipelineModal({ onClose, onApplied }: { onClose: () => void; 
               </div>
             </div>
             <div className="row" style={{ justifyContent: 'flex-end' }}>
+              <button className="btn ghost" style={{ marginRight: 'auto' }} onClick={onDesigner}>
+                {t('dz.designer')}
+              </button>
               <button className="btn ghost" onClick={onClose}>
                 {t('cfg.cancel')}
               </button>

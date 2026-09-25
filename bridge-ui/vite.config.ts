@@ -9,5 +9,5 @@ export default defineConfig({
       '/api': { target: process.env.ARK_ENGINE_URL ?? 'http://127.0.0.1:8080', changeOrigin: true },
     },
   },
-  build: { outDir: 'dist', chunkSizeWarningLimit: 900 },
+  build: { outDir: 'dist', chunkSizeWarningLimit: 1200, assetsInlineLimit: 0 },
 })

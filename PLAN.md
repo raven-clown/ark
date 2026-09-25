@@ -1128,9 +1128,11 @@ show data moving, never as decoration.
 - [x] Canvas with animated flows, rule builder, live tail, operate,
       cluster, history (metrics) and assistant views as above; projects
       and engine settings pages.
-- [ ] Drag-and-drop block editor on the canvas. Today pipelines are
-      created with a guided form and edited as YAML or through the rule
-      builder, all with preview and confirm.
+- [x] Drag-and-drop pipeline designer: drop source, data check, rules,
+      target and output blocks on a board, set each one up, and review
+      the generated YAML through preview and confirm. A guided form stays
+      as the quick path. Existing pipelines are still edited as YAML or
+      through the rule builder.
 - **Exit criteria:** an operator can create, change, watch, debug and
   control every pipeline from the console alone, and the flow animation
   and live tail reflect real traffic, verified against docker-compose
