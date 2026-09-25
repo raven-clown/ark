@@ -22,6 +22,7 @@ import { api, type Health, type PipelineStats, type Topology, type TopologyEdge 
 import { useT } from '../i18n'
 import { layout } from './layout'
 import { Icon, Sparkline } from './Icon'
+import { useProjects } from './ProjectsView'
 import { CountUp } from './fx'
 import { Mark } from './Logo'
 
@@ -200,6 +201,8 @@ export function Canvas({ search, health, motion, selected, onSelect, onNew, refr
   const shape = useRef('')
   const flow = useRef<ReactFlowInstance | null>(null)
   const [showMap, setShowMap] = useState(true)
+  const [projectFilter, setProjectFilter] = useState('')
+  const projects = useProjects(15000)
 
   const load = useCallback(async () => {
     try {
@@ -247,13 +250,17 @@ export function Canvas({ search, health, motion, selected, onSelect, onNew, refr
     const roleOf = new Map<string, string>()
     for (const e of topo.edges ?? []) if (e.role === 'reject' || e.role === 'dead_letter') roleOf.set(e.to, e.role)
     const q = search.trim().toLowerCase()
-    const dimmed = (label: string) => q !== '' && !label.toLowerCase().includes(q)
+    const inProject = new Set(projects.data?.projects.find((p) => p.name === projectFilter)?.pipelines ?? [])
+    const touches = (id: string) =>
+      (topo.edges ?? []).some((e) => (e.from === id && inProject.has(e.to.replace(/^pipeline:/, ''))) || (e.to === id && inProject.has(e.from.replace(/^pipeline:/, ''))))
+    const outside = (id: string, label: string, kind: string) => projectFilter !== '' && !(kind === 'pipeline' ? inProject.has(label) : touches(id))
+    const dimmedNode = (id: string, label: string, kind: string) => (q !== '' && !label.toLowerCase().includes(q)) || outside(id, label, kind)
     const build = (n: NonNullable<Topology['nodes']>[number]): Node => {
       const base = { id: n.id, position: { x: placed.get(n.id)?.x ?? 0, y: placed.get(n.id)?.y ?? 0 } }
       if (n.kind === 'pipeline')
-        return { ...base, type: 'pipeline', data: { label: n.label, stats: n.stats, health: health[n.label], rates: rates[n.id], spark: spark.current[n.id], selected: selected === n.label, dimmed: dimmed(n.label) } }
-      if (n.kind === 'topic') return { ...base, type: 'topic', data: { label: n.label, role: roleOf.get(n.id), dimmed: dimmed(n.label) } }
-      return { ...base, type: 'target', data: { label: n.label, kind: n.kind, dimmed: dimmed(n.label) } }
+        return { ...base, type: 'pipeline', data: { label: n.label, stats: n.stats, health: health[n.label], rates: rates[n.id], spark: spark.current[n.id], selected: selected === n.label, dimmed: dimmedNode(n.id, n.label, 'pipeline') } }
+      if (n.kind === 'topic') return { ...base, type: 'topic', data: { label: n.label, role: roleOf.get(n.id), dimmed: dimmedNode(n.id, n.label, 'topic') } }
+      return { ...base, type: 'target', data: { label: n.label, kind: n.kind, dimmed: dimmedNode(n.id, n.label, n.kind) } }
     }
     if (sig !== shape.current) {
       shape.current = sig
@@ -287,7 +294,7 @@ export function Canvas({ search, health, motion, selected, onSelect, onNew, refr
         }
       }),
     )
-  }, [topo, placed, rates, health, selected, motion, search, setNodes, setEdges])
+  }, [topo, placed, rates, health, selected, motion, search, projectFilter, projects.data, setNodes, setEdges])
 
   const onEdgeClick = useCallback(
     (_: unknown, edge: Edge) => {
@@ -310,6 +317,16 @@ export function Canvas({ search, health, motion, selected, onSelect, onNew, refr
           <span>{error ? <span className="err">{error}</span> : t('canvas.hint')}</span>
         </div>
         <div className="spacer" />
+        {(projects.data?.projects.length ?? 0) > 0 && (
+          <select className="select" style={{ width: 170, height: 32 }} value={projectFilter} onChange={(e) => setProjectFilter(e.target.value)}>
+            <option value="">{t('canvas.allProjects')}</option>
+            {projects.data?.projects.map((p) => (
+              <option key={p.name} value={p.name}>
+                {p.name}
+              </option>
+            ))}
+          </select>
+        )}
         <div className="tools">
           <button
             className="btn sm"

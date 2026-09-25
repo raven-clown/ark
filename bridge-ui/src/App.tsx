@@ -7,11 +7,13 @@ import { CountUp } from './components/fx'
 import { Mark, Wordmark } from './components/Logo'
 import type { Sample } from './components/Metrics'
 import { MetricsView } from './components/Metrics'
+import { ProjectsView } from './components/ProjectsView'
+import { AssistantPanel } from './components/Assistant'
 import { PipelinePanel } from './components/PipelinePanel'
 import { ClusterView, EventsView, NewPipelineModal, SettingsView, TopicsView } from './components/Views'
 import { detectLang, LangContext, translate, type Key, type Lang } from './i18n'
 
-type View = 'pipelines' | 'metrics' | 'events' | 'cluster' | 'topics' | 'settings'
+type View = 'pipelines' | 'projects' | 'metrics' | 'events' | 'cluster' | 'topics' | 'settings'
 
 
 function readPref(key: string, fallback: string) {
@@ -41,6 +43,7 @@ export function App() {
   const [creating, setCreating] = useState(false)
   const [refreshKey, setRefreshKey] = useState(0)
   const [search, setSearch] = useState('')
+  const [chatOpen, setChatOpen] = useState(false)
   const [node, setNode] = useState<NodeInfo | null>(null)
   const [scope, setScope] = useState('')
   const [io, setIo] = useState({ rate: 0, lag: 0, peak: 0 })
@@ -149,6 +152,7 @@ export function App() {
 
   const nav: { id: View; icon: IconName; count?: number }[] = [
     { id: 'pipelines', icon: 'pipelines', count: names.length },
+    { id: 'projects', icon: 'folder' },
     { id: 'metrics', icon: 'metrics' },
     { id: 'events', icon: 'events' },
     { id: 'topics', icon: 'topics' },
@@ -229,6 +233,10 @@ export function App() {
             <Clock tz={overview?.timezone ?? 'UTC'} />
           </span>
           {scope && <span className="sc hide-md">{scope}</span>}
+          <button className="btn primary sm ask-btn" onClick={() => setChatOpen(!chatOpen)}>
+            <Icon name="spark" className="" />
+            {t('chat.ask')}
+          </button>
           <span className="avatar" title={scope}>
             {(scope || '?').slice(0, 1).toUpperCase()}
           </span>
@@ -260,6 +268,7 @@ export function App() {
               )}
             </>
           )}
+          {view === 'projects' && <ProjectsView toast={toast} />}
           {view === 'metrics' && <MetricsView pipelines={names} motion={motion} />}
           {view === 'events' && <EventsView pipelines={names} />}
           {view === 'cluster' && <ClusterView />}
@@ -277,6 +286,7 @@ export function App() {
               }}
             />
           )}
+          {chatOpen && <AssistantPanel onClose={() => setChatOpen(false)} />}
         </main>
       </div>
       {creating && (
