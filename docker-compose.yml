@@ -35,9 +35,6 @@ services:
   bridge:
     build:
       context: ./bridge-engine
-    depends_on:
-      kafka:
-        condition: service_healthy
     ports:
       - "8080:8080"
     environment:
@@ -45,9 +42,35 @@ services:
       # before exposing this anywhere.
       ARK_API_ADMIN_TOKENS: ${ARK_API_ADMIN_TOKENS:-demo-admin-token}
       ARK_MCP_ADMIN_TOKENS: ${ARK_MCP_ADMIN_TOKENS:-demo-mcp-token}
+    # The config file is copied into the ark-config volume on first start,
+    # so changes made in the console or through MCP are kept. To start over
+    # from ARK_CONFIG, remove the volume: docker compose down -v
+    entrypoint: ["sh", "-c", "test -f /var/lib/ark/config.yaml || cp /etc/bridge/seed.yaml /var/lib/ark/config.yaml; exec bridge -config /var/lib/ark/config.yaml"]
     volumes:
-      - ${ARK_CONFIG:-./bridge-engine/config.demo.yaml}:/etc/bridge/config.yaml:ro
+      - ${ARK_CONFIG:-./bridge-engine/config.demo.yaml}:/etc/bridge/seed.yaml:ro
+      - ark-config:/var/lib/ark
+    depends_on:
+      kafka:
+        condition: service_healthy
+      ark-config-init:
+        condition: service_completed_successfully
     restart: on-failure:5
+
+  ark-config-init:
+    image: busybox
+    command: ["chown", "-R", "10001:10001", "/var/lib/ark"]
+    volumes:
+      - ark-config:/var/lib/ark
+
+  console:
+    build:
+      context: ./bridge-ui
+    depends_on:
+      - bridge
+    ports:
+      - "8088:8088"
+    environment:
+      ARK_ENGINE_URL: http://bridge:8080
 
   demo-echo:
     build:
@@ -57,3 +80,4 @@ services:
 
 volumes:
   kafka-data:
+  ark-config:

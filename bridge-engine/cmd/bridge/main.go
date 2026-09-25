@@ -241,7 +241,9 @@ func main() {
 	}
 	consoleDeps := deps
 	consoleDeps.Audit = logger.With("component", "console-audit")
-	consoleRoutes := mcpserver.NewConsole(consoleDeps).Handler()
+	console := mcpserver.NewConsole(consoleDeps)
+	go console.RunHistory(ctx)
+	consoleRoutes := console.Handler()
 	rootMux.Handle("/", withConsole(consoleRoutes, api.Guard(apiTokens, consoleRoutes),
 		api.NewServer(registry, reload, clusterNode, apiTokens)))
 	for intent, words := range cfg.Assistant.Lexicon {

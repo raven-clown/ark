@@ -22,8 +22,9 @@ import (
 // assistant uses, plus topology, live tail, restart and scale. Access is
 // decided by the REST API tokens (see api.Guard), not by mcp_access.
 type Console struct {
-	d  Deps
-	cf *confirmations
+	d    Deps
+	cf   *confirmations
+	hist *history
 	// Tap is where live tail records come from; nil means tap.Default.
 	Tap *tap.Hub
 }
@@ -36,7 +37,7 @@ type Restarter interface {
 
 func NewConsole(d Deps) *Console {
 	d.AllPipelines = true
-	return &Console{d: d, cf: newConfirmations()}
+	return &Console{d: d, cf: newConfirmations(), hist: &history{data: map[string][]Sample{}, last: map[string]PipelineStats{}}}
 }
 
 // Handler returns the console routes. Mount it behind api.Guard.
@@ -147,6 +148,8 @@ func (c *Console) Handler() *http.ServeMux {
 		events.Record(p.Name, events.ConfigApplied, fmt.Sprintf("workers changed from %d to %d through the console", from, in.Workers), nil)
 		writeJSON(w, http.StatusOK, map[string]any{"pipeline": p.Name, "workers": in.Workers, "applies_to": d.Config.Mode()})
 	}))
+
+	mux.HandleFunc("GET /api/v1/history", c.historyRoute)
 
 	mux.HandleFunc("GET /api/v1/topics", func(w http.ResponseWriter, r *http.Request) {
 		topics, err := listTopics(r.Context(), d)
