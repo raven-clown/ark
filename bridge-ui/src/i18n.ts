@@ -10,6 +10,7 @@ export const LANGS: { id: Lang; label: string }[] = [
 ]
 
 const en = {
+  'metrics.rolling': '15s rolling average',
   'top.alert': 'alert',
   'top.node': 'node',
   'nav.workspaces': 'Workspaces',
@@ -171,6 +172,7 @@ export type Key = keyof typeof en
 type Dict = Partial<Record<Key, string>>
 
 const th: Dict = {
+  'metrics.rolling': 'ค่าเฉลี่ยเคลื่อนที่ 15 วินาที',
   'top.alert': 'แจ้งเตือน',
   'top.node': 'เครื่อง',
   'nav.workspaces': 'พื้นที่ทำงาน',
@@ -329,6 +331,7 @@ const th: Dict = {
 }
 
 const zhHans: Dict = {
+  'metrics.rolling': '15 秒滑动平均',
   'top.alert': '告警',
   'top.node': '节点',
   'nav.workspaces': '工作区',
@@ -485,6 +488,7 @@ const zhHans: Dict = {
 }
 
 const zhHant: Dict = {
+  'metrics.rolling': '15 秒移動平均',
   'top.alert': '警示',
   'top.node': '節點',
   'nav.workspaces': '工作區',

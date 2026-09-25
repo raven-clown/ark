@@ -84,7 +84,7 @@ export function layout(topo: Topology): Map<string, Placed> {
     outs(p.id)
       .filter((e) => e.role === 'call')
       .forEach((e, i) => {
-        if (!placed.has(e.to)) placed.set(e.to, { id: e.to, x: at.x + i * 30, y: at.y - 76 - i * 44 })
+        if (!placed.has(e.to)) placed.set(e.to, { id: e.to, x: at.x + 16, y: at.y - 64 - i * 40 })
       })
     outs(p.id)
       .filter((e) => e.role === 'webhook')

@@ -20,11 +20,11 @@ export const SERIES = {
   p99: { color: '#A6E9CE', dash: 'dotted' as const },
 }
 
-const SURFACE = '#101318'
-const INK = '#E8EDF2'
-const INK_2 = '#8B96A3'
-const INK_3 = '#5E6873'
-const GRID = '#1C2229'
+const SURFACE = '#121417'
+const INK = '#E4E7EB'
+const INK_2 = '#9AA1AA'
+const INK_3 = '#6B727B'
+const GRID = 'rgba(255, 255, 255, 0.05)'
 
 export interface Series {
   name: string
@@ -78,13 +78,13 @@ export function TimeChart({ series, unit, height = 220, motion = true }: { serie
           : { show: false },
         tooltip: {
           trigger: 'axis',
-          backgroundColor: 'rgba(21, 26, 32, 0.96)',
-          borderColor: '#2A323C',
-          borderWidth: 1,
+          backgroundColor: '#1F2328',
+          borderColor: 'transparent',
+          borderWidth: 0,
           borderRadius: 10,
           padding: [8, 12],
           textStyle: { color: INK, fontSize: 12 },
-          axisPointer: { type: 'line', lineStyle: { color: '#3A444F', width: 1 } },
+          axisPointer: { type: 'line', lineStyle: { color: 'rgba(255, 255, 255, 0.14)', width: 1 } },
           valueFormatter: (v: unknown) => `${compact(Number(v))} ${unit}`,
         },
         xAxis: {
@@ -105,6 +105,7 @@ export function TimeChart({ series, unit, height = 220, motion = true }: { serie
         series: series.map((s) => {
           const spec = SERIES[s.kind]
           return {
+            id: s.kind + ':' + s.name,
             name: s.name,
             type: 'line',
             smooth: 0.35,
@@ -125,7 +126,7 @@ export function TimeChart({ series, unit, height = 220, motion = true }: { serie
           }
         }),
       },
-      { replaceMerge: ['series'] },
+      { lazyUpdate: true },
     )
   }, [series, unit, motion])
 

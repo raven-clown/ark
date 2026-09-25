@@ -31,20 +31,3 @@ export function CountUp({ value, decimals = 0, duration = 700 }: { value: number
   }, [value, duration])
   return <>{shown.toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals })}</>
 }
-
-// useSpotlight tracks the pointer over any element with the .spot class
-// and exposes its position as --mx / --my for a radial highlight.
-export function useSpotlight() {
-  useEffect(() => {
-    if (reduced()) return
-    const onMove = (e: PointerEvent) => {
-      const el = (e.target as HTMLElement | null)?.closest<HTMLElement>('.spot')
-      if (!el) return
-      const r = el.getBoundingClientRect()
-      el.style.setProperty('--mx', `${e.clientX - r.left}px`)
-      el.style.setProperty('--my', `${e.clientY - r.top}px`)
-    }
-    window.addEventListener('pointermove', onMove, { passive: true })
-    return () => window.removeEventListener('pointermove', onMove)
-  }, [])
-}

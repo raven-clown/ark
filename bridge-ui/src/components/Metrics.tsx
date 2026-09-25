@@ -28,6 +28,26 @@ interface HistoryOut {
   pipelines: Record<string, Sample[]>
 }
 
+// rolling averages each point with the ones before it (3 samples = 15s),
+// so bursty traffic reads as a trend. Charts that use it say so.
+export function rolling(samples: Sample[], window = 3): Sample[] {
+  return samples.map((s, i) => {
+    const w = samples.slice(Math.max(0, i - window + 1), i + 1)
+    const mean = (f: (x: Sample) => number) => w.reduce((a, x) => a + f(x), 0) / w.length
+    const calls = w.filter((x) => x.p50_ms > 0)
+    const meanCalls = (f: (x: Sample) => number) => (calls.length ? calls.reduce((a, x) => a + f(x), 0) / calls.length : 0)
+    return {
+      ...s,
+      processed_per_sec: mean((x) => x.processed_per_sec),
+      rejected_per_sec: mean((x) => x.rejected_per_sec),
+      dead_lettered_per_sec: mean((x) => x.dead_lettered_per_sec),
+      p50_ms: meanCalls((x) => x.p50_ms),
+      p95_ms: meanCalls((x) => x.p95_ms),
+      p99_ms: meanCalls((x) => x.p99_ms),
+    }
+  })
+}
+
 export function useHistory(pipeline: string, minutes: number) {
   const [data, setData] = useState<HistoryOut | null>(null)
   const [error, setError] = useState('')
@@ -50,7 +70,7 @@ export function useHistory(pipeline: string, minutes: number) {
 }
 
 export function RateChart({ samples }: { samples: Sample[] }) {
-  const series = useMemo<Series[]>(() => [{ name: 'msg/s', kind: 'single', points: samples.map((s) => [s.time, s.processed_per_sec + s.rejected_per_sec + s.dead_lettered_per_sec]) }], [samples])
+  const series = useMemo<Series[]>(() => [{ name: 'msg/s', kind: 'single', points: rolling(samples).map((s) => [s.time, s.processed_per_sec + s.rejected_per_sec + s.dead_lettered_per_sec]) }], [samples])
   return <TimeChart series={series} unit="msg/s" height={150} />
 }
 
@@ -124,7 +144,9 @@ export function MetricsView({ pipelines, motion }: { pipelines: string[]; motion
   const peak = Math.max(0, ...samples.map(total))
   const errNow = avg(recent, (s) => s.rejected_per_sec + s.dead_lettered_per_sec)
   const errRate = avg(recent, total) > 0 ? (errNow / avg(recent, total)) * 100 : 0
+  const smooth = useMemo(() => rolling(samples), [samples])
   const withCalls = samples.filter((s) => s.p50_ms > 0)
+  const smoothCalls = smooth.filter((s) => s.p50_ms > 0)
   const lat = withCalls[withCalls.length - 1]
   const lagNow = samples[samples.length - 1]?.lag ?? 0
   const lagPeak = Math.max(0, ...samples.map((s) => s.lag))
@@ -132,11 +154,11 @@ export function MetricsView({ pipelines, motion }: { pipelines: string[]; motion
   const lag = useMemo<Series[]>(() => [{ name: t('stat.lag'), kind: 'single', points: samples.map((s) => [s.time, s.lag]) }], [samples, t])
   const pct = useMemo<Series[]>(
     () => [
-      { name: 'p50', kind: 'p50', points: withCalls.map((s) => [s.time, s.p50_ms]) },
-      { name: 'p95', kind: 'p95', points: withCalls.map((s) => [s.time, s.p95_ms]) },
-      { name: 'p99', kind: 'p99', points: withCalls.map((s) => [s.time, s.p99_ms]) },
+      { name: 'p50', kind: 'p50', points: smoothCalls.map((s) => [s.time, s.p50_ms]) },
+      { name: 'p95', kind: 'p95', points: smoothCalls.map((s) => [s.time, s.p95_ms]) },
+      { name: 'p99', kind: 'p99', points: smoothCalls.map((s) => [s.time, s.p99_ms]) },
     ],
-    [withCalls],
+    [smoothCalls],
   )
 
   return (
@@ -144,13 +166,12 @@ export function MetricsView({ pipelines, motion }: { pipelines: string[]; motion
       <div className="page-head">
         <div>
           <div className="eyebrow">
-            <span className="tagbox">{t('metrics.stream').toUpperCase()}</span>
             <span className="live">
               <i />
               {t('metrics.sync')}
             </span>
           </div>
-          <h1 className="title-grad">{t('nav.metrics')}</h1>
+          <h1>{t('nav.metrics')}</h1>
           <p className="lead">{t('metrics.lead')}</p>
         </div>
         <div className="row">
@@ -175,7 +196,7 @@ export function MetricsView({ pipelines, motion }: { pipelines: string[]; motion
       </div>
       {error && <p className="err">{error}</p>}
       <div className="tiles rise-in">
-        <div className="tile spot">
+        <div className="tile">
           <div className="th">
             <span className="micro">{t('metrics.throughputNow')}</span>
             <Delta now={rateNow} before={avg(before, total)} />
@@ -186,12 +207,12 @@ export function MetricsView({ pipelines, motion }: { pipelines: string[]; motion
           </b>
           <div className="row between">
             <Sparkline values={samples.slice(-30).map(total)} width={120} height={26} />
-            <span className="small dim mono">
+            <span className="small dim">
               {t('metrics.peak')}: {peak.toFixed(1)}
             </span>
           </div>
         </div>
-        <div className="tile spot">
+        <div className="tile">
           <div className="th">
             <span className="micro">{t('kpi.lag')}</span>
             <span className={`badge-mono ${lagNow === 0 ? 'delta up' : 'warn'}`}>{lagNow === 0 ? t('kpi.nominal') : t('kpi.backlog')}</span>
@@ -203,11 +224,11 @@ export function MetricsView({ pipelines, motion }: { pipelines: string[]; motion
           <div className="progress">
             <i style={{ width: `${lagPeak > 0 ? (lagNow / lagPeak) * 100 : 0}%` }} />
           </div>
-          <span className="small dim mono">
+          <span className="small dim">
             {t('metrics.peak')}: {lagPeak}
           </span>
         </div>
-        <div className="tile spot">
+        <div className="tile">
           <div className="th">
             <span className="micro">{t('metrics.latency')} p50</span>
           </div>
@@ -215,9 +236,9 @@ export function MetricsView({ pipelines, motion }: { pipelines: string[]; motion
             {lat ? lat.p50_ms.toFixed(1) : '0.0'}
             <small>ms</small>
           </b>
-          <span className="small dim mono">{lat ? `p95 ${lat.p95_ms.toFixed(1)} · p99 ${lat.p99_ms.toFixed(1)}` : '·'}</span>
+          <span className="small dim">{lat ? `p95 ${lat.p95_ms.toFixed(1)} · p99 ${lat.p99_ms.toFixed(1)}` : '·'}</span>
         </div>
-        <div className="tile spot">
+        <div className="tile">
           <div className="th">
             <span className="micro">{t('metrics.errorRate')}</span>
             {errRate === 0 && <span className="badge-mono delta up">{t('metrics.clean')}</span>}
@@ -226,23 +247,27 @@ export function MetricsView({ pipelines, motion }: { pipelines: string[]; motion
             <CountUp value={errRate} decimals={1} />
             <small>%</small>
           </b>
-          <span className="small dim mono">{errNow.toFixed(2)} msg/s</span>
+          <span className="small dim">{errNow.toFixed(2)} msg/s</span>
         </div>
       </div>
       {samples.length < 2 ? (
         <div className="empty card">{t('metrics.noData')}</div>
       ) : (
         <div className="charts">
-          <section className="card chart-card wide spot">
-            <h3>{t('metrics.throughput')}</h3>
-            <ThroughputChart samples={samples} height={280} motion={motion} />
+          <section className="card chart-card wide">
+            <h3>
+              {t('metrics.throughput')} <span className="dim small">· {t('metrics.rolling')}</span>
+            </h3>
+            <ThroughputChart samples={smooth} height={280} motion={motion} />
           </section>
           <section className="card chart-card">
             <h3>{t('metrics.lagTitle')}</h3>
             <TimeChart series={lag} unit={t('metrics.messages')} motion={motion} />
           </section>
           <section className="card chart-card">
-            <h3>{t('metrics.pctTitle')}</h3>
+            <h3>
+              {t('metrics.pctTitle')} <span className="dim small">· {t('metrics.rolling')}</span>
+            </h3>
             {withCalls.length > 1 ? <TimeChart series={pct} unit="ms" motion={motion} /> : <div className="empty small">{t('metrics.noData')}</div>}
           </section>
         </div>
@@ -257,7 +282,7 @@ export function MetricsView({ pipelines, motion }: { pipelines: string[]; motion
               <b>
                 {t('metrics.instance')}: {node.node_id ?? 'ark'}
               </b>
-              <div className="small dim mono">
+              <div className="small dim">
                 {node.version} · {node.go_version}
                 {node.cluster ? ` · ${node.cluster}` : ''}
               </div>

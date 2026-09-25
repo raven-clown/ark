@@ -170,7 +170,7 @@ function HealthTab({ name, onOpen, toast }: { name: string; onOpen: (tab: Tab) =
       </div>
 
       <div className="kpis rise-in">
-        <div className="kpi spot">
+        <div className="kpi">
           <span className="micro">{t('kpi.throughput')}</span>
           <b>
             <CountUp value={rateNow} decimals={1} />
@@ -180,7 +180,7 @@ function HealthTab({ name, onOpen, toast }: { name: string; onOpen: (tab: Tab) =
             {change === null ? '·' : <span className={`delta ${change >= 0 ? 'up' : 'down'}`}>{change >= 0 ? '▲' : '▼'} {Math.abs(change).toFixed(1)}%</span>} {t('kpi.vs1h')}
           </span>
         </div>
-        <div className="kpi spot">
+        <div className="kpi">
           <span className="micro">{t('kpi.lag')}</span>
           <b className={data.numbers.lag > 0 ? 'warn' : ''}>
             <CountUp value={data.numbers.lag} />
@@ -188,7 +188,7 @@ function HealthTab({ name, onOpen, toast }: { name: string; onOpen: (tab: Tab) =
           </b>
           <span className="sub">{data.numbers.lag > 0 ? t('kpi.backlog') : t('kpi.nominal')}</span>
         </div>
-        <div className="kpi spot">
+        <div className="kpi">
           <span className="micro">{t('kpi.p99')}</span>
           <b>
             {lastLat ? lastLat.p99_ms.toFixed(1) : data.numbers.avg_callback_ms.toFixed(1)}
@@ -196,7 +196,7 @@ function HealthTab({ name, onOpen, toast }: { name: string; onOpen: (tab: Tab) =
           </b>
           <span className="sub">{lastLat ? `p50 ${lastLat.p50_ms.toFixed(1)} · p95 ${lastLat.p95_ms.toFixed(1)}` : 'avg'}</span>
         </div>
-        <div className="kpi spot">
+        <div className="kpi">
           <span className="micro">{t('kpi.workers')}</span>
           <b>
             {running} / {ws.length}
@@ -493,7 +493,7 @@ function ActionsTab({ name, onChanged, onDeleted, toast }: { name: string; onCha
   }
   const p = `/pipelines/${encodeURIComponent(name)}`
   const Row = ({ icon, title, hint, danger, children }: { icon: IconName; title: string; hint: string; danger?: boolean; children: React.ReactNode }) => (
-    <div className={`action spot ${danger ? 'danger' : ''}`}>
+    <div className={`action ${danger ? 'danger' : ''}`}>
       <div className="ico">
         <Icon name={icon} className="" />
       </div>

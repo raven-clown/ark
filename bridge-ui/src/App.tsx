@@ -3,7 +3,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { api, ApiError, getToken, setToken, type Health, type Overview } from './api'
 import { Canvas, type TailFocus } from './components/Canvas'
 import { Icon, type IconName } from './components/Icon'
-import { CountUp, useSpotlight } from './components/fx'
+import { CountUp } from './components/fx'
 import { Mark, Wordmark } from './components/Logo'
 import type { Sample } from './components/Metrics'
 import { MetricsView } from './components/Metrics'
@@ -46,7 +46,6 @@ export function App() {
   const [io, setIo] = useState({ rate: 0, lag: 0, peak: 0 })
   const [toastMsg, setToastMsg] = useState<{ text: string; error?: boolean } | null>(null)
   const t = (k: Key) => translate(lang, k)
-  useSpotlight()
 
   const setLang = (l: Lang) => {
     setLangState(l)
@@ -98,10 +97,10 @@ export function App() {
         let peak = 0
         const totals: Record<string, number> = {}
         for (const series of Object.values(h.pipelines)) {
-          const last = series[series.length - 1]
-          if (last) {
-            rate += last.processed_per_sec + last.rejected_per_sec + last.dead_lettered_per_sec
-            lag += last.lag
+          const recent = series.slice(-3)
+          if (recent.length) {
+            rate += recent.reduce((a, x) => a + x.processed_per_sec + x.rejected_per_sec + x.dead_lettered_per_sec, 0) / recent.length
+            lag += recent[recent.length - 1].lag
           }
           for (const s of series) totals[s.time] = (totals[s.time] ?? 0) + s.processed_per_sec + s.rejected_per_sec + s.dead_lettered_per_sec
         }
