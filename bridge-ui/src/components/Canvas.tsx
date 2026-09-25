@@ -54,7 +54,7 @@ type FlowData = { role: TopologyEdge['role']; rate: number; alert?: 'amber' | 'c
 
 const roleColor: Record<string, string> = {
   consume: '#34D399',
-  call: '#6B727B',
+  call: '#7C848D',
   destination: '#34D399',
   override: '#34D399',
   webhook: '#34D399',
@@ -149,10 +149,9 @@ function FlowEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targ
         id={id}
         path={path}
         style={{
-          stroke: active || d.alert ? color : '#2A2F35',
-          strokeOpacity: active ? 0.4 : d.alert ? 0.7 : 1,
-          strokeWidth: 1.5,
-          strokeDasharray: d.role === 'call' || d.role === 'webhook' ? '4 5' : undefined,
+          stroke: active || d.alert ? color : '#3A4047',
+          strokeOpacity: active ? 0.55 : d.alert ? 0.8 : 1,
+          strokeWidth: 1.6,
         }}
       />
       {Array.from({ length: dots }, (_, i) => (
@@ -195,6 +194,7 @@ export function Canvas({ search, health, motion, selected, onSelect, onNew, refr
   const [rates, setRates] = useState<Record<string, Rates>>({})
   const prev = useRef<Record<string, { at: number; s: PipelineStats }>>({})
   const spark = useRef<Record<string, number[]>>({})
+  const recentRates = useRef<Record<string, Rates[]>>({})
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([])
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([])
   const shape = useRef('')
@@ -215,8 +215,13 @@ export function Canvas({ search, health, motion, selected, onSelect, onNew, refr
           const out = d(n.stats.processed, p.s.processed)
           const reject = d(n.stats.rejected, p.s.rejected)
           const dlq = d(n.stats.dead_lettered, p.s.dead_lettered)
-          r[n.id] = { in: out + reject + dlq, out, reject, dlq }
-          spark.current[n.id] = [...(spark.current[n.id] ?? []), out + reject + dlq].slice(-24)
+          // Average the last three polls (about 6s) so a pause between
+          // bursts doesn't make the lines flicker off and on.
+          const h = [...(recentRates.current[n.id] ?? []), { in: out + reject + dlq, out, reject, dlq }].slice(-3)
+          recentRates.current[n.id] = h
+          const avg = (k: keyof Rates) => h.reduce((a, x) => a + x[k], 0) / h.length
+          r[n.id] = { in: avg('in'), out: avg('out'), reject: avg('reject'), dlq: avg('dlq') }
+          spark.current[n.id] = [...(spark.current[n.id] ?? []), r[n.id].in].slice(-24)
         }
         prev.current[n.id] = { at: now, s: n.stats }
       }
