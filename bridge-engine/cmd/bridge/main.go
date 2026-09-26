@@ -116,6 +116,15 @@ func localStats(mgr *orchestrator.Manager) map[string]cluster.PipelineStats {
 	for _, r := range mgr.Runners() {
 		st := r.Status()
 		agg := out[st.Pipeline]
+		if calls := agg.CallbackCalls + st.CallbackCalls; calls > 0 {
+			agg.AvgCallbackMs = (agg.AvgCallbackMs*float64(agg.CallbackCalls) + st.AvgCallbackMs*float64(st.CallbackCalls)) / float64(calls)
+		}
+		agg.CallbackCalls += st.CallbackCalls
+		agg.Lag += st.Lag
+		agg.BreakerOpen = agg.BreakerOpen || (st.BreakerState != "" && st.BreakerState != "closed")
+		if st.Running {
+			agg.Running++
+		}
 		agg.Workers++
 		agg.Processed += st.Processed
 		agg.Rejected += st.Rejected

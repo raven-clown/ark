@@ -15,12 +15,17 @@ import (
 // PipelineStats is one node's view of one pipeline, carried in its
 // heartbeat so any node can answer for the whole cluster.
 type PipelineStats struct {
-	Workers      int   `json:"workers"`
-	Processed    int64 `json:"processed"`
-	Rejected     int64 `json:"rejected"`
-	DeadLettered int64 `json:"dead_lettered"`
-	Failed       int64 `json:"failed"`
-	Paused       bool  `json:"paused"`
+	Workers       int     `json:"workers"`
+	Running       int     `json:"running"`
+	Processed     int64   `json:"processed"`
+	Rejected      int64   `json:"rejected"`
+	DeadLettered  int64   `json:"dead_lettered"`
+	Failed        int64   `json:"failed"`
+	Paused        bool    `json:"paused"`
+	Lag           int64   `json:"lag"`
+	CallbackCalls int64   `json:"callback_calls"`
+	AvgCallbackMs float64 `json:"avg_callback_ms"`
+	BreakerOpen   bool    `json:"breaker_open,omitempty"`
 }
 
 type heartbeatRecord struct {

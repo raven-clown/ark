@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/raven-clown/ark/bridge-engine/internal/authz"
+	"github.com/raven-clown/ark/bridge-engine/internal/cluster"
 	"github.com/raven-clown/ark/bridge-engine/internal/config"
 	"github.com/raven-clown/ark/bridge-engine/internal/consumer"
 	"github.com/raven-clown/ark/bridge-engine/internal/events"
@@ -429,6 +430,19 @@ func pipelineStats(p config.Pipeline, statuses []consumer.Status) *PipelineStats
 	return s
 }
 
+// clusterWide replaces this node's numbers with the whole cluster's, so the
+// canvas shows every node's work and not only the node the console reached.
+func clusterWide(s *PipelineStats, total cluster.PipelineStats) *PipelineStats {
+	s.LocalWorkers, s.Running = total.Workers, total.Running
+	s.Processed, s.Rejected, s.DeadLettered, s.Failed = total.Processed, total.Rejected, total.DeadLettered, total.Failed
+	s.Lag, s.CallbackCalls, s.AvgCallbackMs = total.Lag, total.CallbackCalls, total.AvgCallbackMs
+	s.Paused = total.Paused
+	if total.BreakerOpen {
+		s.BreakerState = "open"
+	}
+	return s
+}
+
 func topology(d Deps) Topology {
 	var t Topology
 	seen := map[string]bool{}
@@ -448,10 +462,18 @@ func topology(d Deps) Topology {
 	}
 	pipelines := d.visiblePipelines()
 	sort.Slice(pipelines, func(i, j int) bool { return pipelines[i].Name < pipelines[j].Name })
+	var clusterViews map[string]cluster.PipelineView
+	if d.Cluster != nil {
+		clusterViews = d.Cluster.ClusterPipelines()
+	}
 	for _, p := range pipelines {
 		pid := "pipeline:" + p.Name
 		seen[pid] = true
-		t.Nodes = append(t.Nodes, TopologyNode{ID: pid, Kind: "pipeline", Label: p.Name, Stats: pipelineStats(p, pipelineStatuses(d.Registry, p.Name))})
+		stats := pipelineStats(p, pipelineStatuses(d.Registry, p.Name))
+		if d.Cluster != nil {
+			stats = clusterWide(stats, clusterViews[p.Name].Total)
+		}
+		t.Nodes = append(t.Nodes, TopologyNode{ID: pid, Kind: "pipeline", Label: p.Name, Stats: stats})
 		edge(topic(p.SourceTopic), pid, "consume", "")
 		urls := p.Target.URLs
 		if p.Target.URL != "" {

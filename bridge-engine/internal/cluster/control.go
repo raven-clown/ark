@@ -69,6 +69,13 @@ func (n *Node) ClusterPipelines() map[string]PipelineView {
 				v = PipelineView{Nodes: make(map[string]PipelineStats)}
 			}
 			v.Nodes[node] = st
+			if calls := v.Total.CallbackCalls + st.CallbackCalls; calls > 0 {
+				v.Total.AvgCallbackMs = (v.Total.AvgCallbackMs*float64(v.Total.CallbackCalls) + st.AvgCallbackMs*float64(st.CallbackCalls)) / float64(calls)
+			}
+			v.Total.CallbackCalls += st.CallbackCalls
+			v.Total.Running += st.Running
+			v.Total.Lag += st.Lag
+			v.Total.BreakerOpen = v.Total.BreakerOpen || st.BreakerOpen
 			v.Total.Workers += st.Workers
 			v.Total.Processed += st.Processed
 			v.Total.Rejected += st.Rejected

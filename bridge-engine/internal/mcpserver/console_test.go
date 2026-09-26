@@ -13,6 +13,7 @@ import (
 
 	"github.com/raven-clown/ark/bridge-engine/internal/api"
 	"github.com/raven-clown/ark/bridge-engine/internal/authz"
+	"github.com/raven-clown/ark/bridge-engine/internal/cluster"
 	"github.com/raven-clown/ark/bridge-engine/internal/config"
 	"github.com/raven-clown/ark/bridge-engine/internal/tap"
 )
@@ -287,5 +288,16 @@ func TestRulesPreviewKeepsConfigFieldNames(t *testing.T) {
 	code, bad := call(t, srv, "POST", "/api/v1/pipelines/orders/rules/test", "alice", map[string]any{"condition": "data.amount >"})
 	if code != 200 || bad["error"] == nil {
 		t.Fatalf("a broken condition should report an error: %v", bad)
+	}
+}
+
+func TestClusterWideReplacesLocalNumbers(t *testing.T) {
+	local := &PipelineStats{LocalWorkers: 1, Running: 1, Processed: 5, BreakerState: "closed"}
+	got := clusterWide(local, cluster.PipelineStats{Workers: 5, Running: 4, Processed: 90, Rejected: 7, Lag: 12, CallbackCalls: 100, AvgCallbackMs: 2.5, BreakerOpen: true})
+	if got.LocalWorkers != 5 || got.Running != 4 || got.Processed != 90 || got.Rejected != 7 || got.Lag != 12 || got.CallbackCalls != 100 || got.AvgCallbackMs != 2.5 {
+		t.Fatalf("expected the cluster totals, got %+v", got)
+	}
+	if got.BreakerState != "open" {
+		t.Fatalf("expected an open breaker on any node to show as open, got %q", got.BreakerState)
 	}
 }
