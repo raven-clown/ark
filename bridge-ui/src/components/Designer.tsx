@@ -70,7 +70,7 @@ const TYPES: { type: StepType; icon: IconName }[] = [
   { type: 'drop', icon: 'trash' },
 ]
 const iconOf = (t: StepType) => TYPES.find((x) => x.type === t)!.icon
-const TERMINAL: StepType[] = ['reject', 'dead_letter', 'drop']
+const TERMINAL: StepType[] = ['drop']
 
 const obj = (v: unknown): Fields => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Fields) : {})
 const list = (v: unknown): Fields[] => (Array.isArray(v) ? v.map(obj) : [])
@@ -100,6 +100,8 @@ function handlesOf(s: Step): { key: string; label: string }[] {
         { key: 'on_failure', label: 'fz.h.failed' },
       ]
     case 'topic':
+    case 'reject':
+    case 'dead_letter':
       return [{ key: 'next', label: 'fz.h.then' }]
     default:
       return []

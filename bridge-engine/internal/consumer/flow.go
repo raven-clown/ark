@@ -236,10 +236,16 @@ func (r *Runner) runStep(ctx context.Context, id string, partition int, m flowMs
 		return r.runSteps(ctx, s.Next, partition, m, out, log)
 
 	case config.StepReject:
-		return r.flowReject(ctx, s, m, out, log)
+		if err := r.flowReject(ctx, s, m, out, log); err != nil {
+			return err
+		}
+		return r.runSteps(ctx, s.Next, partition, m, out, log)
 
 	case config.StepDeadLetter:
-		return r.flowDeadLetter(ctx, s, m, out, log)
+		if err := r.flowDeadLetter(ctx, s, m, out, log); err != nil {
+			return err
+		}
+		return r.runSteps(ctx, s.Next, partition, m, out, log)
 
 	case config.StepDrop:
 		log.Info("message dropped")

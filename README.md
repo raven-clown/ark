@@ -488,7 +488,9 @@ flow:
 Steps: `call`, `condition`, `data_check`, `topic`, `webhook`, `reject`,
 `dead_letter`, `drop`. Conditions read `data` (the message at that step),
 `original`, `response` (`status` and `body` of the last call), `reason`,
-`key` and `headers`. Call steps take the same `target`, `retry` and
+`key` and `headers`. Every step but `drop` can lead on to more steps,
+reject and dead letter included, so a reject can also go to a webhook or
+another app. Call steps take the same `target`, `retry` and
 `circuit_breaker` options as the fixed path. Loops are refused; to go
 around again, send to a topic a pipeline reads. A message is committed
 once every path it took is done.

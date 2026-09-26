@@ -86,10 +86,17 @@ func TestFlowRejectsUnknownSteps(t *testing.T) {
 }
 
 func TestFlowTerminalStepsCannotContinue(t *testing.T) {
-	p := parseFlowPipeline(t, strings.Replace(flowPipeline, "      type: reject\n", "      type: reject\n      next: [done]\n", 1))
+	p := parseFlowPipeline(t, strings.Replace(flowPipeline, "      type: reject\n", "      type: drop\n      next: [done]\n", 1))
 	err := ValidatePipelines([]Pipeline{p})
 	if err == nil || !strings.Contains(err.Error(), "ends the path") {
 		t.Fatalf("expected a terminal step error, got %v", err)
+	}
+}
+
+func TestFlowRejectCanCarryOn(t *testing.T) {
+	p := parseFlowPipeline(t, strings.Replace(flowPipeline, "      type: reject\n", "      type: reject\n      next: [notify]\n", 1))
+	if err := ValidatePipelines([]Pipeline{p}); err != nil {
+		t.Fatalf("expected a reject step to lead on, got %v", err)
 	}
 }
 

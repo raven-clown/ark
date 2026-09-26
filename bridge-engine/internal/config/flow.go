@@ -25,9 +25,11 @@ const (
 	// StepWebhook posts the message to a URL without waiting for an answer
 	// to route on, then continues on next; on_failure when it keeps failing.
 	StepWebhook StepType = "webhook"
-	// StepReject sends the message to a reject topic with a reason.
+	// StepReject sends the message to a reject topic with a reason, then
+	// carries on to next, if any.
 	StepReject StepType = "reject"
-	// StepDeadLetter sends the message to a dead-letter topic with a reason.
+	// StepDeadLetter sends the message to a dead-letter topic with a reason,
+	// then carries on to next, if any.
 	StepDeadLetter StepType = "dead_letter"
 	// StepDrop discards the message.
 	StepDrop StepType = "drop"
@@ -255,12 +257,10 @@ func validateStep(p Pipeline, s Step) error {
 		if s.Topic == "" && p.RejectTopic == "" && p.DeadLetterTopic == "" {
 			return fmt.Errorf("topic is required when the pipeline has no reject_topic or dead_letter_topic")
 		}
-		return terminal()
 	case StepDeadLetter:
 		if s.Topic == "" && p.DeadLetterTopic == "" {
 			return fmt.Errorf("topic is required when the pipeline has no dead_letter_topic")
 		}
-		return terminal()
 	case StepDrop:
 		return terminal()
 	default:
