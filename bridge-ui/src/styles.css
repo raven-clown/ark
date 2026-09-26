@@ -436,3 +436,4 @@ table.list.compact .input, table.list.compact .select { height: 28px; }
   .dz-chip { flex: none; }
   .dz-chip .lbl span { display: none; }
 }
+.dot-scale { font: 500 11px var(--mono); color: #7C848D; background: rgba(18, 20, 23, 0.8); padding: 4px 10px; border-radius: 999px; }

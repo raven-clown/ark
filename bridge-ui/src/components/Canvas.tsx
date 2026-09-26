@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import {
   Background,
   BaseEdge,
   Controls,
   MiniMap,
   Handle,
+  Panel,
   Position,
   ReactFlow,
   getBezierPath,
@@ -52,7 +53,7 @@ interface Rates {
 type PipeData = { label: string; stats?: PipelineStats; health?: Health; rates?: Rates; spark?: number[]; selected: boolean; dimmed?: boolean }
 type TopicData = { label: string; role?: string; dimmed?: boolean }
 type TargetData = { label: string; kind: string; dimmed?: boolean }
-type FlowData = { role: TopologyEdge['role']; rate: number; alert?: 'amber' | 'coral'; motion: boolean; rule?: string }
+type FlowData = { role: TopologyEdge['role']; rate: number; perDot: number; alert?: 'amber' | 'coral'; motion: boolean; rule?: string }
 
 const roleColor: Record<string, string> = {
   consume: '#34D399',
@@ -136,24 +137,33 @@ function TargetNode({ data }: NodeProps<Node<TargetData>>) {
 }
 
 const MAX_DOTS = 32
-const MAX_EMIT = 12
+const MAX_EMIT = 6
+const PER_DOT_STEPS = [10, 50, 100, 500, 1000, 5000, 10000, 50000, 100000]
 
-// dotSpeed is how many pixels a second a dot travels on a line carrying
-// rate messages a second: busier lines run faster.
-function dotSpeed(rate: number) {
-  return Math.min(260, 40 + 36 * Math.log2(1 + rate))
+// messagesPerDot picks how many messages one dot stands for, the same on
+// every line so they can be compared: 10, or more when the busiest line
+// would otherwise release dots faster than the eye can follow.
+function messagesPerDot(maxRate: number) {
+  return PER_DOT_STEPS.find((n) => maxRate / n <= MAX_EMIT) ?? PER_DOT_STEPS[PER_DOT_STEPS.length - 1]
 }
 
-// useFlowDots releases one dot per message crossing the line (one per
-// rate/MAX_EMIT messages on busy lines) and moves each dot to the end of the
+// dotSpeed is how many pixels a second a dot travels on a line carrying
+// rate messages a second: busier lines run faster, slowly enough to follow.
+function dotSpeed(rate: number) {
+  return Math.min(120, 25 + 18 * Math.log2(1 + rate))
+}
+
+type Live = { rate: number; perDot: number; enabled: boolean }
+
+// FlowDots releases one dot per perDot messages crossing the line and moves
+// each dot to the end of the
 // line at a speed set by that line's own rate. New numbers only change how
-// often dots are released and how fast they move from then on; dots already
-// on the line keep going, so a refresh never resets the animation.
-function useFlowDots(rate: number, enabled: boolean) {
+// often dots are released and, gradually, how fast they move; dots already
+// on the line keep going, so a refresh never resets the animation. It only
+// re-renders when the line itself or its color changes.
+const FlowDots = memo(function FlowDots({ path, color, live }: { path: string; color: string; live: RefObject<Live> }) {
   const pathRef = useRef<SVGPathElement>(null)
   const dotRefs = useRef<(SVGGElement | null)[]>([])
-  const live = useRef({ rate, enabled })
-  live.current = { rate, enabled }
 
   useEffect(() => {
     let raf = 0
@@ -161,15 +171,21 @@ function useFlowDots(rate: number, enabled: boolean) {
     let due = 0
     let speed = 0
     let seeded = false
+    let shape = ''
+    let len = 0
     const dots: number[] = []
     const tick = (now: number) => {
-      const dt = Math.min(0.1, (now - last) / 1000)
+      const dt = Math.min(1 / 30, (now - last) / 1000)
       last = now
       const el = pathRef.current
-      const len = el?.getTotalLength() ?? 0
-      const { rate: r, enabled: on } = live.current
-      const emit = on ? Math.min(r, MAX_EMIT) : 0
-      speed += (dotSpeed(r) - speed) * Math.min(1, dt * 1.5)
+      const d = el?.getAttribute('d') ?? ''
+      if (el && d !== shape) {
+        shape = d
+        len = el.getTotalLength()
+      }
+      const { rate: r, perDot, enabled: on } = live.current
+      const emit = on ? Math.min(r / perDot, MAX_EMIT) : 0
+      speed += (dotSpeed(r) - speed) * Math.min(1, dt / 3)
       if (el && len > 0) {
         if (!seeded && emit > 0) {
           seeded = true
@@ -208,10 +224,27 @@ function useFlowDots(rate: number, enabled: boolean) {
     }
     raf = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(raf)
-  }, [])
+  }, [live])
 
-  return { pathRef, dotRefs }
-}
+  return (
+    <>
+      <path ref={pathRef} d={path} fill="none" stroke="none" />
+      {Array.from({ length: MAX_DOTS }, (_, i) => (
+        <g
+          key={i}
+          ref={(el) => {
+            dotRefs.current[i] = el
+          }}
+          opacity="0"
+          style={{ pointerEvents: 'none' }}
+        >
+          <circle r="5" fill={color} opacity="0.14" />
+          <circle r="2.6" fill={color} />
+        </g>
+      ))}
+    </>
+  )
+})
 
 // FlowEdge draws a connection with dots moving along it at a speed and
 // density that follow the real message rate.
@@ -220,7 +253,8 @@ function FlowEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targ
   const d = data!
   const color = d.alert === 'coral' ? '#EC6B77' : d.alert === 'amber' ? '#E4A951' : roleColor[d.role] ?? '#8B96A3'
   const active = d.rate > 0
-  const { pathRef, dotRefs } = useFlowDots(d.rate, d.motion)
+  const live = useRef<Live>({ rate: d.rate, perDot: d.perDot, enabled: d.motion })
+  live.current = { rate: d.rate, perDot: d.perDot, enabled: d.motion }
   return (
     <>
       <BaseEdge
@@ -232,13 +266,7 @@ function FlowEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targ
           strokeWidth: 1.6,
         }}
       />
-      <path ref={pathRef} d={path} fill="none" stroke="none" />
-      {Array.from({ length: MAX_DOTS }, (_, i) => (
-        <g key={i} ref={(el) => void (dotRefs.current[i] = el)} opacity="0" style={{ pointerEvents: 'none' }}>
-          <circle r="5" fill={color} opacity="0.14" />
-          <circle r="2.6" fill={color} />
-        </g>
-      ))}
+      <FlowDots path={path} color={color} live={live} />
     </>
   )
 }
@@ -277,6 +305,7 @@ export function Canvas({ search, health, motion, selected, onSelect, onNew, refr
   const fitTimer = useRef(0)
   const flow = useRef<ReactFlowInstance | null>(null)
   const [showMap, setShowMap] = useState(true)
+  const [perDot, setPerDot] = useState(PER_DOT_STEPS[0])
   const [projectFilter, setProjectFilter] = useState('')
   const projects = useProjects(15000)
 
@@ -352,6 +381,8 @@ export function Canvas({ search, health, motion, selected, onSelect, onNew, refr
       )
     }
     const stats = new Map((topo.nodes ?? []).map((n) => [n.id, n.stats]))
+    const perDot = messagesPerDot(Math.max(0, ...Object.values(rates).flatMap((r) => [r.in, r.calls])))
+    setPerDot(perDot)
     setEdges(
       (topo.edges ?? []).map((e, i): Edge => {
         const pid = e.role === 'consume' ? e.to : e.from
@@ -367,7 +398,7 @@ export function Canvas({ search, health, motion, selected, onSelect, onNew, refr
           sourceHandle: e.role === 'call' ? 'top' : undefined,
           targetHandle: e.role === 'webhook' ? 'left' : undefined,
           type: 'flow',
-          data: { role: e.role, rate, motion, rule: e.rule, alert: e.role === 'call' && breakerOpen ? 'coral' : s?.paused && e.role === 'consume' ? 'amber' : undefined },
+          data: { role: e.role, rate, perDot, motion, rule: e.rule, alert: e.role === 'call' && breakerOpen ? 'coral' : s?.paused && e.role === 'consume' ? 'amber' : undefined },
         }
       }),
     )
@@ -471,6 +502,11 @@ export function Canvas({ search, health, motion, selected, onSelect, onNew, refr
         colorMode="dark"
       >
         <Background color="#1a1d21" gap={28} size={1.2} />
+        {motion && (
+          <Panel position="bottom-center" className="dot-scale">
+            ● = {perDot.toLocaleString()} {t('canvas.dotMessages')}
+          </Panel>
+        )}
         <Controls showInteractive={false} position="bottom-left" />
         {showMap && (
           <MiniMap
