@@ -22,7 +22,9 @@ import { useProjects } from './ProjectsView'
 export type Kind = 'source' | 'check' | 'before' | 'target' | 'after' | 'destination' | 'reject' | 'dlq'
 
 type Props = Record<string, string>
-type BlockData = { kind: Kind; props: Props; issue: boolean; name: string }
+type BlockData = { kind: Kind; props: Props; issue: boolean; name: string; extra?: Fields }
+// Fields is a pipeline, or part of one, as its config file keys.
+type Fields = Record<string, unknown>
 
 const KINDS: { kind: Kind; icon: IconName; single: boolean; required: boolean }[] = [
   { kind: 'source', icon: 'stream', single: true, required: true },
@@ -209,6 +211,128 @@ export function toYaml(name: string, project: string, blocks: Node<BlockData>[])
   return L.join('\n') + '\n'
 }
 
+const obj = (v: unknown): Fields => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Fields) : {})
+const list = (v: unknown): Fields[] => (Array.isArray(v) ? v.map(obj) : [])
+const str = (v: unknown) => (v === undefined || v === null ? '' : String(v))
+
+// fromConfig turns a pipeline's config into blocks, rules in the order
+// they run.
+export function fromConfig(cfg: Fields): Node<BlockData>[] {
+  const blocks: Node<BlockData>[] = []
+  const add = (kind: Kind, props: Props, y = 0, extra?: Fields) =>
+    blocks.push({ id: newId(kind), type: 'block', position: { x: 0, y }, data: { kind, props, issue: false, name: '', extra } })
+  add('source', { topic: str(cfg.source_topic), group: str(cfg.consumer_group), workers: str(cfg.workers) })
+  const dr = obj(cfg.data_rules)
+  const fields = list(dr.fields)
+  if (dr.on_violation || fields.length || dr.max_bytes) {
+    const required = fields.filter((f) => f.required).map((f) => str(f.path))
+    add('check', { on_violation: str(dr.on_violation), required: required.join(', '), max_bytes: dr.max_bytes ? str(dr.max_bytes) : '' })
+  }
+  const rule = (kind: Kind) => (r: Fields, i: number) =>
+    add(kind, { name: str(r.name), condition: str(r.condition), action: str(r.action) || 'pass_through', route: str(r.destination_override) }, i, r)
+  list(cfg.fast_path_rules).forEach(rule('before'))
+  const target = obj(cfg.target)
+  const retry = obj(cfg.retry)
+  const urls = Array.isArray(target.urls) ? target.urls : []
+  add('target', { url: str(target.url) || str(urls[0]), timeout: str(target.timeout_ms), attempts: str(retry.max_attempts), backoff: str(retry.backoff_ms) })
+  list(cfg.post_callback_rules).forEach(rule('after'))
+  if (cfg.destination_topic) add('destination', { topic: str(cfg.destination_topic) })
+  if (cfg.reject_topic) add('reject', { topic: str(cfg.reject_topic) })
+  if (cfg.dead_letter_topic) add('dlq', { topic: str(cfg.dead_letter_topic) })
+  return arrange(blocks)
+}
+
+// toConfig writes the blocks over an existing pipeline's config, keeping
+// every field the designer has no block for.
+export function toConfig(base: Fields, name: string, project: string, blocks: Node<BlockData>[]): Fields {
+  const nodes = blocks.map((n) => ({ ...n, data: { ...n.data, name } }))
+  const one = (k: Kind) => ordered(nodes, k)[0]?.data
+  const out: Fields = structuredClone(base)
+  out.name = name
+  if (project) out.project = project
+  else delete out.project
+  const src = one('source')
+  if (src) {
+    out.source_topic = val(src, 'topic')
+    out.consumer_group = val(src, 'group')
+    out.workers = num(val(src, 'workers'), 1)
+  }
+  for (const [k, key] of [
+    ['destination', 'destination_topic'],
+    ['dlq', 'dead_letter_topic'],
+    ['reject', 'reject_topic'],
+  ] as [Kind, string][]) {
+    const d = one(k)
+    out[key] = d ? val(d, 'topic') : ''
+  }
+  const tgt = one('target')
+  if (tgt) {
+    const target: Fields = { ...obj(base.target), timeout_ms: num(val(tgt, 'timeout'), 30000) }
+    const urls = Array.isArray(target.urls) ? [...target.urls] : []
+    if (!target.url && urls.length) {
+      urls[0] = val(tgt, 'url')
+      target.urls = urls
+    } else target.url = val(tgt, 'url')
+    out.target = target
+    out.retry = { ...obj(base.retry), max_attempts: num(val(tgt, 'attempts'), 3), backoff_ms: num(val(tgt, 'backoff'), 1000) }
+  }
+  const chk = one('check')
+  if (chk) {
+    const dr: Fields = { ...obj(base.data_rules), on_violation: val(chk, 'on_violation') }
+    const maxBytes = num(val(chk, 'max_bytes'), 0)
+    if (maxBytes > 0) dr.max_bytes = maxBytes
+    else delete dr.max_bytes
+    const want = val(chk, 'required')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+    const fields = list(dr.fields)
+      .map((f): Fields => ({ ...f, required: want.includes(str(f.path)) }))
+      .filter((f) => f.required || Object.keys(f).some((k) => k !== 'path' && k !== 'required'))
+    for (const p of want) if (!fields.some((f) => f.path === p)) fields.push({ path: p, required: true })
+    dr.fields = fields
+    out.data_rules = dr
+  } else delete out.data_rules
+  for (const [k, key] of [
+    ['before', 'fast_path_rules'],
+    ['after', 'post_callback_rules'],
+  ] as [Kind, string][]) {
+    out[key] = ordered(nodes, k).map((r, i) => {
+      const d = r.data
+      const rule: Fields = { ...d.extra, name: val(d, 'name') || `${k}-${i + 1}`, condition: val(d, 'condition'), action: val(d, 'action') }
+      if (val(d, 'action') === 'transform_route' && val(d, 'route')) rule.destination_override = val(d, 'route')
+      else delete rule.destination_override
+      return rule
+    })
+  }
+  return out
+}
+
+const KEY_ORDER = ['name', 'project', 'tenant', 'mcp_access', 'enabled', 'source_topic', 'destination_topic', 'dead_letter_topic', 'reject_topic', 'consumer_group', 'workers', 'ordering', 'target', 'retry', 'data_rules', 'fast_path_rules', 'post_callback_rules', 'path', 'url']
+const rank = (k: string) => (KEY_ORDER.includes(k) ? KEY_ORDER.indexOf(k) : KEY_ORDER.length)
+
+// yamlOf writes plain data as YAML, quoting every string, with the keys a
+// person looks for first at the top.
+export function yamlOf(v: unknown, indent = ''): string {
+  const scalar = (x: unknown) => (x === null || x === undefined ? 'null' : typeof x === 'string' ? JSON.stringify(x) : String(x))
+  const isEmpty = (x: unknown) => (Array.isArray(x) ? x.length === 0 : x !== null && typeof x === 'object' ? Object.keys(x).length === 0 : false)
+  const inline = (x: unknown) => (Array.isArray(x) ? '[]' : '{}')
+  const nested = (x: unknown) => x !== null && typeof x === 'object' && !isEmpty(x)
+  if (Array.isArray(v)) {
+    return v
+      .map((item) => {
+        if (!nested(item)) return `${indent}- ${isEmpty(item) ? inline(item) : scalar(item)}\n`
+        const body = yamlOf(item, indent + '  ')
+        return `${indent}- ${body.slice(indent.length + 2)}`
+      })
+      .join('')
+  }
+  return Object.entries(obj(v))
+    .sort(([a], [b]) => rank(a) - rank(b))
+    .map(([k, x]) => (nested(x) ? `${indent}${k}:\n${yamlOf(x, indent + '  ')}` : `${indent}${k}: ${isEmpty(x) ? inline(x) : scalar(x)}\n`))
+    .join('')
+}
+
 function issuesOf(name: string, nodes: Node<BlockData>[]): { key: Key; arg?: string; id?: string }[] {
   const out: { key: Key; arg?: string; id?: string }[] = []
   if (!/^[a-z0-9][a-z0-9._-]*$/i.test(name)) out.push({ key: 'dz.i.name' })
@@ -290,13 +414,13 @@ function Fields({ node, onChange }: { node: Node<BlockData>; onChange: (p: Props
   }
 }
 
-function Board({ onClose, onApplied, onSimple }: { onClose: () => void; onApplied: () => void; onSimple: () => void }) {
+function Board({ onClose, onApplied, onSimple, existing }: DesignerProps) {
   const t = useT()
   const flow = useReactFlow()
   const projects = useProjects()
-  const [name, setName] = useState('')
-  const [project, setProject] = useState('')
-  const [nodes, setNodes] = useState<Node<BlockData>[]>(starter)
+  const [name, setName] = useState(existing?.name ?? '')
+  const [project, setProject] = useState(str(existing?.config.project))
+  const [nodes, setNodes] = useState<Node<BlockData>[]>(() => (existing ? fromConfig(existing.config) : starter()))
   const [sel, setSel] = useState<string | null>(null)
   const [yaml, setYaml] = useState<string | null>(null)
 
@@ -433,7 +557,7 @@ function Board({ onClose, onApplied, onSimple }: { onClose: () => void; onApplie
             <b>{t('dz.pipeline')}</b>
             <div className="field">
               <label>{t('cfg.name')}</label>
-              <input className="input mono" value={name} onChange={(e) => setName(e.target.value)} placeholder="orders" autoFocus />
+              <input className="input mono" value={name} onChange={(e) => setName(e.target.value)} placeholder="orders" autoFocus={!existing} disabled={!!existing} />
             </div>
             <div className="field">
               <label>{t('dz.project')}</label>
@@ -463,10 +587,14 @@ function Board({ onClose, onApplied, onSimple }: { onClose: () => void; onApplie
           )}
         </div>
         <div className="row" style={{ justifyContent: 'space-between', marginTop: 'auto' }}>
-          <button className="btn ghost small" onClick={onSimple}>
-            {t('dz.simple')}
-          </button>
-          <button className="btn primary" disabled={issues.length > 0} onClick={() => setYaml(toYaml(name, project, nodes))}>
+          {existing ? (
+            <span />
+          ) : (
+            <button className="btn ghost small" onClick={onSimple}>
+              {t('dz.simple')}
+            </button>
+          )}
+          <button className="btn primary" disabled={issues.length > 0} onClick={() => setYaml(existing ? yamlOf(toConfig(existing.config, name, project, nodes)) : toYaml(name, project, nodes))}>
             {t('dz.review')}
           </button>
         </div>
@@ -475,14 +603,22 @@ function Board({ onClose, onApplied, onSimple }: { onClose: () => void; onApplie
   )
 }
 
-export function Designer(props: { onClose: () => void; onApplied: () => void; onSimple: () => void }) {
+interface DesignerProps {
+  onClose: () => void
+  onApplied: () => void
+  onSimple: () => void
+  // existing opens a running pipeline for editing instead of a new one.
+  existing?: { name: string; config: Fields }
+}
+
+export function Designer(props: DesignerProps) {
   const t = useT()
   return (
     <div className="scrim" onClick={props.onClose}>
       <div className="modal dz-modal" onClick={(e) => e.stopPropagation()}>
         <header className="row" style={{ justifyContent: 'space-between' }}>
           <div>
-            <h2>{t('cfg.newTitle')}</h2>
+            <h2>{props.existing ? `${t('dz.editTitle')} ${props.existing.name}` : t('cfg.newTitle')}</h2>
             <p className="muted small" style={{ margin: 0 }}>
               {t('dz.hint')}
             </p>

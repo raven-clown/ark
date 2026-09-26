@@ -19,10 +19,10 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 
-import { api, type Health, type PipelineStats, type Topology, type TopologyEdge } from '../api'
+import { api, ApiError, type Health, type PipelineStats, type Topology, type TopologyEdge } from '../api'
 import { useT } from '../i18n'
 import { layout } from './layout'
-import { Icon, Sparkline } from './Icon'
+import { Icon, Sparkline, type IconName } from './Icon'
 import { useProjects } from './ProjectsView'
 import { CountUp } from './fx'
 import { Mark } from './Logo'
@@ -40,6 +40,8 @@ interface Props {
   onSelect: (pipeline: string, tab?: string, focus?: TailFocus) => void
   onNew: () => void
   refreshKey: number
+  toast: (msg: string, error?: boolean) => void
+  onEdit: (pipeline: string) => void
 }
 
 interface Rates {
@@ -290,7 +292,71 @@ function splitTargets(t: Topology): Topology {
 const nodeTypes = { pipeline: PipelineNode, topic: TopicNode, target: TargetNode }
 const edgeTypes = { flow: FlowEdge }
 
-export function Canvas({ search, health, motion, selected, onSelect, onNew, refreshKey }: Props) {
+interface Menu {
+  x: number
+  y: number
+  name: string
+  paused: boolean
+}
+
+// PipelineMenu is what right-clicking a pipeline opens: the same places
+// and actions as its side panel, one click away.
+function PipelineMenu({ menu, onClose, onSelect, onEdit, toast }: { menu: Menu; onClose: () => void; onSelect: Props['onSelect']; onEdit: Props['onEdit']; toast: Props['toast'] }) {
+  const t = useT()
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const away = (e: PointerEvent) => !ref.current?.contains(e.target as globalThis.Node) && onClose()
+    const esc = (e: KeyboardEvent) => e.key === 'Escape' && onClose()
+    window.addEventListener('pointerdown', away)
+    window.addEventListener('keydown', esc)
+    return () => {
+      window.removeEventListener('pointerdown', away)
+      window.removeEventListener('keydown', esc)
+    }
+  }, [onClose])
+  const enc = encodeURIComponent(menu.name)
+  const open = (tab: string) => {
+    onSelect(menu.name, tab)
+    onClose()
+  }
+  const act = async (path: string) => {
+    onClose()
+    try {
+      await api(`/pipelines/${enc}/${path}`, { method: 'POST', body: {} })
+      toast(`${menu.name} · ${t('act.done')}`)
+    } catch (e) {
+      toast(e instanceof ApiError && e.status === 403 ? t('common.noAccess') : (e as Error).message, true)
+    }
+  }
+  const item = (icon: IconName, label: string, run: () => void) => (
+    <button key={label} onClick={run}>
+      <Icon name={icon} className="" />
+      {label}
+    </button>
+  )
+  return (
+    <div ref={ref} className="ctx-menu" style={{ left: Math.min(menu.x, window.innerWidth - 230), top: Math.min(menu.y, window.innerHeight - 380) }} onContextMenu={(e) => e.preventDefault()}>
+      <div className="ctx-title">{menu.name}</div>
+      {item('pipelines', t('menu.designer'), () => {
+        onClose()
+        onEdit(menu.name)
+      })}
+      <hr />
+      {item('info', t('panel.health'), () => open('health'))}
+      {item('stream', t('panel.tail'), () => open('tail'))}
+      {item('spark', t('panel.rules'), () => open('rules'))}
+      {item('settings', t('panel.config'), () => open('config'))}
+      {item('inbox', t('panel.dlq'), () => open('dlq'))}
+      {item('alert', t('panel.rejects'), () => open('reject'))}
+      <hr />
+      {menu.paused ? item('play', t('act.resume'), () => act('resume')) : item('pause', t('act.pause'), () => act('pause'))}
+      {item('restart', t('act.restart'), () => act('restart'))}
+      {item('scale', t('panel.actions'), () => open('actions'))}
+    </div>
+  )
+}
+
+export function Canvas({ search, health, motion, selected, onSelect, onNew, refreshKey, toast, onEdit }: Props) {
   const t = useT()
   const [topo, setTopo] = useState<Topology | null>(null)
   const [error, setError] = useState('')
@@ -306,6 +372,8 @@ export function Canvas({ search, health, motion, selected, onSelect, onNew, refr
   const flow = useRef<ReactFlowInstance | null>(null)
   const [showMap, setShowMap] = useState(true)
   const [perDot, setPerDot] = useState(PER_DOT_STEPS[0])
+  const [menu, setMenu] = useState<Menu | null>(null)
+  const closeMenu = useCallback(() => setMenu(null), [])
   const [projectFilter, setProjectFilter] = useState('')
   const projects = useProjects(15000)
 
@@ -493,6 +561,13 @@ export function Canvas({ search, health, motion, selected, onSelect, onNew, refr
         edgeTypes={edgeTypes}
         onNodeClick={(_, n) => n.type === 'pipeline' && onSelect((n.data as PipeData).label)}
         onEdgeClick={onEdgeClick}
+        onNodeContextMenu={(e, n) => {
+          if (n.type !== 'pipeline') return
+          e.preventDefault()
+          const data = n.data as PipeData
+          setMenu({ x: e.clientX, y: e.clientY, name: data.label, paused: data.health === 'paused' || !!data.stats?.paused })
+        }}
+        onMoveStart={closeMenu}
         onInit={(inst) => (flow.current = inst)}
         fitView
         fitViewOptions={{ padding: 0.12, maxZoom: 1.1, minZoom: 0.8 }}
@@ -521,6 +596,7 @@ export function Canvas({ search, health, motion, selected, onSelect, onNew, refr
           />
         )}
       </ReactFlow>
+      {menu && <PipelineMenu menu={menu} onClose={closeMenu} onSelect={onSelect} onEdit={onEdit} toast={toast} />}
     </div>
   )
 }

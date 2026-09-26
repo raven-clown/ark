@@ -103,6 +103,17 @@ func pipelineHash(p *config.Pipeline) string {
 	return hex.EncodeToString(sum[:8])
 }
 
+// pipelineFields is the pipeline as its config file keys, for the console's
+// designer to read every field without parsing YAML.
+func pipelineFields(p config.Pipeline) map[string]any {
+	var out map[string]any
+	b, err := yaml.Marshal(p)
+	if err != nil || yaml.Unmarshal(b, &out) != nil {
+		return nil
+	}
+	return out
+}
+
 func toYAML(p config.Pipeline) string {
 	var buf bytes.Buffer
 	enc := yaml.NewEncoder(&buf)

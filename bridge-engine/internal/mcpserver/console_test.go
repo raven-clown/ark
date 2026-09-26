@@ -301,3 +301,14 @@ func TestClusterWideReplacesLocalNumbers(t *testing.T) {
 		t.Fatalf("expected an open breaker on any node to show as open, got %q", got.BreakerState)
 	}
 }
+
+func TestPipelineFieldsUsesConfigKeys(t *testing.T) {
+	got := pipelineFields(config.Pipeline{Name: "orders", SourceTopic: "orders.raw", Target: config.Target{URL: "http://app/process"}})
+	if got["name"] != "orders" || got["source_topic"] != "orders.raw" {
+		t.Fatalf("expected config file keys, got %v", got)
+	}
+	target, ok := got["target"].(map[string]any)
+	if !ok || target["url"] != "http://app/process" {
+		t.Fatalf("expected a nested target map, got %#v", got["target"])
+	}
+}

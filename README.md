@@ -132,8 +132,10 @@ the side.
 </p>
 
 - **Pipeline canvas.** Every pipeline, topic and target, chained pipelines
-  joined through their shared topic. Dots move along each line at the real
-  message rate; click a line to watch what crosses it.
+  joined through their shared topic. Each dot on a line is 10 real
+  messages (more on busy lines, shown under the canvas); click a line to
+  watch what crosses it, or right-click a pipeline for everything you can
+  do with it. In cluster mode the numbers cover every node.
 - **Everything about one pipeline.** Health with the reason and next step,
   throughput against the last hour, p99 latency, a live tail of every
   message (in, each callback attempt, where it went and why), dead letters
@@ -142,6 +144,8 @@ the side.
 - **Pipeline designer.** Drag blocks onto a board (source, data check,
   rules before and after the call, your app, result, reject, dead letter),
   set each one up, and review the generated config before it is applied.
+  Right-click a running pipeline to open it in the designer: fields the
+  blocks don't cover are kept as they are.
 - **Visual rule builder.** Pick a field from real messages, an operator and
   a value, and see how many recent messages would match before you save.
 - **Metrics.** Throughput, lag and callback latency percentiles over the
@@ -666,8 +670,6 @@ tenant.
 
 ## Roadmap
 
-- **Designer for existing pipelines:** open any running pipeline in the
-  block designer, not only new ones.
 - **Longer history:** keep metrics beyond the last hour and per partition.
 - **Batched callbacks:** send several messages per HTTP call for targets
   that support it.

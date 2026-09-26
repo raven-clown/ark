@@ -244,6 +244,7 @@ export interface PipelineConfig {
   name: string
   yaml: string
   applies_to: string
+  config?: Record<string, unknown>
 }
 
 export interface WorkerStatus {

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 
-import { api, ApiError, getToken, setToken, type Health, type Overview } from './api'
+import { api, ApiError, getToken, setToken, type Health, type Overview, type PipelineConfig } from './api'
 import { Canvas, type TailFocus } from './components/Canvas'
 import { Icon, type IconName } from './components/Icon'
 import { CountUp } from './components/fx'
@@ -42,6 +42,7 @@ export function App() {
   const [overview, setOverview] = useState<Overview | null>(null)
   const [selected, setSelected] = useState<{ name: string; tab?: string; focus?: TailFocus } | null>(null)
   const [creating, setCreating] = useState<'' | 'designer' | 'simple'>('')
+  const [editing, setEditing] = useState<{ name: string; config: Record<string, unknown> } | null>(null)
   const [refreshKey, setRefreshKey] = useState(0)
   const [search, setSearch] = useState('')
   const [chatOpen, setChatOpen] = useState(false)
@@ -253,6 +254,15 @@ export function App() {
                 refreshKey={refreshKey}
                 onSelect={(name, tab, focus) => setSelected({ name, tab, focus })}
                 onNew={() => setCreating('designer')}
+                toast={toast}
+                onEdit={async (name) => {
+                  try {
+                    const cfg = await api<PipelineConfig>(`/config/pipelines/${encodeURIComponent(name)}`)
+                    if (cfg.config) setEditing({ name, config: cfg.config })
+                  } catch (e) {
+                    toast((e as Error).message, true)
+                  }
+                }}
               />
               {selected && (
                 <PipelinePanel
@@ -295,6 +305,18 @@ export function App() {
         <Designer
           onClose={() => setCreating('')}
           onSimple={() => setCreating('simple')}
+          onApplied={() => {
+            setRefreshKey((k) => k + 1)
+            loadOverview()
+          }}
+        />
+      )}
+      {editing && (
+        <Designer
+          key={editing.name}
+          existing={editing}
+          onClose={() => setEditing(null)}
+          onSimple={() => {}}
           onApplied={() => {
             setRefreshKey((k) => k + 1)
             loadOverview()

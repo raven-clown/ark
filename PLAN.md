@@ -1131,8 +1131,15 @@ show data moving, never as decoration.
 - [x] Drag-and-drop pipeline designer: drop source, data check, rules,
       target and output blocks on a board, set each one up, and review
       the generated YAML through preview and confirm. A guided form stays
-      as the quick path. Existing pipelines are still edited as YAML or
-      through the rule builder.
+      as the quick path.
+- [x] Designer for existing pipelines: right-click a pipeline on the
+      canvas and choose "Edit in designer". Its current config is loaded
+      into blocks, and the blocks are written back over that config, so
+      fields the designer has no block for (tenant, health check, breaker,
+      field types and ranges, rule webhooks) stay as they are. Same
+      preview and confirm; reviewing without a change reports
+      "unchanged". Verified against the demo pipeline: a rule added in the
+      designer dead-lettered a matching message while others went through.
 - **Exit criteria:** an operator can create, change, watch, debug and
   control every pipeline from the console alone, and the flow animation
   and live tail reflect real traffic, verified against docker-compose

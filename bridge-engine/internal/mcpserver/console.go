@@ -221,7 +221,7 @@ func (c *Console) Handler() *http.ServeMux {
 	})
 
 	mux.HandleFunc("GET /api/v1/config/pipelines/{name}", c.withPipeline(func(w http.ResponseWriter, r *http.Request, p config.Pipeline) {
-		writeJSON(w, http.StatusOK, consoleConfigOut{Name: p.Name, YAML: toYAML(p), AppliesTo: d.Config.Mode()})
+		writeJSON(w, http.StatusOK, consoleConfigOut{Name: p.Name, YAML: toYAML(p), AppliesTo: d.Config.Mode(), Config: pipelineFields(p)})
 	}))
 
 	mux.HandleFunc("POST /api/v1/config/validate", func(w http.ResponseWriter, r *http.Request) {
@@ -532,7 +532,8 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 }
 
 type consoleConfigOut struct {
-	Name      string `json:"name"`
-	YAML      string `json:"yaml"`
-	AppliesTo string `json:"applies_to"`
+	Name      string         `json:"name"`
+	YAML      string         `json:"yaml"`
+	AppliesTo string         `json:"applies_to"`
+	Config    map[string]any `json:"config,omitempty"`
 }
