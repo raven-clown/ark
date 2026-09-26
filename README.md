@@ -382,8 +382,10 @@ Whatever it returns with a 2xx becomes the message on
   mean "later": ARK waits, honoring `Retry-After`, without spending a
   retry. `target.reject_statuses` overrides which codes are rejects.
 - **When the app is down,** the circuit breaker opens after
-  `circuit_breaker.failure_threshold` failures in a row and messages wait
-  in Kafka instead of flooding the DLQ. With `health_check_url` set, ARK
+  `circuit_breaker.failure_threshold` different messages fail in a row and
+  messages wait in Kafka instead of flooding the DLQ. Retries of a message
+  that already failed don't count again, so a few messages your app always
+  fails on can't hold up the rest. With `health_check_url` set, ARK
   resumes as soon as the app answers.
 - **`on_exhausted: block`** keeps retrying forever instead of
   dead-lettering, for pipelines where order matters more than progress.

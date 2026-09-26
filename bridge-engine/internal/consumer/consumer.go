@@ -720,7 +720,11 @@ func (r *Runner) process(ctx context.Context, msg kafka.Message) error {
 			}
 			lastFailure = failure
 		}
-		r.recordBreaker(success, failure)
+		if !success && realAttempts > 1 {
+			r.recordBreakerRepeat(failure)
+		} else {
+			r.recordBreaker(success, failure)
+		}
 		if success {
 			break
 		}
@@ -835,8 +839,16 @@ func (r *Runner) tapOut(to, topic, rule, reason string, status int, key, value [
 // recordBreaker feeds a callback result to the circuit breaker and records
 // an event whenever that flips the breaker, with what caused it.
 func (r *Runner) recordBreaker(success bool, cause string) {
+	r.flipBreaker(func() { r.shared.breaker.RecordResult(success) }, cause)
+}
+
+func (r *Runner) recordBreakerRepeat(cause string) {
+	r.flipBreaker(r.shared.breaker.RecordRepeatFailure, cause)
+}
+
+func (r *Runner) flipBreaker(record func(), cause string) {
 	before := r.shared.breaker.State()
-	r.shared.breaker.RecordResult(success)
+	record()
 	after := r.shared.breaker.State()
 	if before == after {
 		return

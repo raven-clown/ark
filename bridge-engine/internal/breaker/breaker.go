@@ -75,3 +75,17 @@ func (b *Breaker) RecordResult(success bool) {
 		b.openedAt = time.Now()
 	}
 }
+
+// RecordRepeatFailure records another failed attempt at a message whose
+// earlier attempt already counted. It doesn't lengthen the failure streak,
+// so a few messages the target always fails on can't open the breaker for
+// every other message; it still reopens a half-open breaker.
+func (b *Breaker) RecordRepeatFailure() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.state == halfOpen {
+		b.state = open
+		b.openedAt = time.Now()
+	}
+}

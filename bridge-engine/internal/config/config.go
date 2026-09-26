@@ -198,7 +198,7 @@ type FieldRule struct {
 }
 
 // CircuitBreaker controls when ARK stops calling a failing target:
-// after FailureThreshold failures in a row it holds messages in place for
+// after FailureThreshold different messages fail in a row it holds messages in place for
 // CooldownSeconds before trying again.
 type CircuitBreaker struct {
 	FailureThreshold int `yaml:"failure_threshold"`
