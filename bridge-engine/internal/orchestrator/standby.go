@@ -50,11 +50,11 @@ func (m *Manager) SyncStandbyBrowsers(pipelines []config.Pipeline) {
 		log := m.logger.With("pipeline", p.Name, "tenant", p.Tenant, "standby", true)
 		sb := &standbyBrowsers{cfg: p, source: producer.New(m.deps.Brokers, p.SourceTopic), cancel: cancel}
 		if p.DeadLetterTopic != "" {
-			sb.dlq = dlq.NewBrowser(m.deps.Brokers, p.DeadLetterTopic, m.deps.DLQState, tuning.DLQBrowserEntries(), sb.source, log)
+			sb.dlq = dlq.NewBrowser(m.deps.Brokers, p.DeadLetterTopic, p.Name, m.deps.DLQState, tuning.DLQBrowserEntries(), sb.source, log)
 			go sb.dlq.Run(ctx)
 		}
 		if p.RejectTopic != "" {
-			sb.reject = dlq.NewBrowser(m.deps.Brokers, p.RejectTopic, m.deps.DLQState, tuning.DLQBrowserEntries(), sb.source, log)
+			sb.reject = dlq.NewBrowser(m.deps.Brokers, p.RejectTopic, p.Name, m.deps.DLQState, tuning.DLQBrowserEntries(), sb.source, log)
 			go sb.reject.Run(ctx)
 		}
 		m.standby[name] = sb

@@ -127,11 +127,11 @@ func newShared(ctx context.Context, deps Deps, p config.Pipeline, log *slog.Logg
 
 	if p.DeadLetterTopic != "" {
 		s.dlq = producer.New(brokers, p.DeadLetterTopic)
-		s.dlqBrowser = dlq.NewBrowser(brokers, p.DeadLetterTopic, deps.DLQState, tuning.DLQBrowserEntries(), s.source, log)
+		s.dlqBrowser = dlq.NewBrowser(brokers, p.DeadLetterTopic, p.Name, deps.DLQState, tuning.DLQBrowserEntries(), s.source, log)
 	}
 	if p.RejectTopic != "" {
 		s.reject = producer.New(brokers, p.RejectTopic)
-		s.rejectBrowser = dlq.NewBrowser(brokers, p.RejectTopic, deps.DLQState, tuning.DLQBrowserEntries(), s.source, log)
+		s.rejectBrowser = dlq.NewBrowser(brokers, p.RejectTopic, p.Name, deps.DLQState, tuning.DLQBrowserEntries(), s.source, log)
 	}
 
 	return s, nil

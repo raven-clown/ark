@@ -45,6 +45,7 @@ type Entry struct {
 type Browser struct {
 	brokers    []string
 	topic      string
+	pipeline   string
 	maxEntries int
 	state      *StateStore
 
@@ -55,10 +56,13 @@ type Browser struct {
 	log     *slog.Logger
 }
 
-func NewBrowser(brokers []string, topic string, state *StateStore, maxEntries int, retryTo *producer.Producer, log *slog.Logger) *Browser {
+// NewBrowser shows the entries pipeline sent to topic. Several pipelines can
+// share one topic, so entries another pipeline routed there are left out.
+func NewBrowser(brokers []string, topic, pipeline string, state *StateStore, maxEntries int, retryTo *producer.Producer, log *slog.Logger) *Browser {
 	return &Browser{
 		brokers:    brokers,
 		topic:      topic,
+		pipeline:   pipeline,
 		maxEntries: maxEntries,
 		state:      state,
 		retryTo:    retryTo,
@@ -200,6 +204,10 @@ func (b *Browser) add(msg kafka.Message) {
 			failedAt = string(h.Value)
 		case "X-Correlation-ID":
 			correlationID = string(h.Value)
+		case "X-Ark-Pipeline":
+			if b.pipeline != "" && string(h.Value) != b.pipeline {
+				return
+			}
 		}
 	}
 	entry := Entry{
