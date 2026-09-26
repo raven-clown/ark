@@ -1,6 +1,7 @@
 package consumer
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -169,7 +170,11 @@ func (r *Runner) runStep(ctx context.Context, id string, partition int, m flowMs
 				continue
 			}
 			matched = true
-			if err := r.runSteps(ctx, s.Branches[i].Next, partition, m, out, log); err != nil {
+			branch := m
+			if branch.reason == "" {
+				branch.reason = fmt.Sprintf("condition %q matched %q", id, cmp.Or(s.Branches[i].Name, s.Branches[i].When))
+			}
+			if err := r.runSteps(ctx, s.Branches[i].Next, partition, branch, out, log); err != nil {
 				return err
 			}
 			if s.Match != "all" {
