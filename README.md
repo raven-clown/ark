@@ -141,11 +141,13 @@ the side.
   message (in, each callback attempt, where it went and why), dead letters
   and rejects with retry and discard, the config, and pause, restart,
   scale and delete.
-- **Pipeline designer.** Drag blocks onto a board (source, data check,
-  rules before and after the call, your app, result, reject, dead letter),
-  set each one up, and review the generated config before it is applied.
-  Right-click a running pipeline to open it in the designer: fields the
-  blocks don't cover are kept as they are.
+- **Flow designer.** Drag steps onto a board (call your app, condition,
+  webhook, send to topic, data check, reject, dead letter, drop) and draw
+  lines from any way out to the next step, n8n style: a condition splits
+  a message down several branches, a call has its own lines for the
+  answer, a 4xx and used-up retries. Review the generated config before
+  it is applied. Right-click a running pipeline to open it in the
+  designer; a fixed-path pipeline opens as the flow that does the same.
 - **Visual rule builder.** Pick a field from real messages, an operator and
   a value, and see how many recent messages would match before you save.
 - **Metrics.** Throughput, lag and callback latency percentiles over the

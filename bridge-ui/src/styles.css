@@ -443,3 +443,23 @@ table.list.compact .input, table.list.compact .select { height: 28px; }
 .ctx-menu button:hover { background: rgba(255, 255, 255, 0.06); }
 .ctx-menu button svg { width: 15px; height: 15px; flex: none; stroke: var(--t2); fill: none; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
 .ctx-menu hr { border: 0; border-top: 1px solid rgba(255, 255, 255, 0.06); margin: 6px 4px; }
+.n-block.n-flow { width: 220px; cursor: grab; }
+.n-block.n-flow .outs { margin-top: 8px; display: flex; flex-direction: column; gap: 2px; }
+.n-block.n-flow .out { position: relative; display: flex; justify-content: flex-end; font-size: 10.5px; color: var(--t3); padding-right: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.n-block.n-flow .out.o-next span { color: var(--accent); }
+.n-block.n-flow .out.o-on_reject span, .n-block.n-flow .out.o-on_fail span { color: var(--warn); }
+.n-block.n-flow .out.o-on_failure span { color: var(--bad); }
+.n-block.n-flow .out.o-branch span { color: #7db6f5; }
+.n-block.n-flow .react-flow__handle { opacity: 1; width: 9px; height: 9px; border: 2px solid var(--s2); background: var(--t3); }
+.n-block.n-flow .out .react-flow__handle { right: -17px; }
+.n-block.n-flow .out.o-next .react-flow__handle { background: var(--accent); }
+.n-block.n-flow .out.o-on_reject .react-flow__handle, .n-block.n-flow .out.o-on_fail .react-flow__handle { background: var(--warn); }
+.n-block.n-flow .out.o-on_failure .react-flow__handle { background: var(--bad); }
+.n-block.n-flow .out.o-branch .react-flow__handle { background: #7db6f5; }
+.n-block.n-flow.k-source .react-flow__handle { background: var(--accent); }
+.n-block.k-call .ico, .dz-chip.k-call .ico, .n-block.k-webhook .ico, .dz-chip.k-webhook .ico { color: var(--t1); }
+.n-block.k-condition .ico, .dz-chip.k-condition .ico { color: #7db6f5; }
+.n-block.k-topic .ico, .dz-chip.k-topic .ico, .n-block.k-data_check .ico, .dz-chip.k-data_check .ico { color: var(--accent); }
+.n-block.k-dead_letter .ico, .dz-chip.k-dead_letter .ico { color: var(--bad); }
+.n-block.k-drop .ico, .dz-chip.k-drop .ico { color: var(--t3); }
+.fz-branch { padding: 10px; border-radius: 10px; background: var(--s2); gap: 6px; }

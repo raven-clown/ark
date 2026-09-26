@@ -7,6 +7,7 @@ import {
   ReactFlowProvider,
   applyNodeChanges,
   useReactFlow,
+  type Connection,
   type Edge,
   type Node,
   type NodeChange,
@@ -19,296 +20,356 @@ import { ConfigEditor } from './ConfigEditor'
 import { Icon, type IconName } from './Icon'
 import { useProjects } from './ProjectsView'
 
-export type Kind = 'source' | 'check' | 'before' | 'target' | 'after' | 'destination' | 'reject' | 'dlq'
-
-type Props = Record<string, string>
-type BlockData = { kind: Kind; props: Props; issue: boolean; name: string; extra?: Fields }
 // Fields is a pipeline, or part of one, as its config file keys.
 type Fields = Record<string, unknown>
 
-const KINDS: { kind: Kind; icon: IconName; single: boolean; required: boolean }[] = [
-  { kind: 'source', icon: 'stream', single: true, required: true },
-  { kind: 'check', icon: 'check', single: true, required: false },
-  { kind: 'before', icon: 'spark', single: false, required: false },
-  { kind: 'target', icon: 'globe', single: true, required: true },
-  { kind: 'after', icon: 'spark', single: false, required: false },
-  { kind: 'destination', icon: 'stream', single: true, required: true },
-  { kind: 'reject', icon: 'inbox', single: true, required: false },
-  { kind: 'dlq', icon: 'alert', single: true, required: true },
+export type StepType = 'call' | 'condition' | 'data_check' | 'topic' | 'webhook' | 'reject' | 'dead_letter' | 'drop'
+
+interface BranchCfg {
+  name?: string
+  when: string
+  next: string[]
+}
+
+export interface Step {
+  id: string
+  type: StepType
+  name?: string
+  next?: string[]
+  on_reject?: string[]
+  on_failure?: string[]
+  on_fail?: string[]
+  otherwise?: string[]
+  branches?: BranchCfg[]
+  match?: string
+  target?: Fields
+  retry?: Fields
+  circuit_breaker?: Fields
+  rules?: Fields
+  topic?: string
+  url?: string
+  reason?: string
+}
+
+interface FlowCfg {
+  start: string[]
+  steps: Step[]
+}
+
+const SOURCE = '__source'
+const MIME = 'application/x-ark-step'
+
+const TYPES: { type: StepType; icon: IconName }[] = [
+  { type: 'condition', icon: 'spark' },
+  { type: 'call', icon: 'globe' },
+  { type: 'webhook', icon: 'signout' },
+  { type: 'topic', icon: 'stream' },
+  { type: 'data_check', icon: 'check' },
+  { type: 'reject', icon: 'inbox' },
+  { type: 'dead_letter', icon: 'alert' },
+  { type: 'drop', icon: 'trash' },
 ]
-const STEP_X = 250
-const STEP_Y = 92
-const ACTIONS = ['pass_through', 'reject', 'drop', 'dead_letter', 'transform_route']
-const MIME = 'application/x-ark-block'
+const iconOf = (t: StepType) => TYPES.find((x) => x.type === t)!.icon
+const TERMINAL: StepType[] = ['reject', 'dead_letter', 'drop']
 
-let seq = 0
-const newId = (k: Kind) => `${k}-${++seq}`
+const obj = (v: unknown): Fields => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Fields) : {})
+const list = (v: unknown): Fields[] => (Array.isArray(v) ? v.map(obj) : [])
+const str = (v: unknown) => (v === undefined || v === null ? '' : String(v))
+const num = (s: unknown, def: number) => (/^\d+$/.test(str(s).trim()) ? Number(s) : def)
 
-// arrange lays the blocks out top to bottom in the order a message passes
-// them, with reject and dead letter to the sides of your app.
-function arrange(nodes: Node<BlockData>[]): Node<BlockData>[] {
-  const pos = new Map<string, { x: number; y: number }>()
-  let row = 0
-  let targetRow = 0
-  for (const k of ['source', 'check', 'before', 'target', 'after', 'destination'] as Kind[]) {
-    const list = ordered(nodes, k)
-    for (const n of k === 'before' || k === 'after' ? list : list.slice(0, 1)) {
-      if (k === 'target') targetRow = row
-      pos.set(n.id, { x: 0, y: row++ * STEP_Y })
+// handlesOf lists a step's ways out: the key in the step that holds where
+// each leads, and the label drawn next to it.
+function handlesOf(s: Step): { key: string; label: string }[] {
+  switch (s.type) {
+    case 'call':
+      return [
+        { key: 'next', label: 'fz.h.ok' },
+        { key: 'on_reject', label: 'fz.h.reject' },
+        { key: 'on_failure', label: 'fz.h.failed' },
+      ]
+    case 'condition':
+      return [...(s.branches ?? []).map((b, i) => ({ key: `b${i}`, label: b.name || b.when || `#${i + 1}` })), { key: 'otherwise', label: 'fz.h.otherwise' }]
+    case 'data_check':
+      return [
+        { key: 'next', label: 'fz.h.pass' },
+        { key: 'on_fail', label: 'fz.h.fail' },
+      ]
+    case 'webhook':
+      return [
+        { key: 'next', label: 'fz.h.then' },
+        { key: 'on_failure', label: 'fz.h.failed' },
+      ]
+    case 'topic':
+      return [{ key: 'next', label: 'fz.h.then' }]
+    default:
+      return []
+  }
+}
+
+function outputsAt(s: Step, key: string): string[] {
+  if (key.startsWith('b')) return s.branches?.[Number(key.slice(1))]?.next ?? []
+  return ((s as unknown as Record<string, string[] | undefined>)[key] ?? []) as string[]
+}
+
+function withOutputs(s: Step, key: string, ids: string[]): Step {
+  if (key.startsWith('b')) {
+    const i = Number(key.slice(1))
+    return { ...s, branches: (s.branches ?? []).map((b, j) => (j === i ? { ...b, next: ids } : b)) }
+  }
+  return { ...s, [key]: ids }
+}
+
+function allOutputs(s: Step): string[] {
+  return handlesOf(s).flatMap((h) => outputsAt(s, h.key))
+}
+
+// fromLegacy turns a fixed-path pipeline into a flow that does the same:
+// data check, rules before the call as one first-match condition, the call,
+// rules after it, and the result, reject and dead-letter topics.
+export function fromLegacy(cfg: Fields): FlowCfg {
+  const steps: Step[] = []
+  const add = (s: Step) => (steps.push(s), s.id)
+  const dest = str(cfg.destination_topic)
+  const result = dest ? add({ id: 'result', type: 'topic', topic: dest }) : ''
+  const reject = add({ id: 'reject', type: 'reject' })
+  const dlq = add({ id: 'dead-letter', type: 'dead_letter' })
+  let drop = ''
+  let routes = 0
+  const action = (r: Fields): string => {
+    switch (str(r.action)) {
+      case 'pass_through':
+        return result
+      case 'reject':
+        return reject
+      case 'dead_letter':
+        return dlq
+      case 'drop':
+        return (drop ||= add({ id: 'drop', type: 'drop' }))
+      default:
+        routes++
+        return r.webhook_override
+          ? add({ id: `route-${routes}`, type: 'webhook', url: str(r.webhook_override) })
+          : add({ id: `route-${routes}`, type: 'topic', topic: str(r.destination_override) })
     }
   }
-  const side = (targetRow + 1) * STEP_Y
-  const reject = ordered(nodes, 'reject')[0]
-  const dlq = ordered(nodes, 'dlq')[0]
-  if (reject) pos.set(reject.id, { x: -STEP_X, y: side })
-  if (dlq) pos.set(dlq.id, { x: STEP_X, y: side })
-  return nodes.map((n) => ({ ...n, position: pos.get(n.id) ?? n.position }))
+  const rules = (key: string, id: string, otherwise: string) => {
+    const rs = list(cfg[key])
+    if (!rs.length) return otherwise
+    return add({ id, type: 'condition', branches: rs.map((r) => ({ name: str(r.name), when: str(r.condition), next: [action(r)].filter(Boolean) })), otherwise: otherwise ? [otherwise] : [] })
+  }
+  const after = rules('post_callback_rules', 'after-call', result)
+  const app = add({
+    id: 'app',
+    type: 'call',
+    target: obj(cfg.target),
+    retry: obj(cfg.retry),
+    circuit_breaker: obj(cfg.circuit_breaker),
+    next: after ? [after] : [],
+    on_reject: [reject],
+  })
+  let first = rules('fast_path_rules', 'before-call', app)
+  const dr = obj(cfg.data_rules)
+  if (list(dr.fields).length || dr.key || list(dr.headers).length || dr.max_bytes || dr.allow_unknown_fields === false) {
+    const onViolation = str(dr.on_violation) || 'reject'
+    first = add({ id: 'check', type: 'data_check', rules: dr, next: [first], on_fail: onViolation === 'tag' ? [] : [onViolation === 'dead_letter' ? dlq : reject] })
+  }
+  const used = new Set([first, ...steps.flatMap(allOutputs)])
+  return { start: [first], steps: steps.filter((s) => used.has(s.id)) }
 }
 
-const starter = (): Node<BlockData>[] =>
-  arrange(
-    (['source', 'target', 'destination', 'dlq'] as Kind[]).map((k) => ({
-      id: newId(k),
-      type: 'block',
-      position: { x: 0, y: 0 },
-      data: { kind: k, props: {}, issue: false, name: '' },
-    })),
-  )
+function readFlow(cfg: Fields): FlowCfg {
+  const f = obj(cfg.flow)
+  if (!Array.isArray(f.steps)) return fromLegacy(cfg)
+  const start = Array.isArray(f.start) ? f.start.map(str) : [str(f.start)].filter(Boolean)
+  return { start, steps: (f.steps as Step[]).map((s) => ({ ...s })) }
+}
 
-// defaults are what an empty field falls back to, derived from the name.
-function defaults(kind: Kind, name: string): Props {
-  const n = name || 'pipeline'
-  switch (kind) {
-    case 'source':
-      return { topic: `${n}.in`, group: `ark-${n}`, workers: '1' }
-    case 'destination':
-      return { topic: `${n}.out` }
-    case 'dlq':
-      return { topic: `${n}.dlq` }
+// layout places steps in columns by how far they are from the source, and
+// within a column in the order their ways out are drawn, so lines from one
+// step fan out without crossing lines from another.
+function layout(flow: FlowCfg): Record<string, { x: number; y: number }> {
+  const depth: Record<string, number> = {}
+  const order: string[] = []
+  const walk = (id: string, d: number, seen: Set<string>) => {
+    if (seen.has(id)) return
+    depth[id] = Math.max(depth[id] ?? 0, d)
+    if (!order.includes(id)) order.push(id)
+    const s = flow.steps.find((x) => x.id === id)
+    if (!s) return
+    const next = new Set(seen).add(id)
+    for (const o of allOutputs(s)) walk(o, d + 1, next)
+  }
+  for (const id of flow.start) walk(id, 1, new Set())
+  for (const s of flow.steps) if (!order.includes(s.id)) order.push(s.id)
+  const cols: Record<number, string[]> = {}
+  for (const id of order) (cols[depth[id] ?? 1] ??= []).push(id)
+  const tallest = Math.max(1, ...Object.values(cols).map((c) => c.length))
+  const pos: Record<string, { x: number; y: number }> = { [SOURCE]: { x: 0, y: ((tallest - 1) * 130) / 2 } }
+  for (const [d, ids] of Object.entries(cols)) {
+    const top = ((tallest - ids.length) * 130) / 2
+    ids.forEach((id, row) => (pos[id] = { x: Number(d) * 270, y: top + row * 130 }))
+  }
+  return pos
+}
+
+function summary(s: Step): string {
+  switch (s.type) {
+    case 'call':
+      return str(obj(s.target).url) || str(list(obj(s.target).urls)[0]) || 'http://…'
+    case 'condition':
+      return s.match === 'all' ? 'match: all' : 'match: first'
+    case 'data_check':
+      return list(obj(s.rules).fields)
+        .map((f) => str(f.path))
+        .join(', ') || '…'
+    case 'topic':
+      return s.topic || '…'
+    case 'webhook':
+      return s.url || 'http://…'
     case 'reject':
-      return { topic: `${n}.rejected` }
-    case 'target':
-      return { url: '', timeout: '30000', attempts: '3', backoff: '1000' }
-    case 'check':
-      return { on_violation: 'reject', required: '', max_bytes: '' }
+    case 'dead_letter':
+      return s.topic || s.reason || ''
     default:
-      return { name: '', condition: '', action: 'pass_through', route: '' }
+      return ''
   }
 }
 
-const val = (d: BlockData, k: string) => d.props[k] || defaults(d.kind, d.name)[k] || ''
+type NodeData = { step?: Step; source?: string; issue: boolean }
 
-function summary(d: BlockData): string {
-  switch (d.kind) {
-    case 'target':
-      return val(d, 'url') || 'http://…'
-    case 'check':
-      return val(d, 'required') ? `required: ${val(d, 'required')}` : val(d, 'on_violation')
-    case 'before':
-    case 'after':
-      return val(d, 'condition') ? `${val(d, 'condition')} → ${val(d, 'action')}` : val(d, 'action')
-    default:
-      return val(d, 'topic')
-  }
-}
-
-function BlockNode({ data, selected }: NodeProps<Node<BlockData>>) {
+function StepNode({ data, selected }: NodeProps<Node<NodeData>>) {
   const t = useT()
-  const k = KINDS.find((x) => x.kind === data.kind)!
+  if (data.source !== undefined) {
+    return (
+      <div className={`n-block n-flow k-source ${selected ? 'selected' : ''}`}>
+        <div className="bh">
+          <span className="ico">
+            <Icon name="stream" className="" />
+          </span>
+          <b>{t('fz.source')}</b>
+        </div>
+        <div className="bs">{data.source || '…'}</div>
+        <Handle type="source" position={Position.Right} id="start" className="h-out" />
+      </div>
+    )
+  }
+  const s = data.step!
+  const hs = handlesOf(s)
   return (
-    <div className={`n-block k-${data.kind} ${selected ? 'selected' : ''} ${data.issue ? 'issue' : ''}`}>
-      {data.kind !== 'source' && <Handle type="target" position={Position.Top} />}
+    <div className={`n-block n-flow k-${s.type} ${selected ? 'selected' : ''} ${data.issue ? 'issue' : ''}`}>
+      <Handle type="target" position={Position.Left} className="h-in" />
       <div className="bh">
         <span className="ico">
-          <Icon name={k.icon} className="" />
+          <Icon name={iconOf(s.type)} className="" />
         </span>
-        <b>{t(`dz.k.${data.kind}` as Key)}</b>
+        <b>{s.name || t(`fz.t.${s.type}` as Key)}</b>
       </div>
-      <div className="bs">{summary(data)}</div>
-      <Handle type="source" position={Position.Bottom} />
-      {data.kind === 'target' && (
-        <>
-          <Handle type="source" id="l" position={Position.Left} />
-          <Handle type="source" id="r" position={Position.Right} />
-        </>
+      <div className="bs">{summary(s)}</div>
+      {hs.length > 0 && (
+        <div className="outs">
+          {hs.map((h) => (
+            <div key={h.key} className={`out o-${h.key.startsWith('b') ? 'branch' : h.key}`}>
+              <span>{h.label.startsWith('fz.') ? t(h.label as Key) : h.label}</span>
+              <Handle type="source" position={Position.Right} id={h.key} className="h-out" />
+            </div>
+          ))}
+        </div>
       )}
     </div>
   )
 }
 
-const nodeTypes = { block: BlockNode }
+const nodeTypes = { step: StepNode }
+const edgeColor = (handle: string) =>
+  handle === 'on_reject' || handle === 'on_fail' ? '#E4A951' : handle === 'on_failure' ? '#EC6B77' : handle === 'otherwise' ? '#7C848D' : handle.startsWith('b') ? '#7DB6F5' : '#34D399'
 
-// ordered returns the blocks of a kind top to bottom, which is also the
-// order rules are evaluated in.
-function ordered(nodes: Node<BlockData>[], kind: Kind) {
-  return nodes.filter((n) => n.data.kind === kind).sort((a, b) => a.position.y - b.position.y || a.position.x - b.position.x)
+function newStep(type: StepType, id: string): Step {
+  switch (type) {
+    case 'call':
+      return { id, type, target: { url: '' }, next: [] }
+    case 'condition':
+      return { id, type, branches: [{ name: '', when: '', next: [] }], otherwise: [] }
+    case 'data_check':
+      return { id, type, rules: { fields: [] }, next: [] }
+    case 'topic':
+      return { id, type, topic: '', next: [] }
+    case 'webhook':
+      return { id, type, url: '', next: [] }
+    default:
+      return { id, type }
+  }
 }
 
-function edgesFor(nodes: Node<BlockData>[]): Edge[] {
-  const one = (k: Kind) => ordered(nodes, k)[0]
-  const chain = [one('source'), one('check'), ...ordered(nodes, 'before'), one('target'), ...ordered(nodes, 'after'), one('destination')].filter(Boolean)
-  const edges: Edge[] = []
-  const link = (a: Node, b: Node, color: string, handle?: string) =>
-    edges.push({ id: `${a.id}>${b.id}`, source: a.id, target: b.id, sourceHandle: handle, type: 'default', style: { stroke: color, strokeWidth: 1.6, strokeOpacity: 0.7 } })
-  for (let i = 1; i < chain.length; i++) link(chain[i - 1], chain[i], '#34D399')
-  const target = one('target')
-  if (target && one('reject')) link(target, one('reject'), '#E4A951', 'l')
-  if (target && one('dlq')) link(target, one('dlq'), '#EC6B77', 'r')
-  return edges
+function uniqueId(steps: Step[], type: StepType) {
+  const base = type.replace('_', '-')
+  for (let n = 1; ; n++) {
+    const id = `${base}-${n}`
+    if (!steps.some((s) => s.id === id)) return id
+  }
 }
 
-const q = (s: string) => JSON.stringify(s)
-const num = (s: string, def: number) => (/^\d+$/.test(s.trim()) ? Number(s) : def)
-
-export function toYaml(name: string, project: string, blocks: Node<BlockData>[]): string {
-  const nodes = blocks.map((n) => ({ ...n, data: { ...n.data, name } }))
-  const one = (k: Kind) => ordered(nodes, k)[0]?.data
-  const src = one('source')
-  const tgt = one('target')
-  const L: string[] = [`name: ${q(name)}`]
-  if (project) L.push(`project: ${q(project)}`)
-  if (src) {
-    L.push(`source_topic: ${q(val(src, 'topic'))}`, `consumer_group: ${q(val(src, 'group'))}`, `workers: ${num(val(src, 'workers'), 1)}`)
+function hasLoop(flow: FlowCfg): boolean {
+  const state: Record<string, number> = {}
+  const visit = (id: string): boolean => {
+    if (state[id] === 1) return true
+    if (state[id] === 2) return false
+    state[id] = 1
+    const s = flow.steps.find((x) => x.id === id)
+    if (s) for (const o of allOutputs(s)) if (visit(o)) return true
+    state[id] = 2
+    return false
   }
-  for (const [k, key] of [
-    ['destination', 'destination_topic'],
-    ['dlq', 'dead_letter_topic'],
-    ['reject', 'reject_topic'],
-  ] as [Kind, string][]) {
-    const d = one(k)
-    if (d) L.push(`${key}: ${q(val(d, 'topic'))}`)
-  }
-  if (tgt) {
-    L.push('target:', `  url: ${q(val(tgt, 'url'))}`, `  timeout_ms: ${num(val(tgt, 'timeout'), 30000)}`)
-    L.push('retry:', `  max_attempts: ${num(val(tgt, 'attempts'), 3)}`, `  backoff_ms: ${num(val(tgt, 'backoff'), 1000)}`)
-  }
-  const chk = one('check')
-  if (chk) {
-    L.push('data_rules:', `  on_violation: ${q(val(chk, 'on_violation'))}`)
-    if (num(val(chk, 'max_bytes'), 0) > 0) L.push(`  max_bytes: ${num(val(chk, 'max_bytes'), 0)}`)
-    const req = val(chk, 'required')
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean)
-    if (req.length) {
-      L.push('  fields:')
-      for (const p of req) L.push(`    - path: ${q(p)}`, '      required: true')
-    }
-  }
-  for (const [k, key] of [
-    ['before', 'fast_path_rules'],
-    ['after', 'post_callback_rules'],
-  ] as [Kind, string][]) {
-    const rules = ordered(nodes, k)
-    if (!rules.length) continue
-    L.push(`${key}:`)
-    rules.forEach((r, i) => {
-      const d = r.data
-      L.push(`  - name: ${q(val(d, 'name') || `${k}-${i + 1}`)}`, `    condition: ${q(val(d, 'condition'))}`, `    action: ${val(d, 'action')}`)
-      if (val(d, 'action') === 'transform_route' && val(d, 'route')) L.push(`    destination_override: ${q(val(d, 'route'))}`)
-    })
-  }
-  return L.join('\n') + '\n'
+  return flow.steps.some((s) => visit(s.id))
 }
 
-const obj = (v: unknown): Fields => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Fields) : {})
-const list = (v: unknown): Fields[] => (Array.isArray(v) ? v.map(obj) : [])
-const str = (v: unknown) => (v === undefined || v === null ? '' : String(v))
-
-// fromConfig turns a pipeline's config into blocks, rules in the order
-// they run.
-export function fromConfig(cfg: Fields): Node<BlockData>[] {
-  const blocks: Node<BlockData>[] = []
-  const add = (kind: Kind, props: Props, y = 0, extra?: Fields) =>
-    blocks.push({ id: newId(kind), type: 'block', position: { x: 0, y }, data: { kind, props, issue: false, name: '', extra } })
-  add('source', { topic: str(cfg.source_topic), group: str(cfg.consumer_group), workers: str(cfg.workers) })
-  const dr = obj(cfg.data_rules)
-  const fields = list(dr.fields)
-  if (dr.on_violation || fields.length || dr.max_bytes) {
-    const required = fields.filter((f) => f.required).map((f) => str(f.path))
-    add('check', { on_violation: str(dr.on_violation), required: required.join(', '), max_bytes: dr.max_bytes ? str(dr.max_bytes) : '' })
-  }
-  const rule = (kind: Kind) => (r: Fields, i: number) =>
-    add(kind, { name: str(r.name), condition: str(r.condition), action: str(r.action) || 'pass_through', route: str(r.destination_override) }, i, r)
-  list(cfg.fast_path_rules).forEach(rule('before'))
-  const target = obj(cfg.target)
-  const retry = obj(cfg.retry)
-  const urls = Array.isArray(target.urls) ? target.urls : []
-  add('target', { url: str(target.url) || str(urls[0]), timeout: str(target.timeout_ms), attempts: str(retry.max_attempts), backoff: str(retry.backoff_ms) })
-  list(cfg.post_callback_rules).forEach(rule('after'))
-  if (cfg.destination_topic) add('destination', { topic: str(cfg.destination_topic) })
-  if (cfg.reject_topic) add('reject', { topic: str(cfg.reject_topic) })
-  if (cfg.dead_letter_topic) add('dlq', { topic: str(cfg.dead_letter_topic) })
-  return arrange(blocks)
+interface Issue {
+  key: Key
+  id?: string
 }
 
-// toConfig writes the blocks over an existing pipeline's config, keeping
-// every field the designer has no block for.
-export function toConfig(base: Fields, name: string, project: string, blocks: Node<BlockData>[]): Fields {
-  const nodes = blocks.map((n) => ({ ...n, data: { ...n.data, name } }))
-  const one = (k: Kind) => ordered(nodes, k)[0]?.data
-  const out: Fields = structuredClone(base)
-  out.name = name
-  if (project) out.project = project
-  else delete out.project
-  const src = one('source')
-  if (src) {
-    out.source_topic = val(src, 'topic')
-    out.consumer_group = val(src, 'group')
-    out.workers = num(val(src, 'workers'), 1)
+function issuesOf(name: string, pipe: Fields, flow: FlowCfg): Issue[] {
+  const out: Issue[] = []
+  if (!/^[a-z0-9][a-z0-9._-]*$/i.test(name)) out.push({ key: 'dz.i.name' })
+  if (!str(pipe.source_topic)) out.push({ key: 'fz.i.source' })
+  if (!flow.start.length) out.push({ key: 'fz.i.start' })
+  const reached = new Set([...flow.start, ...flow.steps.flatMap(allOutputs)])
+  for (const s of flow.steps) {
+    if (!reached.has(s.id)) out.push({ key: 'fz.i.orphan', id: s.id })
+    if (s.type === 'call' && !/^https?:\/\/\S+$/.test(str(obj(s.target).url)) && !list(obj(s.target).urls).length) out.push({ key: 'dz.i.url', id: s.id })
+    if (s.type === 'webhook' && !/^https?:\/\/\S+$/.test(s.url ?? '')) out.push({ key: 'dz.i.url', id: s.id })
+    if (s.type === 'condition' && (!s.branches?.length || s.branches.some((b) => !b.when.trim()))) out.push({ key: 'dz.i.condition', id: s.id })
+    if (s.type === 'topic' && !s.topic?.trim()) out.push({ key: 'fz.i.topic', id: s.id })
   }
-  for (const [k, key] of [
-    ['destination', 'destination_topic'],
-    ['dlq', 'dead_letter_topic'],
-    ['reject', 'reject_topic'],
-  ] as [Kind, string][]) {
-    const d = one(k)
-    out[key] = d ? val(d, 'topic') : ''
-  }
-  const tgt = one('target')
-  if (tgt) {
-    const target: Fields = { ...obj(base.target), timeout_ms: num(val(tgt, 'timeout'), 30000) }
-    const urls = Array.isArray(target.urls) ? [...target.urls] : []
-    if (!target.url && urls.length) {
-      urls[0] = val(tgt, 'url')
-      target.urls = urls
-    } else target.url = val(tgt, 'url')
-    out.target = target
-    out.retry = { ...obj(base.retry), max_attempts: num(val(tgt, 'attempts'), 3), backoff_ms: num(val(tgt, 'backoff'), 1000) }
-  }
-  const chk = one('check')
-  if (chk) {
-    const dr: Fields = { ...obj(base.data_rules), on_violation: val(chk, 'on_violation') }
-    const maxBytes = num(val(chk, 'max_bytes'), 0)
-    if (maxBytes > 0) dr.max_bytes = maxBytes
-    else delete dr.max_bytes
-    const want = val(chk, 'required')
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean)
-    const fields = list(dr.fields)
-      .map((f): Fields => ({ ...f, required: want.includes(str(f.path)) }))
-      .filter((f) => f.required || Object.keys(f).some((k) => k !== 'path' && k !== 'required'))
-    for (const p of want) if (!fields.some((f) => f.path === p)) fields.push({ path: p, required: true })
-    dr.fields = fields
-    out.data_rules = dr
-  } else delete out.data_rules
-  for (const [k, key] of [
-    ['before', 'fast_path_rules'],
-    ['after', 'post_callback_rules'],
-  ] as [Kind, string][]) {
-    out[key] = ordered(nodes, k).map((r, i) => {
-      const d = r.data
-      const rule: Fields = { ...d.extra, name: val(d, 'name') || `${k}-${i + 1}`, condition: val(d, 'condition'), action: val(d, 'action') }
-      if (val(d, 'action') === 'transform_route' && val(d, 'route')) rule.destination_override = val(d, 'route')
-      else delete rule.destination_override
-      return rule
-    })
-  }
+  if (hasLoop(flow)) out.push({ key: 'fz.i.loop' })
   return out
 }
 
-const KEY_ORDER = ['name', 'project', 'tenant', 'mcp_access', 'enabled', 'source_topic', 'destination_topic', 'dead_letter_topic', 'reject_topic', 'consumer_group', 'workers', 'ordering', 'target', 'retry', 'data_rules', 'fast_path_rules', 'post_callback_rules', 'path', 'url']
+// toConfig writes the flow over the pipeline's config. The fixed path's
+// fields are dropped since the steps carry them now.
+export function toConfig(base: Fields, name: string, project: string, pipe: Fields, flow: FlowCfg): Fields {
+  const out: Fields = structuredClone(base)
+  for (const k of ['target', 'destination_topic', 'fast_path_rules', 'post_callback_rules', 'data_rules']) delete out[k]
+  out.name = name
+  if (project) out.project = project
+  else delete out.project
+  out.source_topic = str(pipe.source_topic)
+  out.consumer_group = str(pipe.consumer_group) || `ark-${name}`
+  out.workers = num(pipe.workers, 1)
+  out.reject_topic = str(pipe.reject_topic)
+  out.dead_letter_topic = str(pipe.dead_letter_topic)
+  const clean = (s: Step): Step => {
+    const c: Record<string, unknown> = { ...s }
+    for (const k of Object.keys(c)) {
+      const v = c[k]
+      if (v === '' || v === undefined || (Array.isArray(v) && v.length === 0)) delete c[k]
+    }
+    if (TERMINAL.includes(s.type)) delete c.next
+    return c as unknown as Step
+  }
+  out.flow = { start: flow.start, steps: flow.steps.map(clean) }
+  return out
+}
+
+const KEY_ORDER = ['name', 'id', 'type', 'project', 'tenant', 'mcp_access', 'enabled', 'source_topic', 'consumer_group', 'workers', 'reject_topic', 'dead_letter_topic', 'ordering', 'when', 'next', 'start', 'steps', 'flow', 'path', 'url']
 const rank = (k: string) => (KEY_ORDER.includes(k) ? KEY_ORDER.indexOf(k) : KEY_ORDER.length)
 
 // yamlOf writes plain data as YAML, quoting every string, with the keys a
@@ -333,124 +394,236 @@ export function yamlOf(v: unknown, indent = ''): string {
     .join('')
 }
 
-function issuesOf(name: string, nodes: Node<BlockData>[]): { key: Key; arg?: string; id?: string }[] {
-  const out: { key: Key; arg?: string; id?: string }[] = []
-  if (!/^[a-z0-9][a-z0-9._-]*$/i.test(name)) out.push({ key: 'dz.i.name' })
-  for (const k of KINDS) if (k.required && !nodes.some((n) => n.data.kind === k.kind)) out.push({ key: 'dz.i.missing', arg: k.kind })
-  for (const n of nodes) {
-    const d = n.data
-    if (d.kind === 'target' && !/^https?:\/\/\S+$/.test(val(d, 'url'))) out.push({ key: 'dz.i.url', id: n.id })
-    if ((d.kind === 'before' || d.kind === 'after') && !val(d, 'condition').trim()) out.push({ key: 'dz.i.condition', id: n.id })
-    if ((d.kind === 'before' || d.kind === 'after') && val(d, 'action') === 'transform_route' && !val(d, 'route').trim()) out.push({ key: 'dz.i.route', id: n.id })
-  }
-  return out
-}
-
-function Fields({ node, onChange }: { node: Node<BlockData>; onChange: (p: Props) => void }) {
+function Input({ label, value, onChange, placeholder, mono = true }: { label: Key; value: string; onChange: (v: string) => void; placeholder?: string; mono?: boolean }) {
   const t = useT()
-  const d = node.data
-  const def = defaults(d.kind, d.name)
-  const input = (k: string, label: Key, mono = true) => (
-    <div className="field" key={k}>
+  return (
+    <div className="field">
       <label>{t(label)}</label>
-      <input className={`input ${mono ? 'mono' : ''}`} value={d.props[k] ?? ''} placeholder={def[k]} onChange={(e) => onChange({ ...d.props, [k]: e.target.value })} />
+      <input className={`input ${mono ? 'mono' : ''}`} value={value} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} />
     </div>
   )
-  switch (d.kind) {
-    case 'source':
+}
+
+function StepFields({ step, pipe, onChange }: { step: Step; pipe: Fields; onChange: (s: Step) => void }) {
+  const t = useT()
+  const set = (patch: Partial<Step>) => onChange({ ...step, ...patch })
+  const name = <Input label="cfg.name" value={step.name ?? ''} mono={false} onChange={(v) => set({ name: v })} />
+  switch (step.type) {
+    case 'call': {
+      const target = obj(step.target)
+      const retry = obj(step.retry)
+      const setT = (k: string, v: unknown) => set({ target: { ...target, [k]: v } })
       return (
         <>
-          {input('topic', 'cfg.source')}
-          {input('group', 'cfg.group')}
-          {input('workers', 'dz.f.workers')}
-        </>
-      )
-    case 'target':
-      return (
-        <>
-          {input('url', 'cfg.target')}
-          {input('timeout', 'dz.f.timeout')}
+          {name}
+          <Input label="cfg.target" value={str(target.url)} placeholder="http://app:8080/process" onChange={(v) => setT('url', v)} />
+          <Input label="fz.f.health" value={str(target.health_check_url)} placeholder="http://app:8080/health" onChange={(v) => setT('health_check_url', v)} />
+          <Input label="dz.f.timeout" value={str(target.timeout_ms)} placeholder="30000" onChange={(v) => setT('timeout_ms', num(v, 0) || undefined)} />
           <div className="grid2">
-            {input('attempts', 'dz.f.attempts')}
-            {input('backoff', 'dz.f.backoff')}
+            <Input label="dz.f.attempts" value={str(retry.max_attempts)} placeholder="3" onChange={(v) => set({ retry: { ...retry, max_attempts: num(v, 0) || undefined } })} />
+            <Input label="dz.f.backoff" value={str(retry.backoff_ms)} placeholder="1000" onChange={(v) => set({ retry: { ...retry, backoff_ms: num(v, 0) || undefined } })} />
           </div>
+          <span className="small dim">{t('fz.f.callHint')}</span>
         </>
       )
-    case 'check':
+    }
+    case 'condition': {
+      const branches = step.branches ?? []
+      const setB = (i: number, patch: Partial<BranchCfg>) => set({ branches: branches.map((b, j) => (j === i ? { ...b, ...patch } : b)) })
       return (
         <>
-          {input('required', 'dz.f.required')}
-          {input('max_bytes', 'dz.f.maxBytes')}
+          {name}
+          <div className="field">
+            <label>{t('fz.f.match')}</label>
+            <select className="select" value={step.match || 'first'} onChange={(e) => set({ match: e.target.value === 'first' ? undefined : e.target.value })}>
+              <option value="first">{t('fz.f.matchFirst')}</option>
+              <option value="all">{t('fz.f.matchAll')}</option>
+            </select>
+          </div>
+          {branches.map((b, i) => (
+            <div key={i} className="fz-branch stack">
+              <div className="row" style={{ justifyContent: 'space-between' }}>
+                <b className="small">
+                  {t('fz.f.branch')} {i + 1}
+                </b>
+                {branches.length > 1 && (
+                  <button className="btn ghost small" onClick={() => set({ branches: branches.filter((_, j) => j !== i) })} aria-label={t('dz.remove')}>
+                    <Icon name="trash" className="" />
+                  </button>
+                )}
+              </div>
+              <input className="input" value={b.name ?? ''} placeholder={t('cfg.name')} onChange={(e) => setB(i, { name: e.target.value })} />
+              <input className="input mono" value={b.when} placeholder="data.amount > 1000" onChange={(e) => setB(i, { when: e.target.value })} />
+            </div>
+          ))}
+          <button className="btn small" onClick={() => set({ branches: [...branches, { name: '', when: '', next: [] }] })}>
+            <Icon name="plus" className="" /> {t('fz.f.addBranch')}
+          </button>
+          <span className="small dim">{t('fz.f.condHint')}</span>
+        </>
+      )
+    }
+    case 'data_check': {
+      const rules = obj(step.rules)
+      const fields = list(rules.fields)
+      const required = fields.filter((f) => f.required).map((f) => str(f.path))
+      const setRequired = (v: string) => {
+        const want = v
+          .split(',')
+          .map((x) => x.trim())
+          .filter(Boolean)
+        const kept = fields.map((f): Fields => ({ ...f, required: want.includes(str(f.path)) })).filter((f) => f.required || Object.keys(f).some((k) => k !== 'path' && k !== 'required'))
+        for (const p of want) if (!kept.some((f) => f.path === p)) kept.push({ path: p, required: true })
+        set({ rules: { ...rules, fields: kept } })
+      }
+      return (
+        <>
+          {name}
+          <Input label="dz.f.required" value={required.join(', ')} placeholder="order_id, amount" onChange={setRequired} />
           <div className="field">
             <label>{t('dz.f.onViolation')}</label>
-            <select className="select" value={val(d, 'on_violation')} onChange={(e) => onChange({ ...d.props, on_violation: e.target.value })}>
-              {['reject', 'dead_letter', 'tag'].map((v) => (
-                <option key={v}>{v}</option>
-              ))}
+            <select className="select" value={str(rules.on_violation) === 'tag' ? 'tag' : 'route'} onChange={(e) => set({ rules: { ...rules, on_violation: e.target.value === 'tag' ? 'tag' : 'reject' } })}>
+              <option value="route">{t('fz.f.failPath')}</option>
+              <option value="tag">tag</option>
             </select>
           </div>
         </>
       )
-    case 'before':
-    case 'after':
+    }
+    case 'topic':
       return (
         <>
-          {input('name', 'cfg.name', false)}
-          {input('condition', 'dz.f.condition')}
-          <span className="small dim">{t(d.kind === 'before' ? 'dz.f.condBefore' : 'dz.f.condAfter')}</span>
-          <div className="field">
-            <label>{t('dz.f.action')}</label>
-            <select className="select" value={val(d, 'action')} onChange={(e) => onChange({ ...d.props, action: e.target.value })}>
-              {ACTIONS.map((a) => (
-                <option key={a}>{a}</option>
-              ))}
-            </select>
-          </div>
-          {val(d, 'action') === 'transform_route' && input('route', 'dz.f.route')}
+          {name}
+          <Input label="dz.f.topic" value={step.topic ?? ''} placeholder="orders.processed" onChange={(v) => set({ topic: v })} />
+        </>
+      )
+    case 'webhook':
+      return (
+        <>
+          {name}
+          <Input label="fz.f.url" value={step.url ?? ''} placeholder="http://crm:8080/notify" onChange={(v) => set({ url: v })} />
+        </>
+      )
+    case 'reject':
+    case 'dead_letter':
+      return (
+        <>
+          {name}
+          <Input label="dz.f.topic" value={step.topic ?? ''} placeholder={str(step.type === 'reject' ? pipe.reject_topic || pipe.dead_letter_topic : pipe.dead_letter_topic)} onChange={(v) => set({ topic: v })} />
+          <Input label="fz.f.reason" value={step.reason ?? ''} mono={false} onChange={(v) => set({ reason: v })} />
         </>
       )
     default:
-      return input('topic', 'dz.f.topic')
+      return name
   }
+}
+
+interface DesignerProps {
+  onClose: () => void
+  onApplied: () => void
+  onSimple: () => void
+  // existing opens a running pipeline for editing instead of a new one.
+  existing?: { name: string; config: Fields }
 }
 
 function Board({ onClose, onApplied, onSimple, existing }: DesignerProps) {
   const t = useT()
-  const flow = useReactFlow()
+  const flowApi = useReactFlow()
   const projects = useProjects()
+  const initial = useMemo<FlowCfg>(() => {
+    if (existing) return readFlow(existing.config)
+    return {
+      start: ['app'],
+      steps: [
+        { id: 'app', type: 'call', target: { url: '' }, next: ['result'] },
+        { id: 'result', type: 'topic', topic: '' },
+      ],
+    }
+  }, [existing])
   const [name, setName] = useState(existing?.name ?? '')
   const [project, setProject] = useState(str(existing?.config.project))
-  const [nodes, setNodes] = useState<Node<BlockData>[]>(() => (existing ? fromConfig(existing.config) : starter()))
+  const [pipe, setPipe] = useState<Fields>(() => {
+    const c = existing?.config ?? {}
+    return { source_topic: str(c.source_topic), consumer_group: str(c.consumer_group), workers: str(c.workers || 1), reject_topic: str(c.reject_topic), dead_letter_topic: str(c.dead_letter_topic) }
+  })
+  const [touched, setTouched] = useState(!!existing)
+  const [flow, setFlow] = useState<FlowCfg>(initial)
+  const [pos, setPos] = useState<Record<string, { x: number; y: number }>>(() => layout(initial))
+  const [dims, setDims] = useState<Record<string, { width: number; height: number }>>({})
   const [sel, setSel] = useState<string | null>(null)
   const [yaml, setYaml] = useState<string | null>(null)
 
-  const issues = useMemo(() => issuesOf(name, nodes), [name, nodes])
-  const shown = useMemo(
-    () => nodes.map((n) => ({ ...n, selected: n.id === sel, data: { ...n.data, name, issue: issues.some((i) => i.id === n.id) } })),
-    [nodes, sel, name, issues],
-  )
-  const edges = useMemo(() => edgesFor(nodes), [nodes])
-  const measured = nodes.filter((n) => n.measured?.width).length
+  // A new pipeline's topics follow its name until someone types their own.
   useEffect(() => {
-    if (measured !== nodes.length) return
-    const id = setTimeout(() => flow.fitView({ padding: 0.15, maxZoom: 1, duration: 250 }), 40)
-    return () => clearTimeout(id)
-  }, [measured, nodes.length, flow])
-  const selected = nodes.find((n) => n.id === sel)
+    if (touched) return
+    const n = name || 'pipeline'
+    setPipe((p) => ({ ...p, source_topic: `${n}.in`, dead_letter_topic: `${n}.dlq`, reject_topic: `${n}.rejected` }))
+    setFlow((f) => ({ ...f, steps: f.steps.map((s) => (s.id === 'result' && s.type === 'topic' ? { ...s, topic: `${n}.out` } : s)) }))
+  }, [name, touched])
 
-  const add = (kind: Kind, at?: { x: number; y: number }) => {
-    const k = KINDS.find((x) => x.kind === kind)!
-    if (k.single && nodes.some((n) => n.data.kind === kind)) return
-    const id = newId(kind)
-    const node: Node<BlockData> = { id, type: 'block', position: at ?? { x: 0, y: 0 }, data: { kind, props: {}, issue: false, name: '' } }
-    setNodes((ns) => arrange([...ns, node]))
-    setSel(id)
+  const issues = useMemo(() => issuesOf(name, pipe, flow), [name, pipe, flow])
+  const nodes: Node<NodeData>[] = useMemo(
+    () => [
+      { id: SOURCE, type: 'step', position: pos[SOURCE] ?? { x: 0, y: 0 }, measured: dims[SOURCE], selected: sel === SOURCE, deletable: false, data: { source: str(pipe.source_topic), issue: false } },
+      ...flow.steps.map((s) => ({ id: s.id, type: 'step', position: pos[s.id] ?? { x: 260, y: 0 }, measured: dims[s.id], selected: sel === s.id, data: { step: s, issue: issues.some((i) => i.id === s.id) } })),
+    ],
+    [flow, pos, dims, sel, pipe.source_topic, issues],
+  )
+  const edges: Edge[] = useMemo(() => {
+    const line = (id: string, source: string, handle: string, target: string): Edge => ({
+      id,
+      source,
+      sourceHandle: handle,
+      target,
+      type: 'smoothstep',
+      style: { stroke: edgeColor(handle === 'start' ? 'next' : handle), strokeWidth: 1.6 },
+    })
+    const out: Edge[] = flow.start.map((id) => line(`${SOURCE}:start>${id}`, SOURCE, 'start', id))
+    for (const s of flow.steps) for (const h of handlesOf(s)) for (const to of outputsAt(s, h.key)) out.push(line(`${s.id}:${h.key}>${to}`, s.id, h.key, to))
+    return out
+  }, [flow])
+
+  const connect = (c: Connection) => {
+    const from = c.source
+    const to = c.target
+    if (!from || !to || to === SOURCE || from === to) return
+    if (from === SOURCE) {
+      setFlow((f) => (f.start.includes(to) ? f : { ...f, start: [...f.start, to] }))
+      return
+    }
+    const key = c.sourceHandle ?? 'next'
+    setFlow((f) => ({ ...f, steps: f.steps.map((s) => (s.id !== from || outputsAt(s, key).includes(to) ? s : withOutputs(s, key, [...outputsAt(s, key), to]))) }))
   }
-  const remove = (id: string) => {
-    setNodes((ns) => arrange(ns.filter((n) => n.id !== id)))
+  const removeEdges = (gone: Edge[]) =>
+    setFlow((f) => {
+      let next = f
+      for (const e of gone) {
+        const key = e.sourceHandle ?? 'next'
+        if (e.source === SOURCE) next = { ...next, start: next.start.filter((id) => id !== e.target) }
+        else next = { ...next, steps: next.steps.map((s) => (s.id === e.source ? withOutputs(s, key, outputsAt(s, key).filter((id) => id !== e.target)) : s)) }
+      }
+      return next
+    })
+  const removeStep = (id: string) => {
+    setFlow((f) => ({
+      start: f.start.filter((x) => x !== id),
+      steps: f.steps.filter((s) => s.id !== id).map((s) => handlesOf(s).reduce((acc, h) => withOutputs(acc, h.key, outputsAt(acc, h.key).filter((x) => x !== id)), s)),
+    }))
     setSel(null)
   }
-  const update = (id: string, props: Props) => setNodes((ns) => ns.map((n) => (n.id === id ? { ...n, data: { ...n.data, props } } : n)))
+  const add = (type: StepType, at?: { x: number; y: number }) => {
+    const id = uniqueId(flow.steps, type)
+    setFlow((f) => ({ ...f, steps: [...f.steps, newStep(type, id)] }))
+    setPos((p) => ({ ...p, [id]: at ?? { x: Math.max(0, ...Object.values(p).map((v) => v.x)) + 260, y: 0 } }))
+    setSel(id)
+  }
+  const selected = flow.steps.find((s) => s.id === sel)
+  const allSized = flow.steps.every((s) => dims[s.id]) && !!dims[SOURCE]
+  useEffect(() => {
+    if (!allSized) return
+    const id = setTimeout(() => flowApi.fitView({ padding: 0.15, maxZoom: 1, duration: 250 }), 40)
+    return () => clearTimeout(id)
+  }, [allSized, flowApi])
 
   if (yaml !== null) {
     return (
@@ -475,34 +648,30 @@ function Board({ onClose, onApplied, onSimple, existing }: DesignerProps) {
   return (
     <div className="dz">
       <aside className="dz-palette">
-        <div className="small dim">{t('dz.palette')}</div>
-        {KINDS.map((k) => {
-          const used = k.single && nodes.some((n) => n.data.kind === k.kind)
-          return (
-            <button
-              key={k.kind}
-              className={`dz-chip k-${k.kind}`}
-              disabled={used}
-              draggable={!used}
-              onDragStart={(e) => {
-                e.dataTransfer.setData(MIME, k.kind)
-                e.dataTransfer.effectAllowed = 'move'
-              }}
-              onClick={() => add(k.kind)}
-              title={t(`dz.d.${k.kind}` as Key)}
-            >
-              <span className="ico">
-                <Icon name={k.icon} className="" />
-              </span>
-              <span className="lbl">
-                <b>{t(`dz.k.${k.kind}` as Key)}</b>
-                <span>{t(`dz.d.${k.kind}` as Key)}</span>
-              </span>
-            </button>
-          )
-        })}
+        <div className="small dim">{t('fz.palette')}</div>
+        {TYPES.map((k) => (
+          <button
+            key={k.type}
+            className={`dz-chip k-${k.type}`}
+            draggable
+            onDragStart={(e) => {
+              e.dataTransfer.setData(MIME, k.type)
+              e.dataTransfer.effectAllowed = 'move'
+            }}
+            onClick={() => add(k.type)}
+            title={t(`fz.d.${k.type}` as Key)}
+          >
+            <span className="ico">
+              <Icon name={k.icon} className="" />
+            </span>
+            <span className="lbl">
+              <b>{t(`fz.t.${k.type}` as Key)}</b>
+              <span>{t(`fz.d.${k.type}` as Key)}</span>
+            </span>
+          </button>
+        ))}
         <div className="small dim" style={{ marginTop: 'auto' }}>
-          {t('dz.dragHint')}
+          {t('fz.dragHint')}
         </div>
       </aside>
       <div
@@ -514,26 +683,34 @@ function Board({ onClose, onApplied, onSimple, existing }: DesignerProps) {
           }
         }}
         onDrop={(e) => {
-          const kind = e.dataTransfer.getData(MIME) as Kind
-          if (!kind) return
+          const type = e.dataTransfer.getData(MIME) as StepType
+          if (!type) return
           e.preventDefault()
-          const p = flow.screenToFlowPosition({ x: e.clientX, y: e.clientY })
-          add(kind, { x: p.x - 90, y: p.y - 28 })
+          const p = flowApi.screenToFlowPosition({ x: e.clientX, y: e.clientY })
+          add(type, { x: p.x - 100, y: p.y - 30 })
         }}
       >
         <ReactFlow
-          nodes={shown}
+          nodes={nodes}
           edges={edges}
           nodeTypes={nodeTypes}
-          onNodesChange={(ch: NodeChange<Node<BlockData>>[]) => setNodes((ns) => applyNodeChanges(ch.filter((c) => c.type === 'position' || c.type === 'dimensions'), ns))}
+          onNodesChange={(ch: NodeChange<Node<NodeData>>[]) => {
+            const moved = applyNodeChanges(
+              ch.filter((c) => c.type === 'position'),
+              nodes,
+            )
+            setPos((p) => ({ ...p, ...Object.fromEntries(moved.map((n) => [n.id, n.position])) }))
+            const sized = ch.flatMap((c) => (c.type === 'dimensions' && c.dimensions ? [[c.id, c.dimensions] as const] : []))
+            if (sized.length) setDims((d) => ({ ...d, ...Object.fromEntries(sized) }))
+            for (const c of ch) if (c.type === 'remove' && c.id !== SOURCE) removeStep(c.id)
+          }}
+          onConnect={connect}
+          onEdgesDelete={removeEdges}
+          onEdgeDoubleClick={(_, e) => removeEdges([e])}
           onNodeClick={(_, n) => setSel(n.id)}
-          onNodeDragStop={() => setNodes(arrange)}
           onPaneClick={() => setSel(null)}
-          nodesConnectable={false}
-          deleteKeyCode={null}
-          fitView
-          fitViewOptions={{ padding: 0.2, maxZoom: 1 }}
-          minZoom={0.4}
+          deleteKeyCode={['Delete', 'Backspace']}
+          minZoom={0.3}
           maxZoom={1.5}
           proOptions={{ hideAttribution: true }}
         >
@@ -544,13 +721,14 @@ function Board({ onClose, onApplied, onSimple, existing }: DesignerProps) {
         {selected ? (
           <>
             <div className="row" style={{ justifyContent: 'space-between' }}>
-              <b>{t(`dz.k.${selected.data.kind}` as Key)}</b>
-              <button className="btn ghost small" onClick={() => remove(selected.id)}>
+              <b>{t(`fz.t.${selected.type}` as Key)}</b>
+              <button className="btn ghost small" onClick={() => removeStep(selected.id)}>
                 <Icon name="trash" className="" /> {t('dz.remove')}
               </button>
             </div>
-            <span className="small dim">{t(`dz.d.${selected.data.kind}` as Key)}</span>
-            <Fields node={{ ...selected, data: { ...selected.data, name } }} onChange={(p) => update(selected.id, p)} />
+            <span className="small dim mono">{selected.id}</span>
+            <span className="small dim">{t(`fz.d.${selected.type}` as Key)}</span>
+            <StepFields step={selected} pipe={pipe} onChange={(s) => setFlow((f) => ({ ...f, steps: f.steps.map((x) => (x.id === s.id ? s : x)) }))} />
           </>
         ) : (
           <>
@@ -568,7 +746,27 @@ function Board({ onClose, onApplied, onSimple, existing }: DesignerProps) {
                 ))}
               </select>
             </div>
-            <span className="small dim">{t('dz.selectHint')}</span>
+            {(
+              [
+                ['source_topic', 'cfg.source'],
+                ['consumer_group', 'cfg.group'],
+                ['workers', 'dz.f.workers'],
+                ['reject_topic', 'fz.f.rejectTopic'],
+                ['dead_letter_topic', 'fz.f.dlqTopic'],
+              ] as [string, Key][]
+            ).map(([k, label]) => (
+              <Input
+                key={k}
+                label={label}
+                value={str(pipe[k])}
+                placeholder={k === 'consumer_group' ? `ark-${name || 'pipeline'}` : ''}
+                onChange={(v) => {
+                  setTouched(true)
+                  setPipe((p) => ({ ...p, [k]: v }))
+                }}
+              />
+            ))}
+            <span className="small dim">{t('fz.selectHint')}</span>
           </>
         )}
         <div className="dz-check">
@@ -581,7 +779,8 @@ function Board({ onClose, onApplied, onSimple, existing }: DesignerProps) {
             issues.map((i, n) => (
               <button key={n} className="dz-issue small" onClick={() => i.id && setSel(i.id)}>
                 <Icon name="alert" className="" />
-                {t(i.key).replace('{}', i.arg ? t(`dz.k.${i.arg}` as Key) : '')}
+                {t(i.key)}
+                {i.id ? ` (${i.id})` : ''}
               </button>
             ))
           )}
@@ -594,21 +793,13 @@ function Board({ onClose, onApplied, onSimple, existing }: DesignerProps) {
               {t('dz.simple')}
             </button>
           )}
-          <button className="btn primary" disabled={issues.length > 0} onClick={() => setYaml(existing ? yamlOf(toConfig(existing.config, name, project, nodes)) : toYaml(name, project, nodes))}>
+          <button className="btn primary" disabled={issues.length > 0} onClick={() => setYaml(yamlOf(toConfig(existing?.config ?? {}, name, project, pipe, flow)))}>
             {t('dz.review')}
           </button>
         </div>
       </aside>
     </div>
   )
-}
-
-interface DesignerProps {
-  onClose: () => void
-  onApplied: () => void
-  onSimple: () => void
-  // existing opens a running pipeline for editing instead of a new one.
-  existing?: { name: string; config: Fields }
 }
 
 export function Designer(props: DesignerProps) {
@@ -620,7 +811,7 @@ export function Designer(props: DesignerProps) {
           <div>
             <h2>{props.existing ? `${t('dz.editTitle')} ${props.existing.name}` : t('cfg.newTitle')}</h2>
             <p className="muted small" style={{ margin: 0 }}>
-              {t('dz.hint')}
+              {t('fz.hint')}
             </p>
           </div>
           <button className="btn ghost small" onClick={props.onClose} aria-label={t('cfg.cancel')}>

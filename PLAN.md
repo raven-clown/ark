@@ -1049,8 +1049,17 @@ rules only before and after one call.
       topic and a webhook at once, a condition on the app's answer, the
       app's 400 and 500 each taking their own step, and a failed data
       check.
-- [ ] **Flow designer.** Nodes dragged onto a board and wired freely,
-      each with its own settings, reading and writing `flow:`.
+- [x] **Flow designer.** Steps dragged onto a board and wired freely
+      from any way out (a call's answer, 4xx and failed lines, one line per
+      condition branch plus otherwise, a data check's pass and fail), each
+      with its own settings, reading and writing `flow:` through preview
+      and confirm. A fixed-path pipeline opens as the equivalent flow
+      (data check, rules as first-match conditions, the call, result,
+      reject and dead letter). Verified in the console against
+      docker-compose Kafka: a line drawn from the source to a new topic
+      step sent every message there as well as down its usual path, and
+      the demo pipeline converted to a flow routed good, bad, 400, 500 and
+      rule-matched messages exactly as before.
 
 ### Backend: Phase 8: Projects, AI access and "everything configurable"
 
@@ -1165,12 +1174,10 @@ show data moving, never as decoration.
       as the quick path.
 - [x] Designer for existing pipelines: right-click a pipeline on the
       canvas and choose "Edit in designer". Its current config is loaded
-      into blocks, and the blocks are written back over that config, so
-      fields the designer has no block for (tenant, health check, breaker,
-      field types and ranges, rule webhooks) stay as they are. Same
-      preview and confirm; reviewing without a change reports
-      "unchanged". Verified against the demo pipeline: a rule added in the
-      designer dead-lettered a matching message while others went through.
+      into the designer and written back over that config, so fields the
+      designer has no control for (tenant, health check, breaker, field
+      types and ranges) stay as they are. Same preview and confirm. Since
+      Phase 9 this is the flow designer.
 - **Exit criteria:** an operator can create, change, watch, debug and
   control every pipeline from the console alone, and the flow animation
   and live tail reflect real traffic, verified against docker-compose
