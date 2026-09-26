@@ -399,6 +399,7 @@ type PipelineStats struct {
 	Failed        int64   `json:"failed"`
 	Lag           int64   `json:"lag"`
 	AvgCallbackMs float64 `json:"avg_callback_ms"`
+	CallbackCalls int64   `json:"callback_calls"`
 }
 
 func pipelineStats(p config.Pipeline, statuses []consumer.Status) *PipelineStats {
@@ -421,6 +422,7 @@ func pipelineStats(p config.Pipeline, statuses []consumer.Status) *PipelineStats
 		ms += st.AvgCallbackMs * float64(st.CallbackCalls)
 		calls += st.CallbackCalls
 	}
+	s.CallbackCalls = calls
 	if calls > 0 {
 		s.AvgCallbackMs = ms / float64(calls)
 	}

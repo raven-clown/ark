@@ -114,6 +114,7 @@ export interface PipelineStats {
   failed: number
   lag: number
   avg_callback_ms: number
+  callback_calls: number
 }
 
 export interface TopologyNode {

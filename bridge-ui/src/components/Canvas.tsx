@@ -42,6 +42,7 @@ interface Props {
 }
 
 interface Rates {
+  calls: number
   in: number
   out: number
   reject: number
@@ -134,6 +135,84 @@ function TargetNode({ data }: NodeProps<Node<TargetData>>) {
   )
 }
 
+const MAX_DOTS = 32
+const MAX_EMIT = 12
+
+// dotSpeed is how many pixels a second a dot travels on a line carrying
+// rate messages a second: busier lines run faster.
+function dotSpeed(rate: number) {
+  return Math.min(260, 40 + 36 * Math.log2(1 + rate))
+}
+
+// useFlowDots releases one dot per message crossing the line (one per
+// rate/MAX_EMIT messages on busy lines) and moves each dot to the end of the
+// line at a speed set by that line's own rate. New numbers only change how
+// often dots are released and how fast they move from then on; dots already
+// on the line keep going, so a refresh never resets the animation.
+function useFlowDots(rate: number, enabled: boolean) {
+  const pathRef = useRef<SVGPathElement>(null)
+  const dotRefs = useRef<(SVGGElement | null)[]>([])
+  const live = useRef({ rate, enabled })
+  live.current = { rate, enabled }
+
+  useEffect(() => {
+    let raf = 0
+    let last = performance.now()
+    let due = 0
+    let speed = 0
+    let seeded = false
+    const dots: number[] = []
+    const tick = (now: number) => {
+      const dt = Math.min(0.1, (now - last) / 1000)
+      last = now
+      const el = pathRef.current
+      const len = el?.getTotalLength() ?? 0
+      const { rate: r, enabled: on } = live.current
+      const emit = on ? Math.min(r, MAX_EMIT) : 0
+      speed += (dotSpeed(r) - speed) * Math.min(1, dt * 1.5)
+      if (el && len > 0) {
+        if (!seeded && emit > 0) {
+          seeded = true
+          speed = dotSpeed(r)
+          const gap = speed / emit / len
+          for (let p = gap / 2; p < 1 && dots.length < MAX_DOTS; p += gap) dots.push(p)
+        }
+        if (emit > 0) {
+          due += emit * dt
+          while (due >= 1 && dots.length < MAX_DOTS) {
+            due -= 1
+            dots.push((due / emit) * (speed / len))
+          }
+          due = Math.min(due, 1)
+        } else {
+          due = 0
+        }
+        const step = (speed * dt) / len
+        for (let i = dots.length - 1; i >= 0; i--) {
+          dots[i] += step
+          if (dots[i] >= 1) dots.splice(i, 1)
+        }
+      }
+      for (let i = 0; i < MAX_DOTS; i++) {
+        const g = dotRefs.current[i]
+        if (!g) continue
+        if (i >= dots.length || !el) {
+          g.setAttribute('opacity', '0')
+          continue
+        }
+        const pt = el.getPointAtLength(dots[i] * len)
+        g.setAttribute('transform', `translate(${pt.x},${pt.y})`)
+        g.setAttribute('opacity', '1')
+      }
+      raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [])
+
+  return { pathRef, dotRefs }
+}
+
 // FlowEdge draws a connection with dots moving along it at a speed and
 // density that follow the real message rate.
 function FlowEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data }: EdgeProps<Edge<FlowData>>) {
@@ -141,9 +220,7 @@ function FlowEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targ
   const d = data!
   const color = d.alert === 'coral' ? '#EC6B77' : d.alert === 'amber' ? '#E4A951' : roleColor[d.role] ?? '#8B96A3'
   const active = d.rate > 0
-  const maxDots = d.role === 'call' || d.role === 'webhook' ? 1 : 5
-  const dots = d.motion && active ? Math.min(maxDots, Math.max(1, Math.ceil(Math.log2(d.rate + 1)))) : 0
-  const dur = Math.max(0.7, Math.min(3, 2.6 - Math.log10(d.rate + 1) * 0.9))
+  const { pathRef, dotRefs } = useFlowDots(d.rate, d.motion)
   return (
     <>
       <BaseEdge
@@ -155,14 +232,11 @@ function FlowEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targ
           strokeWidth: 1.6,
         }}
       />
-      {Array.from({ length: dots }, (_, i) => (
-        <g key={i}>
-          <circle r="5" fill={color} opacity="0.14">
-            <animateMotion dur={`${dur}s`} repeatCount="indefinite" begin={`-${(i * dur) / dots}s`} path={path} />
-          </circle>
-          <circle r="2.6" fill={color}>
-            <animateMotion dur={`${dur}s`} repeatCount="indefinite" begin={`-${(i * dur) / dots}s`} path={path} />
-          </circle>
+      <path ref={pathRef} d={path} fill="none" stroke="none" />
+      {Array.from({ length: MAX_DOTS }, (_, i) => (
+        <g key={i} ref={(el) => void (dotRefs.current[i] = el)} opacity="0" style={{ pointerEvents: 'none' }}>
+          <circle r="5" fill={color} opacity="0.14" />
+          <circle r="2.6" fill={color} />
         </g>
       ))}
     </>
@@ -218,12 +292,13 @@ export function Canvas({ search, health, motion, selected, onSelect, onNew, refr
           const out = d(n.stats.processed, p.s.processed)
           const reject = d(n.stats.rejected, p.s.rejected)
           const dlq = d(n.stats.dead_lettered, p.s.dead_lettered)
+          const calls = d(n.stats.callback_calls, p.s.callback_calls)
           // Average the last three polls (about 6s) so a pause between
           // bursts doesn't make the lines flicker off and on.
-          const h = [...(recentRates.current[n.id] ?? []), { in: out + reject + dlq, out, reject, dlq }].slice(-3)
+          const h = [...(recentRates.current[n.id] ?? []), { calls, in: out + reject + dlq, out, reject, dlq }].slice(-3)
           recentRates.current[n.id] = h
           const avg = (k: keyof Rates) => h.reduce((a, x) => a + x[k], 0) / h.length
-          r[n.id] = { in: avg('in'), out: avg('out'), reject: avg('reject'), dlq: avg('dlq') }
+          r[n.id] = { calls: avg('calls'), in: avg('in'), out: avg('out'), reject: avg('reject'), dlq: avg('dlq') }
           spark.current[n.id] = [...(spark.current[n.id] ?? []), r[n.id].in].slice(-24)
         }
         prev.current[n.id] = { at: now, s: n.stats }
@@ -281,7 +356,7 @@ export function Canvas({ search, health, motion, selected, onSelect, onNew, refr
         const r = rates[pid]
         const s = stats.get(pid)
         const rate =
-          e.role === 'consume' || e.role === 'call' ? r?.in ?? 0 : e.role === 'destination' || e.role === 'override' || e.role === 'webhook' ? r?.out ?? 0 : e.role === 'reject' ? r?.reject ?? 0 : r?.dlq ?? 0
+          e.role === 'consume' ? r?.in ?? 0 : e.role === 'call' ? r?.calls ?? 0 : e.role === 'destination' || e.role === 'override' || e.role === 'webhook' ? r?.out ?? 0 : e.role === 'reject' ? r?.reject ?? 0 : r?.dlq ?? 0
         const breakerOpen = s?.breaker_state === 'open'
         return {
           id: `${e.from}>${e.to}>${e.role}>${i}`,
