@@ -27,6 +27,7 @@ type heartbeatRecord struct {
 	NodeID    string                   `json:"node_id"`
 	LastSeen  time.Time                `json:"last_seen"`
 	Labels    map[string]string        `json:"labels,omitempty"`
+	Leader    bool                     `json:"leader,omitempty"`
 	Pipelines map[string]PipelineStats `json:"pipelines,omitempty"`
 	// ConfigVersion lets any node see which nodes haven't applied the
 	// latest cluster config yet.

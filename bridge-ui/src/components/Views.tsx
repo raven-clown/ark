@@ -10,6 +10,7 @@ function useLoad<T>(path: string, every = 0) {
   const [data, setData] = useState<T | null>(null)
   const [error, setError] = useState('')
   const load = useCallback(async () => {
+    if (!path) return
     try {
       setData(await api<T>(path))
       setError('')
@@ -108,11 +109,20 @@ interface ClusterOut {
   live_nodes?: string[]
   config_version?: number
   node_config_versions?: Record<string, number>
+  leader_node?: string
+  node_labels?: Record<string, Record<string, string>>
 }
+
+type ClusterPipelines = Record<string, { nodes: Record<string, { workers: number }> }>
 
 export function ClusterView() {
   const t = useT()
   const { data, error } = useLoad<ClusterOut>('/cluster', 4000)
+  const placed = useLoad<ClusterPipelines>(data?.enabled ? '/cluster/pipelines' : '', 4000)
+  const workersOn = (node: string) =>
+    Object.entries(placed.data ?? {})
+      .map(([name, p]) => [name, p.nodes?.[node]?.workers ?? 0] as const)
+      .filter(([, w]) => w > 0)
   return (
     <div className="page">
       <div className="page-head">
@@ -139,6 +149,8 @@ export function ClusterView() {
             <thead>
               <tr>
                 <th>{t('cluster.nodes')}</th>
+                <th>{t('cluster.labels')}</th>
+                <th>{t('cluster.workers')}</th>
                 <th>{t('cluster.version')}</th>
                 <th />
               </tr>
@@ -147,11 +159,27 @@ export function ClusterView() {
               {(data.live_nodes ?? []).map((n) => (
                 <tr key={n}>
                   <td className="mono">{n}</td>
+                  <td>
+                    <span className="row">
+                      {Object.entries(data.node_labels?.[n] ?? {}).map(([k, val]) => (
+                        <span key={k} className="pill mono">
+                          {k}={val}
+                        </span>
+                      ))}
+                    </span>
+                  </td>
+                  <td className="mono">
+                    {workersOn(n).map(([name, w]) => (
+                      <div key={name}>
+                        {name} × {w}
+                      </div>
+                    ))}
+                  </td>
                   <td className="mono">{data.node_config_versions?.[n] ?? ''}</td>
                   <td>
                     <span className="row">
                       {n === data.node_id && <span className="pill">{t('cluster.thisNode')}</span>}
-                      {n === data.node_id && data.leader && <span className="pill healthy">{t('cluster.leader')}</span>}
+                      {n === data.leader_node && <span className="pill healthy">{t('cluster.leader')}</span>}
                     </span>
                   </td>
                 </tr>

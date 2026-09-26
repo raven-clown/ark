@@ -102,6 +102,8 @@ func NewServer(reg Registry, reload Reloader, clusterNode *cluster.Node, tokens 
 			"live_nodes":           status.LiveNodes,
 			"config_version":       status.ConfigVersion,
 			"node_config_versions": status.NodeVersions,
+			"leader_node":          status.LeaderNode,
+			"node_labels":          status.NodeLabels,
 		})
 	})
 

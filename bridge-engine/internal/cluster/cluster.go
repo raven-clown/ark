@@ -50,12 +50,14 @@ func TopicsFor(clusterName string) Topics {
 type ReconcileFunc func(pipelines []config.Pipeline) []error
 
 type Status struct {
-	NodeID        string           `json:"node_id"`
-	Cluster       string           `json:"cluster"`
-	Leader        bool             `json:"leader"`
-	LiveNodes     []string         `json:"live_nodes"`
-	ConfigVersion int64            `json:"config_version"`
-	NodeVersions  map[string]int64 `json:"node_config_versions"`
+	NodeID        string                       `json:"node_id"`
+	Cluster       string                       `json:"cluster"`
+	Leader        bool                         `json:"leader"`
+	LiveNodes     []string                     `json:"live_nodes"`
+	ConfigVersion int64                        `json:"config_version"`
+	NodeVersions  map[string]int64             `json:"node_config_versions"`
+	LeaderNode    string                       `json:"leader_node,omitempty"`
+	NodeLabels    map[string]map[string]string `json:"node_labels,omitempty"`
 }
 
 // Node coordinates this process's participation in an ARK cluster: it
@@ -200,7 +202,7 @@ func (n *Node) Start(ctx context.Context, seed []config.Pipeline) error {
 const partitionRefresh = time.Minute
 
 func (n *Node) heartbeatSnapshot() heartbeatRecord {
-	rec := heartbeatRecord{Labels: n.cfg.Labels, ConfigVersion: n.configVersion.Load()}
+	rec := heartbeatRecord{Labels: n.cfg.Labels, ConfigVersion: n.configVersion.Load(), Leader: n.elector != nil && n.elector.IsLeader()}
 	if n.statsFn != nil {
 		rec.Pipelines = n.statsFn()
 	}
@@ -369,8 +371,19 @@ func (n *Node) StatusSnapshot() Status {
 	sort.Strings(live)
 	leader := n.elector != nil && n.elector.IsLeader()
 	versions := make(map[string]int64)
+	labels := make(map[string]map[string]string)
+	leaderNode := ""
+	if leader {
+		leaderNode = n.id
+	}
 	for id, rec := range n.hbView.liveInfo(n.nodeTimeout()) {
 		versions[id] = rec.ConfigVersion
+		if len(rec.Labels) > 0 {
+			labels[id] = rec.Labels
+		}
+		if rec.Leader && leaderNode == "" {
+			leaderNode = id
+		}
 	}
-	return Status{NodeID: n.id, Cluster: n.cfg.Name, Leader: leader, LiveNodes: live, ConfigVersion: n.configVersion.Load(), NodeVersions: versions}
+	return Status{NodeID: n.id, Cluster: n.cfg.Name, Leader: leader, LiveNodes: live, ConfigVersion: n.configVersion.Load(), NodeVersions: versions, LeaderNode: leaderNode, NodeLabels: labels}
 }
