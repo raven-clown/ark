@@ -273,6 +273,8 @@ export function Canvas({ search, health, motion, selected, onSelect, onNew, refr
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([])
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([])
   const shape = useRef('')
+  const pendingFit = useRef(false)
+  const fitTimer = useRef(0)
   const flow = useRef<ReactFlowInstance | null>(null)
   const [showMap, setShowMap] = useState(true)
   const [projectFilter, setProjectFilter] = useState('')
@@ -339,13 +341,13 @@ export function Canvas({ search, health, motion, selected, onSelect, onNew, refr
     }
     if (sig !== shape.current) {
       shape.current = sig
+      pendingFit.current = true
       setNodes((topo.nodes ?? []).map(build))
-      for (const ms of [60, 400, 1200]) setTimeout(() => flow.current?.fitView({ padding: 0.12, maxZoom: 1.1, minZoom: 0.8, duration: 400 }), ms)
     } else {
       setNodes((cur) =>
         cur.map((node) => {
           const n = (topo.nodes ?? []).find((x) => x.id === node.id)
-          return n ? { ...build(n), position: node.position } : node
+          return n ? { ...node, data: build(n).data } : node
         }),
       )
     }
@@ -443,7 +445,18 @@ export function Canvas({ search, health, motion, selected, onSelect, onNew, refr
       <ReactFlow
         nodes={nodes}
         edges={edges}
-        onNodesChange={onNodesChange}
+        onNodesChange={(changes) => {
+          onNodesChange(changes)
+          // Fit once the new nodes have been measured; fitting earlier uses
+          // zero sizes and leaves part of the graph off screen.
+          if (pendingFit.current && changes.some((c) => c.type === 'dimensions')) {
+            clearTimeout(fitTimer.current)
+            fitTimer.current = window.setTimeout(() => {
+              pendingFit.current = false
+              flow.current?.fitView({ padding: 0.12, maxZoom: 1.1, minZoom: 0.8, duration: 400 })
+            }, 50)
+          }
+        }}
         onEdgesChange={onEdgesChange}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
