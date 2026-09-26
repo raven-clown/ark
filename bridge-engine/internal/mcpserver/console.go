@@ -1,6 +1,7 @@
 package mcpserver
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -443,6 +444,50 @@ func clusterWide(s *PipelineStats, total cluster.PipelineStats) *PipelineStats {
 	return s
 }
 
+// flowEdges draws a flow pipeline's outputs: every app it calls, every
+// topic and webhook it sends to, and the reject and dead-letter topics.
+func flowEdges(p config.Pipeline, pid string, node func(id, kind, label string), edge func(from, to, role, rule string), topic func(string) string) {
+	outs := map[string]bool{}
+	add := func(to, role, step string) {
+		if key := to + role; !outs[key] {
+			outs[key] = true
+			edge(pid, to, role, step)
+		}
+	}
+	for _, s := range p.Flow.Steps {
+		switch s.Type {
+		case config.StepCall:
+			urls := s.Target.URLs
+			if s.Target.URL != "" {
+				urls = append([]string{s.Target.URL}, urls...)
+			}
+			for _, u := range urls {
+				node("target:"+u, "target", u)
+				add("target:"+u, "call", s.ID)
+			}
+		case config.StepTopic:
+			add(topic(s.Topic), "destination", s.ID)
+		case config.StepWebhook:
+			node("webhook:"+s.URL, "webhook", s.URL)
+			add("webhook:"+s.URL, "webhook", s.ID)
+		case config.StepReject:
+			if t := cmp.Or(s.Topic, p.RejectTopic); t != "" {
+				add(topic(t), "reject", s.ID)
+			}
+		case config.StepDeadLetter:
+			if t := cmp.Or(s.Topic, p.DeadLetterTopic); t != "" {
+				add(topic(t), "dead_letter", s.ID)
+			}
+		}
+	}
+	if p.RejectTopic != "" {
+		add(topic(p.RejectTopic), "reject", "")
+	}
+	if p.DeadLetterTopic != "" {
+		add(topic(p.DeadLetterTopic), "dead_letter", "")
+	}
+}
+
 func topology(d Deps) Topology {
 	var t Topology
 	seen := map[string]bool{}
@@ -475,6 +520,10 @@ func topology(d Deps) Topology {
 		}
 		t.Nodes = append(t.Nodes, TopologyNode{ID: pid, Kind: "pipeline", Label: p.Name, Stats: stats})
 		edge(topic(p.SourceTopic), pid, "consume", "")
+		if p.Flow != nil {
+			flowEdges(p, pid, node, edge, topic)
+			continue
+		}
 		urls := p.Target.URLs
 		if p.Target.URL != "" {
 			urls = append([]string{p.Target.URL}, urls...)

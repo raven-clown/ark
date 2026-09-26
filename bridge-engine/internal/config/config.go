@@ -138,6 +138,9 @@ type Pipeline struct {
 	DeadLetterRedrive Redrive          `yaml:"dead_letter_redrive"`
 	OnExhausted       OnExhausted      `yaml:"on_exhausted"`
 	Enabled           *bool            `yaml:"enabled"`
+	// Flow replaces target, rules and output topics with steps joined in any
+	// shape. Pipelines without one keep the fixed path.
+	Flow *Flow `yaml:"flow,omitempty"`
 }
 
 type Cluster struct {
@@ -363,6 +366,9 @@ func ApplyPipelineDefaults(p *Pipeline) {
 	if p.CircuitBreaker.CooldownSeconds == 0 {
 		p.CircuitBreaker.CooldownSeconds = 30
 	}
+	if p.Flow != nil {
+		applyFlowDefaults(p)
+	}
 }
 
 func (c *Config) Validate() error {
@@ -426,6 +432,13 @@ func ValidatePipelines(pipelines []Pipeline) error {
 		}
 
 		if !p.IsEnabled() {
+			continue
+		}
+
+		if p.Flow != nil {
+			if err := validateFlowPipeline(p); err != nil {
+				return err
+			}
 			continue
 		}
 

@@ -22,7 +22,6 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/producer"
 	"github.com/raven-clown/ark/bridge-engine/internal/rules"
 	"github.com/raven-clown/ark/bridge-engine/internal/tap"
-	"github.com/raven-clown/ark/bridge-engine/internal/targetpool"
 	"github.com/raven-clown/ark/bridge-engine/internal/tuning"
 )
 
@@ -72,8 +71,8 @@ type shared struct {
 	dlq           *producer.Producer
 	reject        *producer.Producer
 	client        *callback.Client
-	breaker       *breaker.Breaker
-	targetPool    *targetpool.Pool
+	caller        *caller
+	flow          *flowRuntime
 	rules         *rules.Engine
 	dataRules     *datarules.Checker
 	paused        atomic.Bool
@@ -112,14 +111,12 @@ func newShared(ctx context.Context, deps Deps, p config.Pipeline, log *slog.Logg
 		}
 	}
 
-	client := callback.NewClient(time.Duration(p.Target.TimeoutMs) * time.Millisecond)
 	s := &shared{
 		brokers:      brokers,
 		source:       producer.New(brokers, p.SourceTopic),
 		dest:         producer.New(brokers, p.DestinationTopic),
-		client:       client,
-		breaker:      breaker.New(p.CircuitBreaker.FailureThreshold, time.Duration(p.CircuitBreaker.CooldownSeconds)*time.Second),
-		targetPool:   targetpool.New(p.Target, client),
+		client:       callback.NewClient(time.Duration(p.Target.TimeoutMs) * time.Millisecond),
+		caller:       newCaller("", p.Target, p.Retry, p.CircuitBreaker),
 		rules:        engine,
 		dataRules:    checker,
 		overrideDest: make(map[string]*producer.Producer),
@@ -134,7 +131,38 @@ func newShared(ctx context.Context, deps Deps, p config.Pipeline, log *slog.Logg
 		s.rejectBrowser = dlq.NewBrowser(brokers, p.RejectTopic, p.Name, deps.DLQState, tuning.DLQBrowserEntries(), s.source, log)
 	}
 
+	if p.Flow != nil {
+		flow, err := newFlowRuntime(ctx, deps, p)
+		if err != nil {
+			return nil, err
+		}
+		s.flow = flow
+	}
+
 	return s, nil
+}
+
+// callers are every HTTP target this pipeline calls.
+func (s *shared) callers() []*caller {
+	if s.flow != nil {
+		return s.flow.callerList
+	}
+	return []*caller{s.caller}
+}
+
+// breakerState is "open" when any of the pipeline's targets has its
+// breaker open, so one failing call step shows on the pipeline.
+func (s *shared) breakerState() string {
+	state := "closed"
+	for _, c := range s.callers() {
+		switch st := c.breaker.State(); st {
+		case "open":
+			return st
+		case "half_open":
+			state = st
+		}
+	}
+	return state
 }
 
 func (s *shared) overrideProducer(topic string) *producer.Producer {
@@ -212,7 +240,9 @@ func NewPipeline(ctx context.Context, deps Deps, p config.Pipeline, log *slog.Lo
 		return nil, fmt.Errorf("pipeline %q: %w", p.Name, err)
 	}
 
-	go sh.targetPool.Run(ctx)
+	for _, c := range sh.callers() {
+		go c.pool.Run(ctx)
+	}
 
 	if sh.dlqBrowser != nil {
 		go sh.dlqBrowser.Run(ctx)
@@ -281,7 +311,7 @@ func (r *Runner) Status() Status {
 		Destination:   r.pipeline.DestinationTopic,
 		Enabled:       r.pipeline.IsEnabled(),
 		Running:       r.counters.running.Load(),
-		BreakerState:  r.shared.breaker.State(),
+		BreakerState:  r.shared.breakerState(),
 		Processed:     r.counters.processed.Load(),
 		Rejected:      r.counters.rejected.Load(),
 		DeadLettered:  r.counters.deadLettered.Load(),
@@ -374,8 +404,12 @@ func (r *Runner) Run(ctx context.Context) error {
 
 	go r.commitInOrder(commitQueue, commitErrCh) // #nosec G118 -- final commits must outlive the cancelled worker ctx
 	go r.reportLag(runCtx)
-	if r.workerID == 0 && r.pipeline.Target.HealthCheckURL != "" {
-		go r.probeHealth(runCtx)
+	if r.workerID == 0 {
+		for _, c := range r.shared.callers() {
+			if c.target.HealthCheckURL != "" {
+				go r.probeHealth(runCtx, c)
+			}
+		}
 	}
 
 	drain := func() {
@@ -519,31 +553,6 @@ func (r *Runner) commitInOrder(queue chan *job, done chan<- error) {
 	done <- nil
 }
 
-func (r *Runner) probeHealth(ctx context.Context) {
-	interval := time.Duration(r.pipeline.Target.HealthCheckSecs) * time.Second
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if r.shared.breaker.State() != "open" {
-				continue
-			}
-			probeCtx, cancel := context.WithTimeout(ctx, interval)
-			err := r.shared.client.Probe(probeCtx, r.pipeline.Target.HealthCheckURL)
-			cancel()
-			if err != nil {
-				r.log.Debug("health check probe failed", "error", err)
-				continue
-			}
-			r.log.Info("health check probe succeeded, closing circuit breaker")
-			r.recordBreaker(true, "health check "+r.pipeline.Target.HealthCheckURL+" answered")
-		}
-	}
-}
-
 func (r *Runner) reportLag(ctx context.Context) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
@@ -561,7 +570,7 @@ func (r *Runner) reportLag(ctx context.Context) {
 			}
 			metrics.OldestUncommittedAge.WithLabelValues(r.pipeline.Name, r.workerLabel, r.pipeline.Tenant).Set(age)
 			state := 0.0
-			if r.shared.breaker.State() == "open" {
+			if r.shared.breakerState() == "open" {
 				state = 1.0
 			}
 			metrics.CircuitBreakerOpen.WithLabelValues(r.pipeline.Name, r.pipeline.Tenant).Set(state)
@@ -597,6 +606,10 @@ func (r *Runner) process(ctx context.Context, msg kafka.Message) error {
 		}
 		rec.SetValue(msg.Value)
 		tap.Default.Publish(rec)
+	}
+
+	if r.shared.flow != nil {
+		return r.runFlow(ctx, msg, headers, log)
 	}
 
 	if c := r.shared.dataRules; c != nil {
@@ -635,114 +648,17 @@ func (r *Runner) process(ctx context.Context, msg kafka.Message) error {
 		}
 	}
 
-	var resp *callback.Response
-	var lastErr error
-	var lastFailure string
-	realAttempts := 0
-
-	for realAttempts < r.pipeline.Retry.MaxAttempts {
-		if !r.shared.breaker.Allow() {
-			metrics.Backpressured.WithLabelValues(r.pipeline.Name, r.workerLabel, r.pipeline.Tenant).Inc()
-			log.Warn("callback blocked, circuit open, waiting for it to close before retrying this message")
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(time.Second):
-			}
-			continue
-		}
-
-		url, release, ok := r.shared.targetPool.Pick(msg.Partition)
-		if !ok {
-			metrics.Backpressured.WithLabelValues(r.pipeline.Name, r.workerLabel, r.pipeline.Tenant).Inc()
-			log.Warn("callback blocked, every target.urls endpoint is unhealthy, waiting before retrying this message")
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(time.Second):
-			}
-			continue
-		}
-
-		realAttempts++
-		callStart := time.Now()
-		resp, lastErr = r.shared.client.Post(ctx, url, correlationID, msg.Value)
-		release()
-		elapsed := time.Since(callStart)
-		r.counters.callbackNanos.Add(elapsed.Nanoseconds())
-		r.counters.callbackCount.Add(1)
-		metrics.CallbackDuration.WithLabelValues(r.pipeline.Name, r.pipeline.Tenant).Observe(elapsed.Seconds())
-		if r.watching() {
-			rec := r.tapRecord(tap.StageCallback, correlationID, msg.Key, nil)
-			rec.Target, rec.Attempt, rec.DurationMs = url, realAttempts, float64(elapsed.Microseconds())/1000
-			if resp != nil {
-				rec.Status = resp.StatusCode
-			}
-			if lastErr != nil {
-				rec.Reason = lastErr.Error()
-			}
-			tap.Default.Publish(rec)
-		}
-
-		if lastErr == nil && r.pipeline.Target.IsReject(resp.StatusCode) {
-			r.recordBreaker(true, "")
-			reason := fmt.Sprintf("target %s answered status %d, which is a reject status", url, resp.StatusCode)
-			return r.route(ctx, r.shared.reject, msg.Key, msg.Value, headers, log, "rejected", resp.StatusCode, reason)
-		}
-
-		if lastErr == nil && resp.RetryLater() {
-			// An explicit "come back later" is not a failed attempt: it
-			// neither spends a retry nor sends the message to the DLQ.
-			realAttempts--
-			wait := resp.RetryAfter
-			if wait <= 0 {
-				wait = time.Duration(r.pipeline.Retry.BackoffMs) * time.Millisecond
-			}
-			wait = min(wait, tuning.RetryAfterCap())
-			metrics.Backpressured.WithLabelValues(r.pipeline.Name, r.workerLabel, r.pipeline.Tenant).Inc()
-			log.Warn("target asked to retry later", "status_code", resp.StatusCode, "retry_in", wait.String())
-			events.Record(r.pipeline.Name, events.TargetRateLimited, fmt.Sprintf("target %s answered %d, waiting %s before trying again", url, resp.StatusCode, wait), map[string]string{"partition": strconv.Itoa(msg.Partition), "offset": strconv.FormatInt(msg.Offset, 10)})
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(wait):
-			}
-			continue
-		}
-
-		success := lastErr == nil && resp.Success()
-		failure := ""
-		if !success {
-			if lastErr != nil {
-				failure = lastErr.Error()
-			} else {
-				failure = fmt.Sprintf("target %s answered status %d", url, resp.StatusCode)
-			}
-			lastFailure = failure
-		}
-		if !success && realAttempts > 1 {
-			r.recordBreakerRepeat(failure)
-		} else {
-			r.recordBreaker(success, failure)
-		}
-		if success {
-			break
-		}
-
-		log.Warn("callback attempt failed", "attempt", realAttempts, "error", lastErr)
-		if realAttempts < r.pipeline.Retry.MaxAttempts {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(time.Duration(r.pipeline.Retry.BackoffMs) * time.Millisecond):
-			}
-		}
+	out, err := r.call(ctx, r.shared.caller, msg.Partition, correlationID, msg.Key, msg.Value, log)
+	if err != nil {
+		return err
 	}
-
-	if lastErr != nil || resp == nil || !resp.Success() {
-		reason := fmt.Sprintf("callback failed %d time(s), max_attempts reached; last failure: %s", realAttempts, lastFailure)
-		return r.route(ctx, r.shared.dlq, msg.Key, msg.Value, headers, log, "dead_lettered", 0, reason)
+	if out.rejected {
+		return r.route(ctx, r.shared.reject, msg.Key, msg.Value, headers, log, "rejected", out.resp.StatusCode, out.reason)
 	}
+	if out.failed {
+		return r.route(ctx, r.shared.dlq, msg.Key, msg.Value, headers, log, "dead_lettered", 0, out.reason)
+	}
+	resp := out.resp
 
 	if r.shared.rules.HasPostCallback() {
 		rule, err := r.shared.rules.EvaluatePostCallback(msg.Value, resp.StatusCode, resp.Body)
@@ -762,7 +678,7 @@ func (r *Runner) process(ctx context.Context, msg kafka.Message) error {
 
 	r.counters.processed.Add(1)
 	metrics.Processed.WithLabelValues(r.pipeline.Name, r.workerLabel, r.pipeline.Tenant).Inc()
-	log.Info("message processed", "attempts", realAttempts, "status_code", resp.StatusCode)
+	log.Info("message processed", "attempts", out.attempts, "status_code", resp.StatusCode)
 	return nil
 }
 
@@ -838,18 +754,18 @@ func (r *Runner) tapOut(to, topic, rule, reason string, status int, key, value [
 
 // recordBreaker feeds a callback result to the circuit breaker and records
 // an event whenever that flips the breaker, with what caused it.
-func (r *Runner) recordBreaker(success bool, cause string) {
-	r.flipBreaker(func() { r.shared.breaker.RecordResult(success) }, cause)
+func (r *Runner) recordBreaker(b *breaker.Breaker, success bool, cause string) {
+	r.flipBreaker(b, func() { b.RecordResult(success) }, cause)
 }
 
-func (r *Runner) recordBreakerRepeat(cause string) {
-	r.flipBreaker(r.shared.breaker.RecordRepeatFailure, cause)
+func (r *Runner) recordBreakerRepeat(b *breaker.Breaker, cause string) {
+	r.flipBreaker(b, b.RecordRepeatFailure, cause)
 }
 
-func (r *Runner) flipBreaker(record func(), cause string) {
-	before := r.shared.breaker.State()
+func (r *Runner) flipBreaker(b *breaker.Breaker, record func(), cause string) {
+	before := b.State()
 	record()
-	after := r.shared.breaker.State()
+	after := b.State()
 	if before == after {
 		return
 	}

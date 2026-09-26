@@ -131,3 +131,45 @@ pipelines:
         condition: "response.status == 200 && response.body.amount > 10000"
         action: transform_route
         destination_override: orders.high-value
+
+  # A flow pipeline joins steps in any shape instead of the fixed path
+  # above: every step can lead to several others, conditions can split the
+  # message anywhere, and a call's answer, reject and failure each have
+  # their own way out. Steps: call, condition, data_check, topic, webhook,
+  # reject, dead_letter, drop. Conditions read data (the message at that
+  # step), original, response ({status, body} of the last call), reason,
+  # key and headers. Loops are refused; send to a topic another pipeline
+  # reads to go around again. A message is committed once every path it
+  # took is done.
+  #
+  # - name: order-flow
+  #   source_topic: orders.raw
+  #   consumer_group: order-flow
+  #   dead_letter_topic: orders.dlq     # where failures go when a step has no path for them
+  #   reject_topic: orders.rejected
+  #   flow:
+  #     start: [check]
+  #     steps:
+  #       - id: check
+  #         type: data_check
+  #         rules: {fields: [{path: order_id, required: true}]}
+  #         next: [route]
+  #         on_fail: [bad]
+  #       - id: route
+  #         type: condition
+  #         match: all                    # first (default) takes the first branch that holds
+  #         branches:
+  #           - {name: vip, when: "data.amount > 1000", next: [vip-topic, crm]}
+  #         otherwise: [app]
+  #       - {id: vip-topic, type: topic, topic: orders.vip, next: [app]}
+  #       - {id: crm, type: webhook, url: "http://crm:8080/notify"}
+  #       - id: app
+  #         type: call
+  #         target: {url: "http://order-app:8080/process", health_check_url: "http://order-app:8080/health"}
+  #         retry: {max_attempts: 3, backoff_ms: 1000}
+  #         next: [done]
+  #         on_reject: [bad]
+  #         on_failure: [later]
+  #       - {id: done, type: topic, topic: orders.processed}
+  #       - {id: later, type: topic, topic: orders.retry}
+  #       - {id: bad, type: reject}

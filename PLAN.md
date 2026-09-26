@@ -62,7 +62,11 @@ after it on its partition is committed until it is.
 ## 2. Non-goals (v1)
 
 - Not a general-purpose iPaaS, not competing with n8n, Camel, or
-  Zapier on breadth. Scope stays Kafka-native and HTTP-callback-shaped.
+  Zapier on breadth of connectors. Scope stays Kafka-native and
+  HTTP-callback-shaped. Since 2026-09-26 a pipeline can be a flow of
+  steps joined in any shape (Phase 9), so the path inside one pipeline is
+  as free as a workflow tool's, but what goes in is still a Kafka topic
+  and what comes out is still topics and HTTP.
 - Not a hosted/managed service. Self-hosted, single binary or Docker
   image, operator controls their own uptime.
 - Not a new storage/database engine. Uses Kafka itself as the buffer,
@@ -1020,6 +1024,33 @@ the calling agent to self-restrict):**
       existing Kafka-source path.
 - [ ] Revisit: CDC source, RabbitMQ/NATS, schedule trigger, only if
       real demand shows up after Phase 1 through 6 are solid
+
+### Backend: Phase 9: Flows (steps joined in any shape)
+
+Direction set on 2026-09-26: every point of a pipeline can carry rules
+and send a message anywhere, the way a workflow tool works, instead of
+rules only before and after one call.
+
+- [x] **Flow engine.** `flow:` on a pipeline replaces target, rules and
+      output topics with steps: `call` (an HTTP app, with the same target
+      options, retry and circuit breaker as the fixed path, and separate
+      ways out for its answer, a reject status and used-up retries),
+      `condition` (branches with expr conditions, first match or all),
+      `data_check`, `topic`, `webhook`, `reject`, `dead_letter` and
+      `drop`. Every step can lead to several others. Conditions read the
+      message at that step, the original, the last call's answer, the
+      failure reason, key and headers. Loops inside a flow are refused;
+      going around again means sending to a topic a pipeline reads. A
+      message is committed once every path it took is done, so delivery
+      stays at-least-once, and it is counted once however many ways it
+      went. The fixed path is unchanged and shares the call code (retry,
+      breaker, health checks, several URLs) with call steps. Verified
+      against docker-compose Kafka with one message per path: a split to a
+      topic and a webhook at once, a condition on the app's answer, the
+      app's 400 and 500 each taking their own step, and a failed data
+      check.
+- [ ] **Flow designer.** Nodes dragged onto a board and wired freely,
+      each with its own settings, reading and writing `flow:`.
 
 ### Backend: Phase 8: Projects, AI access and "everything configurable"
 

@@ -451,6 +451,49 @@ Conditions use [expr](https://expr-lang.org) syntax (`nil`, not `null`).
 </details>
 
 <details>
+<summary><b>Flows: steps joined in any shape</b></summary>
+
+When a fixed path isn't enough, give a pipeline a `flow:` instead of a
+target and rules. Every step can lead to several others, conditions can
+split a message anywhere, and an app's answer, a reject status and
+used-up retries each go their own way:
+
+```yaml
+flow:
+  start: [check]
+  steps:
+    - {id: check, type: data_check, rules: {fields: [{path: order_id, required: true}]}, next: [route], on_fail: [bad]}
+    - id: route
+      type: condition
+      match: all                      # or first
+      branches:
+        - {when: "data.amount > 1000", next: [vip-topic, crm]}
+      otherwise: [app]
+    - {id: vip-topic, type: topic, topic: orders.vip, next: [app]}
+    - {id: crm, type: webhook, url: "http://crm:8080/notify"}
+    - {id: app, type: call, target: {url: "http://order-app:8080/process"}, next: [after], on_reject: [bad], on_failure: [later]}
+    - id: after
+      type: condition
+      branches:
+        - {when: "response.body.total > 10000", next: [big]}
+      otherwise: [done]
+    - {id: big, type: topic, topic: orders.big}
+    - {id: done, type: topic, topic: orders.processed}
+    - {id: later, type: topic, topic: orders.retry}
+    - {id: bad, type: reject}
+```
+
+Steps: `call`, `condition`, `data_check`, `topic`, `webhook`, `reject`,
+`dead_letter`, `drop`. Conditions read `data` (the message at that step),
+`original`, `response` (`status` and `body` of the last call), `reason`,
+`key` and `headers`. Call steps take the same `target`, `retry` and
+`circuit_breaker` options as the fixed path. Loops are refused; to go
+around again, send to a topic a pipeline reads. A message is committed
+once every path it took is done.
+
+</details>
+
+<details>
 <summary><b>Dead letters and redrive</b></summary>
 
 - `GET /api/v1/pipelines/{name}/dlq` lists recent entries with reason,
