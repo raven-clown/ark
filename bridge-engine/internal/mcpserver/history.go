@@ -11,11 +11,13 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/raven-clown/ark/bridge-engine/internal/cluster"
 	"github.com/raven-clown/ark/bridge-engine/internal/tuning"
 )
 
-// Sample is one point of a pipeline's history on this node: rates since
-// the previous sample, and gauges at the time of the sample.
+// Sample is one point of a pipeline's history: rates since the previous
+// sample, and gauges at the time of the sample. In cluster mode it covers
+// every node.
 type Sample struct {
 	Time          time.Time `json:"time"`
 	Processed     float64   `json:"processed_per_sec"`
@@ -67,9 +69,17 @@ func (h *history) sample(d Deps, now time.Time) {
 	dt := now.Sub(h.at).Seconds()
 	seen := map[string]bool{}
 	buckets := bucketCounts(h.gather)
+	var views map[string]cluster.PipelineView
+	if d.Cluster != nil {
+		views = d.Cluster.ClusterPipelines()
+	}
 	for _, p := range d.visiblePipelines() {
 		seen[p.Name] = true
 		s := *pipelineStats(p, pipelineStatuses(d.Registry, p.Name))
+		if d.Cluster != nil {
+			s = *clusterWide(&s, views[p.Name].Total)
+			buckets[p.Name] = parseBuckets(views[p.Name].Total.LatencyBuckets)
+		}
 		prev, ok := h.last[p.Name]
 		h.last[p.Name] = s
 		prevBuckets := h.buckets[p.Name]

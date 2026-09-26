@@ -113,6 +113,7 @@ func (c clusterRegistry) SetPaused(name string, paused bool) bool {
 
 func localStats(mgr *orchestrator.Manager) map[string]cluster.PipelineStats {
 	out := make(map[string]cluster.PipelineStats)
+	buckets := mcpserver.LatencyBuckets()
 	for _, r := range mgr.Runners() {
 		st := r.Status()
 		agg := out[st.Pipeline]
@@ -126,6 +127,7 @@ func localStats(mgr *orchestrator.Manager) map[string]cluster.PipelineStats {
 			agg.Running++
 		}
 		agg.Workers++
+		agg.LatencyBuckets = buckets[st.Pipeline]
 		agg.Processed += st.Processed
 		agg.Rejected += st.Rejected
 		agg.DeadLettered += st.DeadLettered

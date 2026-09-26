@@ -26,6 +26,10 @@ type PipelineStats struct {
 	CallbackCalls int64   `json:"callback_calls"`
 	AvgCallbackMs float64 `json:"avg_callback_ms"`
 	BreakerOpen   bool    `json:"breaker_open,omitempty"`
+	// LatencyBuckets are the node's cumulative callback latency histogram
+	// counts by upper bound in seconds ("+Inf" last), so the cluster's
+	// percentiles can be worked out from every node's calls.
+	LatencyBuckets map[string]uint64 `json:"latency_buckets,omitempty"`
 }
 
 type heartbeatRecord struct {

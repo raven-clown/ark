@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"math"
 	"sort"
+	"strconv"
 
 	"github.com/prometheus/client_golang/prometheus"
 )
@@ -39,6 +40,34 @@ func bucketCounts(g prometheus.Gatherer) map[string]map[float64]uint64 {
 				b[bk.GetUpperBound()] += bk.GetCumulativeCount()
 			}
 			b[math.Inf(1)] += h.GetSampleCount()
+		}
+	}
+	return out
+}
+
+// LatencyBuckets returns this process's callback latency histogram per
+// pipeline, keyed by upper bound in seconds, for cluster heartbeats.
+func LatencyBuckets() map[string]map[string]uint64 {
+	out := map[string]map[string]uint64{}
+	for pipeline, buckets := range bucketCounts(prometheus.DefaultGatherer) {
+		m := make(map[string]uint64, len(buckets))
+		for le, n := range buckets {
+			m[strconv.FormatFloat(le, 'g', -1, 64)] = n
+		}
+		out[pipeline] = m
+	}
+	return out
+}
+
+// parseBuckets turns LatencyBuckets keys back into upper bounds.
+func parseBuckets(in map[string]uint64) map[float64]uint64 {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[float64]uint64, len(in))
+	for le, n := range in {
+		if f, err := strconv.ParseFloat(le, 64); err == nil {
+			out[f] = n
 		}
 	}
 	return out

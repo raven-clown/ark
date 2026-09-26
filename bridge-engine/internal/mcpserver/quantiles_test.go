@@ -2,6 +2,7 @@ package mcpserver
 
 import (
 	"math"
+	"strconv"
 	"testing"
 )
 
@@ -18,5 +19,12 @@ func TestQuantileFromBucketDeltas(t *testing.T) {
 	}
 	if p := quantileMs(cur, cur, 0.5); p != 0 {
 		t.Errorf("no calls should give 0, got %v", p)
+	}
+}
+
+func TestParseBucketsReadsHeartbeatKeys(t *testing.T) {
+	got := parseBuckets(map[string]uint64{strconv.FormatFloat(0.005, 'g', -1, 64): 2, strconv.FormatFloat(math.Inf(1), 'g', -1, 64): 5})
+	if got[0.005] != 2 || got[math.Inf(1)] != 5 {
+		t.Fatalf("expected both bounds back, got %v", got)
 	}
 }

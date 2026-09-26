@@ -76,6 +76,12 @@ func (n *Node) ClusterPipelines() map[string]PipelineView {
 			v.Total.Running += st.Running
 			v.Total.Lag += st.Lag
 			v.Total.BreakerOpen = v.Total.BreakerOpen || st.BreakerOpen
+			for le, n := range st.LatencyBuckets {
+				if v.Total.LatencyBuckets == nil {
+					v.Total.LatencyBuckets = make(map[string]uint64)
+				}
+				v.Total.LatencyBuckets[le] += n
+			}
 			v.Total.Workers += st.Workers
 			v.Total.Processed += st.Processed
 			v.Total.Rejected += st.Rejected

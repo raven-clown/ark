@@ -132,6 +132,7 @@ function HealthTab({ name, onOpen, toast }: { name: string; onOpen: (tab: Tab) =
   const rateNow = recent.length ? recent.reduce((a, x) => a + x.processed_per_sec + x.rejected_per_sec + x.dead_lettered_per_sec, 0) / recent.length : 0
   const rateHour = samples.length ? samples.reduce((a, x) => a + x.processed_per_sec + x.rejected_per_sec + x.dead_lettered_per_sec, 0) / samples.length : 0
   const change = pctChange(rateNow, rateHour)
+  const latest = samples[samples.length - 1]
   const withCalls = samples.filter((x) => x.p99_ms > 0)
   const lastLat = withCalls[withCalls.length - 1]
   const ws = Array.isArray(workers.data) ? workers.data : []
@@ -202,7 +203,7 @@ function HealthTab({ name, onOpen, toast }: { name: string; onOpen: (tab: Tab) =
         <div className="kpi">
           <span className="micro">{t('kpi.workers')}</span>
           <b>
-            {running} / {ws.length}
+            {latest ? `${latest.running} / ${latest.workers}` : `${running} / ${ws.length}`}
           </b>
           <span className="sub">{ws[0]?.consumer_group ?? ''}</span>
         </div>

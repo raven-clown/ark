@@ -99,6 +99,13 @@ func diagnose(d Deps, p config.Pipeline) Diagnosis {
 		if v, ok := d.Cluster.ClusterPipelines()[p.Name]; ok {
 			n.ClusterWorkers = v.Total.Workers
 			n.Processed = max(n.Processed, v.Total.Processed)
+			n.Rejected = max(n.Rejected, v.Total.Rejected)
+			n.DeadLettered = max(n.DeadLettered, v.Total.DeadLettered)
+			n.FailedAttempts = max(n.FailedAttempts, v.Total.Failed)
+			n.Lag = max(n.Lag, v.Total.Lag)
+			if v.Total.CallbackCalls > 0 {
+				n.AvgCallbackMs = v.Total.AvgCallbackMs
+			}
 			n.Paused = n.Paused || v.Total.Paused
 		}
 	}
