@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
-import { api, ApiError, streamEvents, type Diagnosis, type DLQEntry, type PipelineConfig, type TapRecord, type WorkerStatus } from '../api'
+import { api, ApiError, clock, streamEvents, type Diagnosis, type DLQEntry, type PipelineConfig, type TapRecord, type WorkerStatus } from '../api'
 import { useT, type Key } from '../i18n'
 import type { TailFocus } from './Canvas'
 import { ConfigEditor } from './ConfigEditor'
@@ -246,7 +246,7 @@ function HealthTab({ name, onOpen, toast }: { name: string; onOpen: (tab: Tab) =
             const l = traceLine(r)
             return (
               <div key={r.n} className="l">
-                <span className="dim">{r.time.slice(11, 19)}</span>
+                <span className="dim">{clock(r.time)}</span>
                 <span className={l.cls}>[{l.tag}]</span>
                 <span>{l.text}</span>
               </div>
@@ -375,7 +375,7 @@ function TailTab({ name, focus }: { name: string; focus?: TailFocus }) {
           return (
             <div key={r.n} className={`tail-row ${open === r.n ? 'open' : ''}`} onClick={() => setOpen(open === r.n ? null : r.n)}>
               <div className="line">
-                <span className="t">{r.time.slice(11, 23)}</span>
+                <span className="t">{clock(r.time, true)}</span>
                 <span className={`tag ${label}`}>{label}</span>
                 <span className="v">
                   {r.stage === 'callback' ? `#${r.attempt} ${r.target ?? ''}` : r.reason ? r.reason : r.value}

@@ -92,6 +92,14 @@ export async function streamEvents(path: string, signal: AbortSignal, onEvent: (
   }
 }
 
+// clock returns the wall-clock part of an ISO 8601 time as sent by the
+// engine, which drops trailing zeros from the fraction.
+export function clock(iso: string, millis = false): string {
+  const m = /T(\d{2}:\d{2}:\d{2})(?:\.(\d+))?/.exec(iso)
+  if (!m) return iso
+  return millis ? `${m[1]}.${(m[2] ?? '').padEnd(3, '0').slice(0, 3)}` : m[1]
+}
+
 export type Health = 'healthy' | 'degraded' | 'down' | 'paused'
 
 export interface PipelineStats {
