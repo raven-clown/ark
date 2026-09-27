@@ -3,8 +3,26 @@ package config
 import (
 	"fmt"
 	"regexp"
+	"strings"
 	"text/template" // nosemgrep: go.lang.security.audit.xss.import-text-template.import-text-template -- builds request bodies for other services, not HTML
 )
+
+// templateStubs lets validation parse templates that use the consumer's
+// functions without running them.
+var templateStubs = template.FuncMap{"json": func(any) string { return "" }, "path": func(any) string { return "" }}
+
+var urlTemplateHost = regexp.MustCompile(`^(https?://[^/?#{]+)[/?]`)
+
+// URLTemplateHost returns the scheme and host of a url template, which must
+// come before its first action so a message can't send the request
+// somewhere else.
+func URLTemplateHost(u string) (string, bool) {
+	m := urlTemplateHost.FindStringSubmatch(u[:strings.Index(u+"{{", "{{")])
+	if m == nil {
+		return "", false
+	}
+	return m[1], true
+}
 
 // StepType is what a flow step does with the message it receives.
 type StepType string
@@ -281,6 +299,14 @@ func validateStep(p Pipeline, s Step) error {
 		if s.URL == "" {
 			return fmt.Errorf("url is required")
 		}
+		if strings.Contains(s.URL, "{{") {
+			if _, ok := URLTemplateHost(s.URL); !ok {
+				return fmt.Errorf("url: a template may only fill in the path or query, after http(s)://host/")
+			}
+			if _, err := template.New(s.ID).Funcs(templateStubs).Parse(s.URL); err != nil {
+				return fmt.Errorf("url: %w", err)
+			}
+		}
 		switch s.Method {
 		case "", "POST", "PUT", "PATCH":
 		default:
@@ -290,7 +316,7 @@ func validateStep(p Pipeline, s Step) error {
 			return fmt.Errorf("set body or message, not both")
 		}
 		for field, src := range map[string]string{"body": s.Body, "message": s.Message} {
-			if _, err := template.New(s.ID).Funcs(template.FuncMap{"json": func(any) string { return "" }}).Parse(src); err != nil {
+			if _, err := template.New(s.ID).Funcs(templateStubs).Parse(src); err != nil {
 				return fmt.Errorf("%s: %w", field, err)
 			}
 		}

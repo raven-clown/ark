@@ -5,9 +5,12 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"strings"
 	"text/template" // nosemgrep: go.lang.security.audit.xss.import-text-template.import-text-template -- builds request bodies for other services, not HTML
 	"time"
 
@@ -33,7 +36,20 @@ type flowRuntime struct {
 	branches   map[string][]*vm.Program
 	checkers   map[string]*datarules.Checker
 	bodies     map[string]*template.Template
+	urls       map[string]*template.Template
 	brokers    []string
+}
+
+var templateFuncs = template.FuncMap{"json": toJSON, "path": pathValue}
+
+// pathValue escapes v for a url path. A missing value is an error, so a
+// request never goes to /<nil> or an empty id.
+func pathValue(v any) (string, error) {
+	s := fmt.Sprint(v)
+	if v == nil || s == "" {
+		return "", errors.New("path: the value is missing or empty")
+	}
+	return url.PathEscape(s), nil
 }
 
 // flowEnv is what a condition can read: the message as it is at that step
@@ -49,7 +65,7 @@ var flowEnv = map[string]any{
 }
 
 func newFlowRuntime(ctx context.Context, deps Deps, p config.Pipeline) (*flowRuntime, error) {
-	rt := &flowRuntime{flow: p.Flow, callers: map[string]*caller{}, branches: map[string][]*vm.Program{}, checkers: map[string]*datarules.Checker{}, bodies: map[string]*template.Template{}, brokers: deps.Brokers}
+	rt := &flowRuntime{flow: p.Flow, callers: map[string]*caller{}, branches: map[string][]*vm.Program{}, checkers: map[string]*datarules.Checker{}, bodies: map[string]*template.Template{}, urls: map[string]*template.Template{}, brokers: deps.Brokers}
 	for _, s := range p.Flow.Steps {
 		switch s.Type {
 		case config.StepCall:
@@ -73,11 +89,18 @@ func newFlowRuntime(ctx context.Context, deps Deps, p config.Pipeline) (*flowRun
 			rt.checkers[s.ID] = c
 		case config.StepWebhook:
 			if src := cmp.Or(s.Body, s.Message); src != "" {
-				tmpl, err := template.New(s.ID).Funcs(template.FuncMap{"json": toJSON}).Option("missingkey=zero").Parse(src)
+				tmpl, err := template.New(s.ID).Funcs(templateFuncs).Option("missingkey=zero").Parse(src)
 				if err != nil {
 					return nil, fmt.Errorf("flow step %q body: %w", s.ID, err)
 				}
 				rt.bodies[s.ID] = tmpl
+			}
+			if strings.Contains(s.URL, "{{") {
+				tmpl, err := template.New(s.ID).Funcs(templateFuncs).Option("missingkey=zero").Parse(s.URL)
+				if err != nil {
+					return nil, fmt.Errorf("flow step %q url: %w", s.ID, err)
+				}
+				rt.urls[s.ID] = tmpl
 			}
 		case config.StepReject, config.StepDeadLetter:
 			if s.Topic != "" {
@@ -245,7 +268,11 @@ func (r *Runner) runStep(ctx context.Context, id string, partition int, m flowMs
 				body = buf.Bytes()
 			}
 		}
-		if err := r.httpWithRetry(ctx, cmp.Or(s.Method, http.MethodPost), s.URL, correlationID, body, expandHeaders(s.Headers), log); err != nil {
+		target, err := rt.webhookURL(s, m)
+		if err == nil {
+			err = r.httpWithRetry(ctx, cmp.Or(s.Method, http.MethodPost), target, correlationID, body, expandHeaders(s.Headers), log)
+		}
+		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
@@ -257,7 +284,7 @@ func (r *Runner) runStep(ctx context.Context, id string, partition int, m flowMs
 		}
 		if r.watching() {
 			rec := r.tapRecord(tap.StageOut, correlationID, m.key, m.headers)
-			rec.To, rec.Target, rec.Rule = tap.ToWebhook, s.URL, id
+			rec.To, rec.Target, rec.Rule = tap.ToWebhook, target, id
 			rec.SetValue(m.value)
 			tap.Default.Publish(rec)
 		}
@@ -397,4 +424,23 @@ func toJSON(v any) string {
 		return "null"
 	}
 	return string(b)
+}
+
+// webhookURL fills in a webhook's url template for m. The filled-in url must
+// keep the template's scheme and host.
+func (rt *flowRuntime) webhookURL(s config.Step, m flowMsg) (string, error) {
+	tmpl := rt.urls[s.ID]
+	if tmpl == nil {
+		return s.URL, nil
+	}
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, m.env()); err != nil {
+		return "", fmt.Errorf("url template: %w", err)
+	}
+	want, _ := config.URLTemplateHost(s.URL)
+	got, _ := config.URLTemplateHost(buf.String())
+	if got != want {
+		return "", fmt.Errorf("url template changed the host to %q, refusing to send", got)
+	}
+	return buf.String(), nil
 }

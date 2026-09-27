@@ -119,3 +119,19 @@ func TestFlowWithoutFallbackTopicsNeedsExplicitPaths(t *testing.T) {
 		t.Fatalf("expected a flow with every failure path drawn to need no fallback topics, got %v", err)
 	}
 }
+
+func TestFlowWebhookURLTemplates(t *testing.T) {
+	for url, ok := range map[string]bool{
+		"http://os:9200/orders/_doc/{{path .data.order_id}}": true,
+		"http://app:8080?id={{path .data.id}}":               true,
+		"http://{{.data.host}}/x":                            false,
+		"http://app{{.data.port}}/x":                         false,
+		"{{.data.url}}":                                      false,
+	} {
+		src := strings.Replace(flowPipeline, "url: http://crm/notify", "url: \""+url+"\"", 1)
+		err := ValidatePipelines([]Pipeline{parseFlowPipeline(t, src)})
+		if (err == nil) != ok {
+			t.Errorf("url %s: got %v, want ok=%v", url, err, ok)
+		}
+	}
+}
