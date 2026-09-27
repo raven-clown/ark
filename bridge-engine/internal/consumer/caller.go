@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"os"
+	"regexp"
 	"strconv"
 	"time"
 
@@ -22,6 +25,7 @@ import (
 // per call step.
 type caller struct {
 	step    string
+	headers map[string]string
 	target  config.Target
 	retry   config.Retry
 	client  *callback.Client
@@ -78,7 +82,7 @@ func (r *Runner) call(ctx context.Context, c *caller, partition int, correlation
 
 		out.attempts++
 		callStart := time.Now()
-		resp, err := c.client.Post(ctx, url, correlationID, value)
+		resp, err := c.client.Send(ctx, http.MethodPost, url, correlationID, value, expandHeaders(c.headers))
 		release()
 		elapsed := time.Since(callStart)
 		r.counters.callbackNanos.Add(elapsed.Nanoseconds())
@@ -173,6 +177,20 @@ func (r *Runner) probeHealth(ctx context.Context, c *caller) {
 			r.recordBreaker(c.breaker, true, "health check "+c.target.HealthCheckURL+" answered")
 		}
 	}
+}
+
+var envRef = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
+
+// expandHeaders fills ${NAME} in header values from the environment.
+func expandHeaders(h map[string]string) map[string]string {
+	if len(h) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(h))
+	for k, v := range h {
+		out[k] = envRef.ReplaceAllStringFunc(v, func(ref string) string { return os.Getenv(ref[2 : len(ref)-1]) })
+	}
+	return out
 }
 
 func sleep(ctx context.Context, d time.Duration) error {

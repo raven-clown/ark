@@ -490,7 +490,13 @@ Steps: `call`, `condition`, `data_check`, `topic`, `webhook`, `reject`,
 `original`, `response` (`status` and `body` of the last call), `reason`,
 `key` and `headers`. Every step but `drop` can lead on to more steps,
 reject and dead letter included, so a reject can also go to a webhook or
-another app. Call steps take the same `target`, `retry` and
+another app. Call and webhook steps take `headers`, where `${NAME}` is
+read from the environment so secrets stay out of the file; a webhook can
+set `method`, a `body` template, or a chat `message` template (sent as
+`{"text": ...}`, or `message_field: content` for Discord); a topic step
+can set `brokers` to write to another Kafka cluster. The pipeline's
+`dead_letter_topic` and `reject_topic` are optional for a flow, as long
+as every step that can fail or reject has its own line for it. Call steps take the same `target`, `retry` and
 `circuit_breaker` options as the fixed path. Loops are refused; to go
 around again, send to a topic a pipeline reads. A message is committed
 once every path it took is done.
@@ -684,6 +690,7 @@ separate from the MCP tokens.
 | `GET /api/v1/events` | What happened and why (`pipeline`, `since_minutes`, `kinds`, `limit`) |
 | `GET /api/v1/topology` | How pipelines, topics and targets connect |
 | `GET /api/v1/topics` | Kafka topics and which pipelines use them |
+| `GET /api/v1/consumer-groups` | Consumer groups the cluster knows about |
 | `GET /api/v1/pipelines/{name}/tail` | Live tail as Server-Sent Events (`stage`, `to`, `key`, `correlation_id`, `max_per_sec`) |
 | `GET /api/v1/pipelines/{name}/diagnosis`, `/tuning`, `/data-check` | What's wrong and why, sizing advice, odd data |
 | `POST /api/v1/pipelines/{name}/test-message` | What the pipeline would do with a message |

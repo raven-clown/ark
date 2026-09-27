@@ -66,12 +66,21 @@ func parseRetryAfter(v string) time.Duration {
 }
 
 func (c *Client) Post(ctx context.Context, url string, correlationID string, payload []byte) (*Response, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	return c.Send(ctx, http.MethodPost, url, correlationID, payload, nil)
+}
+
+// Send is Post with a chosen method and extra headers, which override the
+// defaults (Content-Type: application/json).
+func (c *Client) Send(ctx context.Context, method, url, correlationID string, payload []byte, headers map[string]string) (*Response, error) {
+	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(payload))
 	if err != nil {
 		return nil, fmt.Errorf("building callback request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(CorrelationIDHeader, correlationID)
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
 
 	resp, err := c.http.Do(req)
 	if err != nil {

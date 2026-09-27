@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sort"
 	"strconv"
 	"time"
 
@@ -136,4 +137,22 @@ func DialLeaderAny(ctx context.Context, brokers []string, topic string, partitio
 		errs = append(errs, fmt.Errorf("%s: %w", b, err))
 	}
 	return nil, fmt.Errorf("no broker could reach the leader of %s/%d: %w", topic, partition, errors.Join(errs...))
+}
+
+// ConsumerGroups lists the consumer group IDs the cluster knows about.
+func ConsumerGroups(ctx context.Context, brokers []string) ([]string, error) {
+	c := &kafka.Client{Addr: kafka.TCP(brokers...), Timeout: 10 * time.Second}
+	resp, err := c.ListGroups(ctx, &kafka.ListGroupsRequest{})
+	if err != nil {
+		return nil, fmt.Errorf("listing consumer groups: %w", err)
+	}
+	if resp.Error != nil {
+		return nil, fmt.Errorf("listing consumer groups: %w", resp.Error)
+	}
+	groups := make([]string, 0, len(resp.Groups))
+	for _, g := range resp.Groups {
+		groups = append(groups, g.GroupID)
+	}
+	sort.Strings(groups)
+	return groups, nil
 }

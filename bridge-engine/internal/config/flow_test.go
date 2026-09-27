@@ -107,3 +107,14 @@ func TestFlowCallNeedsAFailurePath(t *testing.T) {
 		t.Fatalf("expected a missing failure path error, got %v", err)
 	}
 }
+
+func TestFlowWithoutFallbackTopicsNeedsExplicitPaths(t *testing.T) {
+	src := strings.Replace(strings.Replace(flowPipeline, "dead_letter_topic: orders.dlq\n", "", 1), "reject_topic: orders.rejected\n", "", 1)
+	src = strings.Replace(src, "      type: reject\n", "      type: reject\n      topic: orders.bad\n", 1)
+	src = strings.Replace(src, "      on_reject: [bad]\n", "      on_reject: [bad]\n      on_failure: [bad]\n", 1)
+	src = strings.Replace(src, "    - id: notify\n      type: webhook\n      url: http://crm/notify\n", "    - id: notify\n      type: webhook\n      url: http://crm/notify\n      on_failure: [bad]\n", 1)
+	p := parseFlowPipeline(t, src)
+	if err := ValidatePipelines([]Pipeline{p}); err != nil {
+		t.Fatalf("expected a flow with every failure path drawn to need no fallback topics, got %v", err)
+	}
+}

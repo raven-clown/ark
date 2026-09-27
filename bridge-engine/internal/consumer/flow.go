@@ -1,11 +1,14 @@
 package consumer
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"text/template" // nosemgrep: go.lang.security.audit.xss.import-text-template.import-text-template -- builds request bodies for other services, not HTML
 	"time"
 
 	"github.com/expr-lang/expr"
@@ -29,6 +32,8 @@ type flowRuntime struct {
 	callerList []*caller
 	branches   map[string][]*vm.Program
 	checkers   map[string]*datarules.Checker
+	bodies     map[string]*template.Template
+	brokers    []string
 }
 
 // flowEnv is what a condition can read: the message as it is at that step
@@ -44,11 +49,12 @@ var flowEnv = map[string]any{
 }
 
 func newFlowRuntime(ctx context.Context, deps Deps, p config.Pipeline) (*flowRuntime, error) {
-	rt := &flowRuntime{flow: p.Flow, callers: map[string]*caller{}, branches: map[string][]*vm.Program{}, checkers: map[string]*datarules.Checker{}}
+	rt := &flowRuntime{flow: p.Flow, callers: map[string]*caller{}, branches: map[string][]*vm.Program{}, checkers: map[string]*datarules.Checker{}, bodies: map[string]*template.Template{}, brokers: deps.Brokers}
 	for _, s := range p.Flow.Steps {
 		switch s.Type {
 		case config.StepCall:
 			c := newCaller(s.ID, *s.Target, *s.Retry, *s.CircuitBreaker)
+			c.headers = s.Headers
 			rt.callers[s.ID] = c
 			rt.callerList = append(rt.callerList, c)
 		case config.StepCondition:
@@ -65,6 +71,14 @@ func newFlowRuntime(ctx context.Context, deps Deps, p config.Pipeline) (*flowRun
 				return nil, fmt.Errorf("flow step %q rules: %w", s.ID, err)
 			}
 			rt.checkers[s.ID] = c
+		case config.StepWebhook:
+			if src := cmp.Or(s.Body, s.Message); src != "" {
+				tmpl, err := template.New(s.ID).Funcs(template.FuncMap{"json": toJSON}).Option("missingkey=zero").Parse(src)
+				if err != nil {
+					return nil, fmt.Errorf("flow step %q body: %w", s.ID, err)
+				}
+				rt.bodies[s.ID] = tmpl
+			}
 		case config.StepReject, config.StepDeadLetter:
 			if s.Topic != "" {
 				if err := kafkaadmin.EnsureTopic(ctx, deps.Brokers, s.Topic, 1, deps.ReplicationFactor); err != nil {
@@ -208,7 +222,11 @@ func (r *Runner) runStep(ctx context.Context, id string, partition int, m flowMs
 		return r.runSteps(ctx, s.OnFail, partition, m, out, log)
 
 	case config.StepTopic:
-		if err := r.sendWithRetry(ctx, r.shared.overrideProducer(s.Topic), m.key, m.value, m.headers, log); err != nil {
+		target := r.shared.overrideProducer(s.Topic)
+		if len(s.Brokers) > 0 {
+			target = r.shared.clusterProducer(s.Brokers, s.Topic)
+		}
+		if err := r.sendWithRetry(ctx, target, m.key, m.value, m.headers, log); err != nil {
 			return fmt.Errorf("step %s producing to %s: %w", id, s.Topic, err)
 		}
 		r.tapOut(tap.ToDestination, s.Topic, id, "", statusOf(m.response), m.key, m.value, m.headers)
@@ -216,7 +234,18 @@ func (r *Runner) runStep(ctx context.Context, id string, partition int, m flowMs
 		return r.runSteps(ctx, s.Next, partition, m, out, log)
 
 	case config.StepWebhook:
-		if err := r.webhookWithRetry(ctx, s.URL, correlationID, m.value, log); err != nil {
+		body := m.value
+		if tmpl := rt.bodies[id]; tmpl != nil {
+			var buf bytes.Buffer
+			if err := tmpl.Execute(&buf, m.env()); err != nil {
+				log.Error("flow webhook body template failed, sending the message as it is", "error", err)
+			} else if s.Message != "" {
+				body, _ = json.Marshal(map[string]string{cmp.Or(s.MessageField, "text"): buf.String()})
+			} else {
+				body = buf.Bytes()
+			}
+		}
+		if err := r.httpWithRetry(ctx, cmp.Or(s.Method, http.MethodPost), s.URL, correlationID, body, expandHeaders(s.Headers), log); err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
@@ -360,4 +389,12 @@ func parseObject(v []byte) (map[string]any, bool) {
 		return nil, false
 	}
 	return m, true
+}
+
+func toJSON(v any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "null"
+	}
+	return string(b)
 }

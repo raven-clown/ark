@@ -1049,6 +1049,18 @@ rules only before and after one call.
       topic and a webhook at once, a condition on the app's answer, the
       app's 400 and 500 each taking their own step, and a failed data
       check.
+- [x] **Steps that talk to other products.** Call and webhook steps
+      take headers with `${NAME}` read from the environment; webhooks take
+      a method, a body template or a chat message template; topic steps
+      can write to another Kafka cluster. Verified live: a webhook sent a
+      PUT with the secret header filled from the environment and the
+      message rendered as `{"text": ...}` to an HTTP echo server, and a
+      topic step wrote to a second Kafka broker and not the first.
+- [x] **Optional fallback topics.** A flow pipeline can go without a
+      dead-letter or reject topic when every step that can fail or reject
+      has its own line; validation and the designer's checklist say which
+      step still needs one. Verified with a pipeline without a DLQ whose
+      500s took the call's failed line.
 - [x] **Flow designer.** Steps dragged onto a board and wired freely
       from any way out (a call's answer, 4xx and failed lines, one line per
       condition branch plus otherwise, a data check's pass and fail), each

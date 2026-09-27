@@ -16,6 +16,7 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/config"
 	"github.com/raven-clown/ark/bridge-engine/internal/consumer"
 	"github.com/raven-clown/ark/bridge-engine/internal/events"
+	"github.com/raven-clown/ark/bridge-engine/internal/kafkaadmin"
 	"github.com/raven-clown/ark/bridge-engine/internal/tap"
 	"github.com/raven-clown/ark/bridge-engine/internal/tuning"
 )
@@ -203,6 +204,15 @@ func (c *Console) Handler() *http.ServeMux {
 			return
 		}
 		writeJSON(w, http.StatusOK, topics)
+	})
+
+	mux.HandleFunc("GET /api/v1/consumer-groups", func(w http.ResponseWriter, r *http.Request) {
+		groups, err := kafkaadmin.ConsumerGroups(r.Context(), d.Brokers)
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, errBody(err))
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string][]string{"groups": groups})
 	})
 
 	mux.HandleFunc("GET /api/v1/topology", func(w http.ResponseWriter, r *http.Request) {
@@ -466,6 +476,12 @@ func flowEdges(p config.Pipeline, pid string, node func(id, kind, label string),
 				add("target:"+u, "call", s.ID)
 			}
 		case config.StepTopic:
+			if len(s.Brokers) > 0 {
+				id := "topic:" + strings.Join(s.Brokers, ",") + "/" + s.Topic
+				node(id, "topic", s.Topic+" @ "+s.Brokers[0])
+				add(id, "destination", s.ID)
+				continue
+			}
 			add(topic(s.Topic), "destination", s.ID)
 		case config.StepWebhook:
 			node("webhook:"+s.URL, "webhook", s.URL)

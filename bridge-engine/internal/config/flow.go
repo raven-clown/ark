@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"regexp"
+	"text/template" // nosemgrep: go.lang.security.audit.xss.import-text-template.import-text-template -- builds request bodies for other services, not HTML
 )
 
 // StepType is what a flow step does with the message it receives.
@@ -54,7 +55,15 @@ type Step struct {
 	ID   string   `yaml:"id"`
 	Type StepType `yaml:"type"`
 	Name string   `yaml:"name,omitempty"`
+	// App names the product a step talks to (opensearch, nifi, slack, ...),
+	// for the console to show; it doesn't change what the step does.
+	App  string   `yaml:"app,omitempty"`
 	Next []string `yaml:"next,omitempty"`
+
+	// call and webhook: extra request headers. ${NAME} in a value is
+	// replaced with the environment variable NAME, so secrets stay out of
+	// the config.
+	Headers map[string]string `yaml:"headers,omitempty"`
 
 	// call
 	Target         *Target         `yaml:"target,omitempty"`
@@ -77,7 +86,18 @@ type Step struct {
 	// pipeline's reject_topic and dead_letter_topic.
 	Topic string `yaml:"topic,omitempty"`
 	// webhook
-	URL string `yaml:"url,omitempty"`
+	URL    string `yaml:"url,omitempty"`
+	Method string `yaml:"method,omitempty"`
+	// Body is a Go text/template for the request body, reading data,
+	// original, response, reason, key and headers; empty sends the message.
+	Body string `yaml:"body,omitempty"`
+	// Message is a text/template for chat apps: the request body becomes
+	// {"<message_field>": message}, message_field defaulting to "text"
+	// (Slack, Teams) and "content" for Discord.
+	Message      string `yaml:"message,omitempty"`
+	MessageField string `yaml:"message_field,omitempty"`
+	// topic: brokers of another Kafka cluster to send to instead of this one.
+	Brokers []string `yaml:"brokers,omitempty"`
 	// reject and dead_letter
 	Reason string `yaml:"reason,omitempty"`
 }
@@ -183,6 +203,11 @@ func validateFlow(p Pipeline) error {
 }
 
 func validateStep(p Pipeline, s Step) error {
+	for name := range s.Headers {
+		if name == "" {
+			return fmt.Errorf("headers: a header name is empty")
+		}
+	}
 	terminal := func() error {
 		if len(s.Outputs()) > 0 {
 			return fmt.Errorf("a %s step ends the path and can't lead anywhere", s.Type)
@@ -221,6 +246,9 @@ func validateStep(p Pipeline, s Step) error {
 		if len(s.OnFailure) == 0 && p.DeadLetterTopic == "" && p.OnExhausted != OnExhaustedBlock {
 			return fmt.Errorf("needs on_failure, or a pipeline dead_letter_topic to fall back to")
 		}
+		if len(s.OnReject) == 0 && p.RejectTopic == "" && p.DeadLetterTopic == "" {
+			return fmt.Errorf("needs on_reject, or a pipeline reject_topic or dead_letter_topic to fall back to")
+		}
 	case StepCondition:
 		if len(s.Branches) == 0 {
 			return fmt.Errorf("needs at least one branch")
@@ -242,6 +270,9 @@ func validateStep(p Pipeline, s Step) error {
 		if err := validateDataRules(*s.Rules); err != nil {
 			return fmt.Errorf("rules: %w", err)
 		}
+		if len(s.OnFail) == 0 && s.Rules.OnViolation != "tag" && p.RejectTopic == "" && p.DeadLetterTopic == "" {
+			return fmt.Errorf("needs on_fail, or a pipeline reject_topic or dead_letter_topic to fall back to")
+		}
 	case StepTopic:
 		if s.Topic == "" {
 			return fmt.Errorf("topic is required")
@@ -249,6 +280,19 @@ func validateStep(p Pipeline, s Step) error {
 	case StepWebhook:
 		if s.URL == "" {
 			return fmt.Errorf("url is required")
+		}
+		switch s.Method {
+		case "", "POST", "PUT", "PATCH":
+		default:
+			return fmt.Errorf("method must be POST, PUT or PATCH, got %q", s.Method)
+		}
+		if s.Body != "" && s.Message != "" {
+			return fmt.Errorf("set body or message, not both")
+		}
+		for field, src := range map[string]string{"body": s.Body, "message": s.Message} {
+			if _, err := template.New(s.ID).Parse(src); err != nil {
+				return fmt.Errorf("%s: %w", field, err)
+			}
 		}
 		if len(s.OnFailure) == 0 && p.DeadLetterTopic == "" {
 			return fmt.Errorf("needs on_failure, or a pipeline dead_letter_topic to fall back to")

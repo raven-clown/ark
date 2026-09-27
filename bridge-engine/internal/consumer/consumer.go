@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -173,6 +175,19 @@ func (s *shared) overrideProducer(topic string) *producer.Producer {
 	}
 	p := producer.New(s.brokers, topic)
 	s.overrideDest[topic] = p
+	return p
+}
+
+// clusterProducer writes to a topic on another Kafka cluster.
+func (s *shared) clusterProducer(brokers []string, topic string) *producer.Producer {
+	key := strings.Join(brokers, ",") + "/" + topic
+	s.overrideMu.Lock()
+	defer s.overrideMu.Unlock()
+	if p, ok := s.overrideDest[key]; ok {
+		return p
+	}
+	p := producer.New(brokers, topic)
+	s.overrideDest[key] = p
 	return p
 }
 
@@ -835,10 +850,14 @@ func (r *Runner) applyRuleAction(ctx context.Context, rule *config.FastPathRule,
 }
 
 func (r *Runner) webhookWithRetry(ctx context.Context, url, correlationID string, value []byte, log *slog.Logger) error {
+	return r.httpWithRetry(ctx, http.MethodPost, url, correlationID, value, nil, log)
+}
+
+func (r *Runner) httpWithRetry(ctx context.Context, method, url, correlationID string, value []byte, headers map[string]string, log *slog.Logger) error {
 	var lastErr error
 	for attempt := 1; attempt <= r.pipeline.Retry.MaxAttempts; attempt++ {
 		var resp *callback.Response
-		resp, lastErr = r.shared.client.Post(ctx, url, correlationID, value)
+		resp, lastErr = r.shared.client.Send(ctx, method, url, correlationID, value, headers)
 		if lastErr == nil && resp.Success() {
 			return nil
 		}
