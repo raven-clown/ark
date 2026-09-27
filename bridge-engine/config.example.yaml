@@ -170,6 +170,24 @@ pipelines:
   #         next: [done]
   #         on_reject: [bad]
   #         on_failure: [later]
-  #       - {id: done, type: topic, topic: orders.processed}
-  #       - {id: later, type: topic, topic: orders.retry}
+  #       - {id: done, type: topic, topic: orders.processed, next: [search]}
+  #       - {id: later, type: topic, topic: orders.retry, next: [alert]}
   #       - {id: bad, type: reject}
+  #       # Steps that talk to other products. app only changes the console's
+  #       # badge. ${NAME} in a header is read from the environment; body and
+  #       # message are Go templates over the same values as conditions, with
+  #       # json to quote a value. A topic step can set brokers to write to
+  #       # another Kafka cluster.
+  #       - id: search
+  #         type: webhook
+  #         app: opensearch
+  #         url: http://opensearch:9200/orders/_doc
+  #         headers: {Authorization: "Basic ${OPENSEARCH_AUTH}"}
+  #         body: '{"order": {{json .data}}, "status": {{json .response.status}}}'
+  #       - id: alert
+  #         type: webhook
+  #         app: slack
+  #         url: https://hooks.slack.com/services/${SLACK_PATH}
+  #         message: "order {{.data.order_id}} is waiting for a retry: {{.reason}}"
+  #         next: [mirror]
+  #       - {id: mirror, type: topic, app: kafka, topic: orders.retry, brokers: ["dr-kafka:9092"]}

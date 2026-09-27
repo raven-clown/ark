@@ -4,6 +4,11 @@ The web console for ARK: a React app plus a small Go server that embeds
 the built app and forwards `/api/v1/` to an ARK engine. The browser only
 talks to this server, never to Kafka.
 
+Pages: the pipeline canvas (right-click a pipeline for its menu), one
+pipeline's health, live tail, dead letters and rules, the flow designer,
+metrics, events, topics, cluster, projects, Ask ARK and settings, in
+English, Thai, and simplified and traditional Chinese.
+
 ## Run
 
 With the repository's compose file, `docker compose up -d --build` starts

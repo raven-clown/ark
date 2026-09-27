@@ -4,9 +4,10 @@
 
 Read [PLAN.md](PLAN.md) first. It's the source of truth for what ARK
 is trying to be, what's deliberately out of scope, and why. Several
-design decisions there (no general DAG engine, Kafka-coordinator
-clustering instead of Raft, no new storage layer) were made after
-weighing real tradeoffs. If a change would cross one of those lines,
+design decisions there (flows stay inside one pipeline, from a Kafka
+topic out to topics and HTTP, rather than growing into a connector
+platform; Kafka-coordinator clustering instead of Raft; no new storage
+layer) were made after weighing real tradeoffs. If a change would cross one of those lines,
 open an issue to discuss it before writing code.
 
 ## Development setup
@@ -28,7 +29,10 @@ This starts a single-node Kafka broker, the bridge engine wired to
 `bridge-engine/config.demo.yaml`, and `demo-echo`, a small callback target
 that echoes what it receives (400 for `"invalid": true`, 500 for
 `"fail": true`). The README's Quick start walks through it. To run your
-own config, set `ARK_CONFIG=path/to/config.yaml`.
+own config, set `ARK_CONFIG=path/to/config.yaml`. The console runs on
+[http://localhost:8088](http://localhost:8088) (sign in with
+`demo-admin-token`); see [bridge-ui/README.md](bridge-ui/README.md) to
+work on it with hot reload.
 
 ## Making a change
 
@@ -47,9 +51,13 @@ own config, set `ARK_CONFIG=path/to/config.yaml`.
    topic), were only caught by actually running the flow end to end
    (see PLAN.md's Phase 2 and Phase 4 notes for examples). Add a unit
    test for the logic you touched where one's practical; the
-   `internal/config`, `internal/breaker`, `internal/rules`, and
-   `internal/callback` packages have runnable examples of what "good"
-   looks like here.
+   `internal/config`, `internal/breaker`, `internal/rules`,
+   `internal/callback` and `internal/consumer` (flows) packages have
+   runnable examples of what "good" looks like here. For a console
+   change, open it in a browser against the compose stack with real
+   traffic flowing, and run `npm run build` in `bridge-ui` (it type-checks).
+   New console text goes into `bridge-ui/src/i18n.ts` in all four
+   languages (English, Thai, simplified and traditional Chinese).
 5. Open a pull request against `main` with a clear description of what
    changed and why.
 

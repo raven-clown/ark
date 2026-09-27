@@ -32,7 +32,9 @@
 
 ARK sits between Kafka and an HTTP endpoint your app already has. It
 consumes each message, checks it, calls your app, and produces the answer
-to another topic. Retries, ordering, dead letters, a circuit breaker,
+to another topic. When one path isn't enough, draw a flow: conditions,
+several apps, webhooks and topics, and a line of its own for every
+reject and failure. Retries, ordering, dead letters, a circuit breaker,
 scaling and an AI assistant come built in. One Go binary, one YAML file.
 
 Your app stays a plain web service. It never sees a consumer group, an
@@ -43,13 +45,15 @@ offset or a rebalance.
 - **Every team writes the same Kafka glue.** Consume, retry, dead-letter,
   commit offsets carefully, survive rebalances, add metrics. ARK is that
   glue, done once and tested against a real broker.
-- **Small on purpose.** ARK does one job: *consume, validate or route,
-  call back, produce*. It is not a general orchestrator like Kafka
-  Connect, NiFi or Camel, so there is no framework to learn and no extra
-  cluster to run.
+- **Small on purpose.** ARK does one job: *get Kafka messages to the apps
+  that act on them, and the answers back*. Flows add branches and fan-out
+  when you need them, but it is not a general orchestrator like Kafka
+  Connect, NiFi or Camel: there are no connectors to install, no framework
+  to learn and no extra cluster to run.
 - **Safe by default.** At-least-once delivery, in-order commits, a stable
-  correlation ID for idempotency, and a dead-letter topic that is
-  required, so a message always ends up somewhere you can see it.
+  correlation ID for idempotency, and every failure must have somewhere to
+  go (a dead-letter topic or a line you draw), so a message always ends up
+  somewhere you can see it.
 - **Easy to operate.** Ask it questions in plain language over MCP, browse
   and retry dead letters from the API, and scale by adding nodes that
   coordinate through Kafka itself.
@@ -147,10 +151,14 @@ the side.
   a message down several branches, a call has its own lines for the
   answer, a 4xx and used-up retries. Ready-made app steps send to
   OpenSearch, Elasticsearch, NiFi, another Kafka cluster, Slack, Discord,
-  Microsoft Teams or any HTTP API, each with the settings that product
-  needs. Topic and consumer group fields offer what the cluster already
-  has. Review the generated config before it is applied. Right-click a running pipeline to open it in the
-  designer; a fixed-path pipeline opens as the flow that does the same.
+  Microsoft Teams or any HTTP API, each with its own logo and send
+  patterns: index, index by id or update in OpenSearch and Elasticsearch,
+  a Block Kit card, embed or Adaptive Card for chat, PUT or PATCH by id
+  for an API. Topic and consumer group fields offer what the cluster already
+  has, and the fallback dead-letter and reject topics can be switched off
+  once every step has its own lines. Review the generated config before it
+  is applied. Right-click a running pipeline to open it in the designer; a
+  fixed-path pipeline opens as the flow that does the same.
 - **Visual rule builder.** Pick a field from real messages, an operator and
   a value, and see how many recent messages would match before you save.
 - **Metrics.** Throughput, lag and callback latency percentiles over the
@@ -173,7 +181,7 @@ the side.
 <td><img src="docs/img/console-assistant.png" alt="Asking ARK a question in Thai"></td>
 </tr>
 <tr>
-<td colspan="2"><img src="docs/img/console-designer.png" alt="The pipeline designer: blocks from source to result with reject and dead letter to the sides"></td>
+<td colspan="2"><img src="docs/img/console-designer.png" alt="The flow designer: a data check, a condition splitting orders, an app call and an OpenSearch step, each with its own lines for results, rejects and failures"></td>
 </tr>
 </table>
 
@@ -215,6 +223,12 @@ flowchart LR
 6. **Produce and commit.** The answer goes to the destination topic, and
    only then is the offset committed, in order.
 
+That fixed path covers most pipelines. For anything else, a pipeline can
+run a [flow](#reference) instead: the same steps joined in any shape,
+where a condition can split a message down several branches, one step can
+feed several apps, webhooks and topics at once, and a reject or failure
+can lead anywhere, not only to a topic.
+
 ### What happens when...
 
 | Situation | What ARK does |
@@ -227,6 +241,7 @@ flowchart LR
 | A message breaks a data rule | Rejected, dead-lettered, or tagged and let through, your choice |
 | ARK crashes mid-message | Nothing was committed past it, so it is delivered again with the same correlation ID |
 | A node joins or leaves the cluster | Workers move to the live nodes in place, without restarting pipelines |
+| A step in a flow rejects or fails | The message follows that step's own line (a webhook, another app, a topic, or all of them); the offset commits once every path is done |
 
 ## Features
 
@@ -303,6 +318,25 @@ latency, lag, oldest uncommitted age, breaker state and rule matches.
 
 </td>
 </tr>
+<tr>
+<td valign="top">
+
+**Flows like a workflow**<br>
+Draw steps on a board, n8n style: conditions anywhere, fan-out to several
+apps, webhooks and topics, and a line for every answer, reject and
+failure. Loops are refused, and a message still commits exactly once.
+
+</td>
+<td valign="top">
+
+**Talks to the rest of your stack**<br>
+Ready-made steps for OpenSearch, Elasticsearch, NiFi, another Kafka
+cluster, Slack, Discord, Microsoft Teams and any HTTP API, each with send
+patterns that fit the product (index by id, cards, PUT by id), url and
+body templates, and secrets read from the environment.
+
+</td>
+</tr>
 </table>
 
 ## Your first pipeline
@@ -370,6 +404,10 @@ X-Correlation-ID: 30176dd15e71f315051f562780bb548d
 
 Whatever it returns with a 2xx becomes the message on
 `destination_topic`.
+
+Need branches, more than one destination, or your own path for rejects
+and failures? Open the pipeline in the console's flow designer, or write
+a `flow:` by hand (see *Flows* under [Reference](#reference)).
 
 ## Reference
 
@@ -495,14 +533,23 @@ Steps: `call`, `condition`, `data_check`, `topic`, `webhook`, `reject`,
 reject and dead letter included, so a reject can also go to a webhook or
 another app. Call and webhook steps take `headers`, where `${NAME}` is
 read from the environment so secrets stay out of the file; a webhook can
-set `method`, a `body` template, or a chat `message` template (sent as
-`{"text": ...}`, or `message_field: content` for Discord); a topic step
-can set `brokers` to write to another Kafka cluster. The pipeline's
-`dead_letter_topic` and `reject_topic` are optional for a flow, as long
-as every step that can fail or reject has its own line for it. Call steps take the same `target`, `retry` and
-`circuit_breaker` options as the fixed path. Loops are refused; to go
-around again, send to a topic a pipeline reads. A message is committed
-once every path it took is done.
+set `method` (`POST`, `PUT`, `PATCH`), a `body` template, or a chat
+`message` template (sent as `{"text": ...}`, or `message_field: content`
+for Discord). Templates are Go templates over the same values, with
+`json` to quote one safely: `{"id": {{json .data.order_id}}}`. The `url`
+can be a template too, after `http(s)://host/`, so the host never comes
+from a message: `http://opensearch:9200/orders/_doc/{{path .original.order_id}}`
+(`path` escapes the value, and a missing one takes the failed line). A topic
+step can set `brokers` to write to another Kafka cluster. `app:`
+(`opensearch`, `elasticsearch`, `nifi`, `kafka`, `slack`, `discord`,
+`teams`, `http`) only changes how the console draws a step.
+
+The pipeline's `dead_letter_topic` and `reject_topic` are optional for a
+flow, as long as every step that can fail or reject has its own line for
+it; when set, they catch the steps that don't. Call steps take the same
+`target`, `retry` and `circuit_breaker` options as the fixed path. Loops
+are refused; to go around again, send to a topic a pipeline reads. A
+message is committed once every path it took is done, and counted once.
 
 </details>
 
@@ -558,6 +605,7 @@ the API port. Any MCP client and any model can use it.
 | "Any weird data coming in?" | `check_data`, `test_message` |
 | "How do I handle 2000 msg/s?" | `recommend_tuning` |
 | "Create a pipeline from A to B" | `get_pipeline_schema`, `validate_pipeline_config`, `create_pipeline` |
+| "Send big orders to OpenSearch too, and ping Slack when the app fails" | `get_pipeline_schema` (its `flow_example_yaml`), `validate_pipeline_config`, `apply_pipeline_config` |
 
 Every conversation starts with `interpret_request`, which works out what
 you mean (Thai, English, simplified and traditional Chinese, plus your
@@ -728,8 +776,11 @@ tenant.
 ## Roadmap
 
 - **Longer history:** keep metrics beyond the last hour and per partition.
+- **Per-tenant metrics,** and `get_metrics` over MCP with a time range.
 - **Batched callbacks:** send several messages per HTTP call for targets
   that support it.
+- **Sources and sinks:** an HTTP source that turns inbound requests into
+  Kafka messages, and a database step for flows.
 
 The full plan, with the reasoning behind every decision, is in
 [PLAN.md](PLAN.md).

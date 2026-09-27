@@ -6,11 +6,13 @@
 
 Owner: ekdanai.kk@gmail.com
 License: Apache License 2.0
-Status: Phases 1 to 5 and 4b (cluster v1) done, Phase 6 core done.
-A full review on 2026-09-24 found message-loss and auth gaps, tracked in
-"Phase 0: Hardening" at the top of §6. All of Phase 0 except T1
-(batching, deliberately deferred) is fixed and verified live, and
-cluster v2 (Phase 4c) is built. Next: MCP config tools, then the UI.
+Status: Phases 1 to 6, 4b and 4c (cluster), 8 (projects and AI access),
+9 (flows) and the ARK Console are done. A full review on 2026-09-24
+found message-loss and auth gaps, tracked in "Phase 0: Hardening" at the
+top of §6; all of it except T1 (batching, deliberately deferred) is fixed
+and verified live. Open: longer and per-partition metric history,
+per-tenant metrics, `get_metrics` over MCP, batched callbacks (T1), and
+Phase 7 (sources and sinks).
 CI (`.github/workflows/ci.yml`) runs build/vet/test, govulncheck,
 gosec, Semgrep, OSV-Scanner, Gitleaks, and a Trivy image scan on
 every PR.
@@ -1004,7 +1006,9 @@ the calling agent to self-restrict):**
 ### Backend: Phase 7: Extensibility
 - [ ] `Source` and `Sink` interfaces (Kafka is one implementation of each)
 - [ ] Database sink (direct insert/upsert, bypassing HTTP callback)
-- [ ] Fan-out destinations (topic, webhook, and DB in one pipeline)
+- [ ] Fan-out destinations (topic, webhook, and DB in one pipeline).
+      Topics, webhooks and apps already fan out through flows (Phase 9);
+      what is left is a database step once the sink exists.
 - [ ] **HTTP source** (webhook receiver), the mirror image of
       everything built so far. Today a pipeline's only direction is
       Kafka to ARK to outbound HTTP callback; this is inbound HTTP to
@@ -1063,6 +1067,21 @@ rules only before and after one call.
       Verified against a real OpenSearch 2.17: a flow built in the
       designer indexed every answer of the app as a document while also
       writing it to a topic.
+- [x] **Send patterns per app.** Each app step has its real logo and a
+      choice of the requests that product expects (OpenSearch and
+      Elasticsearch: index, index by id, update with upsert, index the
+      app's answer; NiFi and HTTP: as is, PUT or PATCH by id, an envelope
+      with key, headers and reason; Slack, Discord, Teams: text, text with
+      the message, Block Kit card, embed, Adaptive Card). Webhook urls can
+      be templates after `http(s)://host/`, so an id goes into the path
+      but the host can't come from a message; `path` escapes the value and
+      a missing one takes the failed line. Verified by switching patterns
+      in the console against real OpenSearch 2.17: with `original.order_id`
+      every document's `_id` was its order id, the Slack step posted a
+      Block Kit card to an HTTP echo server, and while the id pointed at a
+      field the app's answer doesn't have, messages went to the DLQ with
+      the reason instead of overwriting one document. Slack, Discord and
+      Teams themselves were not reached (no webhook URLs here).
 - [x] **Optional fallback topics.** A flow pipeline can go without a
       dead-letter or reject topic when every step that can fail or reject
       has its own line; validation and the designer's checklist say which
@@ -1079,6 +1098,13 @@ rules only before and after one call.
       step sent every message there as well as down its usual path, and
       the demo pipeline converted to a flow routed good, bad, 400, 500 and
       rule-matched messages exactly as before.
+- [x] **Flows over MCP.** `get_pipeline_schema` documents every step
+      field and returns a working `flow_example_yaml` next to the fixed
+      example, the assistant's instructions say when to reach for a flow,
+      and the config review warns per call step instead of about the
+      fixed path's target. Checked against the running engine: the
+      example validates, and its review names the call step without a
+      health check.
 
 ### Backend: Phase 8: Projects, AI access and "everything configurable"
 
