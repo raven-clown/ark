@@ -41,6 +41,7 @@ flow:
     - id: notify
       type: webhook
       url: http://crm/notify
+      body: '{"id": {{json .data.order_id}}}'
     - id: done
       type: topic
       topic: orders.processed

@@ -290,7 +290,7 @@ func validateStep(p Pipeline, s Step) error {
 			return fmt.Errorf("set body or message, not both")
 		}
 		for field, src := range map[string]string{"body": s.Body, "message": s.Message} {
-			if _, err := template.New(s.ID).Parse(src); err != nil {
+			if _, err := template.New(s.ID).Funcs(template.FuncMap{"json": func(any) string { return "" }}).Parse(src); err != nil {
 				return fmt.Errorf("%s: %w", field, err)
 			}
 		}
