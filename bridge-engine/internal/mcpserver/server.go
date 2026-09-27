@@ -112,9 +112,9 @@ func buildServer(scope Scope, d Deps, cf *confirmations) *mcp.Server {
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "get_pipeline_schema",
-		Description: "Every pipeline config field: type, whether it's required, default, allowed values and what it does, plus a complete example. Use before writing or changing pipeline YAML.",
+		Description: "Every pipeline config field: type, whether it's required, default, allowed values and what it does, plus a complete example of a fixed pipeline and of a flow (steps joined like a workflow). Use before writing or changing pipeline YAML.",
 	}, func(context.Context, *mcp.CallToolRequest, emptyIn) (*mcp.CallToolResult, schemaOut, error) {
-		return nil, schemaOut{Fields: pipelineSchema, Example: exampleYAML}, nil
+		return nil, schemaOut{Fields: pipelineSchema, Example: exampleYAML, FlowExample: flowExampleYAML}, nil
 	})
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -221,8 +221,9 @@ type tuningIn struct {
 }
 
 type schemaOut struct {
-	Fields  []fieldDoc `json:"fields"`
-	Example string     `json:"example_yaml"`
+	Fields      []fieldDoc `json:"fields"`
+	Example     string     `json:"example_yaml"`
+	FlowExample string     `json:"flow_example_yaml"`
 }
 
 type pipelineConfigOut struct {

@@ -220,7 +220,7 @@ func (c *Console) Handler() *http.ServeMux {
 	})
 
 	mux.HandleFunc("GET /api/v1/config/schema", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, schemaOut{Fields: pipelineSchema, Example: exampleYAML})
+		writeJSON(w, http.StatusOK, schemaOut{Fields: pipelineSchema, Example: exampleYAML, FlowExample: flowExampleYAML})
 	})
 
 	mux.HandleFunc("GET /api/v1/config/pipelines", func(w http.ResponseWriter, r *http.Request) {

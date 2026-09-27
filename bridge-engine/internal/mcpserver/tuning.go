@@ -102,13 +102,22 @@ func reviewConfig(d Deps, p config.Pipeline) []Finding {
 	add := func(sev, what, why string, actions ...string) {
 		out = append(out, Finding{Severity: sev, What: what, Why: why, Actions: actions})
 	}
-	if p.RejectTopic == "" {
-		add(SeverityInfo, "No reject_topic.", "Messages the target rejects as invalid (4xx) go to the dead-letter topic, mixed with ones that failed for other reasons.",
-			"Add reject_topic to keep bad data separate from delivery failures.")
-	}
-	if p.Target.HealthCheckURL == "" && len(p.Target.HealthCheckURLs) == 0 {
-		add(SeverityInfo, "No target health check URL.", "When the circuit breaker opens, ARK only notices the target recovered when it retries.",
-			"Set target.health_check_url so recovery is detected right away.")
+	if p.Flow != nil {
+		for _, s := range p.Flow.Steps {
+			if s.Type == config.StepCall && s.Target != nil && s.Target.HealthCheckURL == "" && len(s.Target.HealthCheckURLs) == 0 {
+				add(SeverityInfo, fmt.Sprintf("Call step %q has no health check URL.", s.ID), "When its circuit breaker opens, ARK only notices the app recovered when it retries.",
+					"Set target.health_check_url on the step so recovery is detected right away.")
+			}
+		}
+	} else {
+		if p.RejectTopic == "" {
+			add(SeverityInfo, "No reject_topic.", "Messages the target rejects as invalid (4xx) go to the dead-letter topic, mixed with ones that failed for other reasons.",
+				"Add reject_topic to keep bad data separate from delivery failures.")
+		}
+		if p.Target.HealthCheckURL == "" && len(p.Target.HealthCheckURLs) == 0 {
+			add(SeverityInfo, "No target health check URL.", "When the circuit breaker opens, ARK only notices the target recovered when it retries.",
+				"Set target.health_check_url so recovery is detected right away.")
+		}
 	}
 	if p.Retry.MaxAttempts <= 1 {
 		add(SeverityWarning, "retry.max_attempts is 1.", "A single transient failure sends the message straight to the dead-letter topic.",
