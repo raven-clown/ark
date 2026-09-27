@@ -445,12 +445,16 @@ table.list.compact .input, table.list.compact .select { height: 28px; }
 .ctx-menu hr { border: 0; border-top: 1px solid rgba(255, 255, 255, 0.06); margin: 6px 4px; }
 .n-block.n-flow { width: 220px; cursor: grab; }
 .n-block.n-flow .outs { margin-top: 8px; display: flex; flex-direction: column; gap: 2px; }
-.n-block.n-flow .out { position: relative; display: flex; justify-content: flex-end; font-size: 10.5px; color: var(--t3); padding-right: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.n-block.n-flow .out { position: relative; display: flex; justify-content: flex-end; font-size: 10.5px; color: var(--t3); padding-right: 4px; }
+.n-block.n-flow .out span { max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .n-block.n-flow .out.o-next span { color: var(--accent); }
 .n-block.n-flow .out.o-on_reject span, .n-block.n-flow .out.o-on_fail span { color: var(--warn); }
 .n-block.n-flow .out.o-on_failure span { color: var(--bad); }
 .n-block.n-flow .out.o-branch span { color: #7db6f5; }
-.n-block.n-flow .react-flow__handle { opacity: 1; width: 9px; height: 9px; border: 2px solid var(--s2); background: var(--t3); }
+.n-block.n-flow .react-flow__handle { opacity: 1; width: 12px; height: 12px; border: 2px solid var(--s2); background: var(--t3); cursor: crosshair; }
+.n-block.n-flow .react-flow__handle::after { content: ""; position: absolute; inset: -9px; border-radius: 50%; }
+.n-block.n-flow .h-out:hover { transform: translate(50%, -50%) scale(1.25); }
+.n-block.n-flow .h-in:hover { transform: translate(-50%, -50%) scale(1.25); }
 .n-block.n-flow .out .react-flow__handle { right: -17px; }
 .n-block.n-flow .out.o-next .react-flow__handle { background: var(--accent); }
 .n-block.n-flow .out.o-on_reject .react-flow__handle, .n-block.n-flow .out.o-on_fail .react-flow__handle { background: var(--warn); }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { createContext, useContext, useEffect, useId, useMemo, useRef, useState } from 'react'
 import {
   Background,
   Handle,
@@ -15,6 +15,7 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 
+import { api } from '../api'
 import { useT, type Key } from '../i18n'
 import { ConfigEditor } from './ConfigEditor'
 import { Icon, type IconName } from './Icon'
@@ -330,6 +331,8 @@ interface Issue {
 
 function issuesOf(name: string, pipe: Fields, flow: FlowCfg): Issue[] {
   const out: Issue[] = []
+  const dlq = !!str(pipe.dead_letter_topic)
+  const rejects = dlq || !!str(pipe.reject_topic)
   if (!/^[a-z0-9][a-z0-9._-]*$/i.test(name)) out.push({ key: 'dz.i.name' })
   if (!str(pipe.source_topic)) out.push({ key: 'fz.i.source' })
   if (!flow.start.length) out.push({ key: 'fz.i.start' })
@@ -340,6 +343,11 @@ function issuesOf(name: string, pipe: Fields, flow: FlowCfg): Issue[] {
     if (s.type === 'webhook' && !/^https?:\/\/\S+$/.test(s.url ?? '')) out.push({ key: 'dz.i.url', id: s.id })
     if (s.type === 'condition' && (!s.branches?.length || s.branches.some((b) => !b.when.trim()))) out.push({ key: 'dz.i.condition', id: s.id })
     if (s.type === 'topic' && !s.topic?.trim()) out.push({ key: 'fz.i.topic', id: s.id })
+    if ((s.type === 'call' || s.type === 'webhook') && !dlq && !s.on_failure?.length) out.push({ key: 'fz.i.needFailed', id: s.id })
+    if (s.type === 'call' && !rejects && !s.on_reject?.length) out.push({ key: 'fz.i.needReject', id: s.id })
+    if (s.type === 'data_check' && !rejects && !s.on_fail?.length && str(obj(s.rules).on_violation) !== 'tag') out.push({ key: 'fz.i.needFail', id: s.id })
+    if (s.type === 'dead_letter' && !dlq && !s.topic?.trim()) out.push({ key: 'fz.i.topic', id: s.id })
+    if (s.type === 'reject' && !rejects && !s.topic?.trim()) out.push({ key: 'fz.i.topic', id: s.id })
   }
   if (hasLoop(flow)) out.push({ key: 'fz.i.loop' })
   return out
@@ -396,18 +404,48 @@ export function yamlOf(v: unknown, indent = ''): string {
     .join('')
 }
 
-function Input({ label, value, onChange, placeholder, mono = true }: { label: Key; value: string; onChange: (v: string) => void; placeholder?: string; mono?: boolean }) {
+function Input({ label, value, onChange, placeholder, mono = true, options }: { label: Key; value: string; onChange: (v: string) => void; placeholder?: string; mono?: boolean; options?: string[] }) {
   const t = useT()
+  const listId = useId()
   return (
     <div className="field">
       <label>{t(label)}</label>
-      <input className={`input ${mono ? 'mono' : ''}`} value={value} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} />
+      <input className={`input ${mono ? 'mono' : ''}`} value={value} placeholder={placeholder} list={options ? listId : undefined} onChange={(e) => onChange(e.target.value)} />
+      {options && (
+        <datalist id={listId}>
+          {options.map((o) => (
+            <option key={o} value={o} />
+          ))}
+        </datalist>
+      )}
     </div>
   )
 }
 
+// useKafkaNames lists the cluster's topics and consumer groups, so fields
+// can offer them while still taking a name that doesn't exist yet.
+function useKafkaNames() {
+  const [names, setNames] = useState<{ topics: string[]; groups: string[] }>({ topics: [], groups: [] })
+  useEffect(() => {
+    let live = true
+    Promise.all([
+      api<{ name: string }[]>('/topics').catch(() => []),
+      api<{ groups: string[] }>('/consumer-groups').catch(() => ({ groups: [] as string[] })),
+    ]).then(([topics, groups]) => {
+      if (live) setNames({ topics: topics.map((x) => x.name).filter((n) => !n.startsWith('__')).sort(), groups: groups.groups ?? [] })
+    })
+    return () => {
+      live = false
+    }
+  }, [])
+  return names
+}
+
+const TopicsContext = createContext<string[]>([])
+
 function StepFields({ step, pipe, onChange }: { step: Step; pipe: Fields; onChange: (s: Step) => void }) {
   const t = useT()
+  const topics = useContext(TopicsContext)
   const set = (patch: Partial<Step>) => onChange({ ...step, ...patch })
   const name = <Input label="cfg.name" value={step.name ?? ''} mono={false} onChange={(v) => set({ name: v })} />
   switch (step.type) {
@@ -496,7 +534,7 @@ function StepFields({ step, pipe, onChange }: { step: Step; pipe: Fields; onChan
       return (
         <>
           {name}
-          <Input label="dz.f.topic" value={step.topic ?? ''} placeholder="orders.processed" onChange={(v) => set({ topic: v })} />
+          <Input label="dz.f.topic" value={step.topic ?? ''} placeholder="orders.processed" options={topics} onChange={(v) => set({ topic: v })} />
         </>
       )
     case 'webhook':
@@ -511,7 +549,7 @@ function StepFields({ step, pipe, onChange }: { step: Step; pipe: Fields; onChan
       return (
         <>
           {name}
-          <Input label="dz.f.topic" value={step.topic ?? ''} placeholder={str(step.type === 'reject' ? pipe.reject_topic || pipe.dead_letter_topic : pipe.dead_letter_topic)} onChange={(v) => set({ topic: v })} />
+          <Input label="dz.f.topic" value={step.topic ?? ''} placeholder={str(step.type === 'reject' ? pipe.reject_topic || pipe.dead_letter_topic : pipe.dead_letter_topic)} options={topics} onChange={(v) => set({ topic: v })} />
           <Input label="fz.f.reason" value={step.reason ?? ''} mono={false} onChange={(v) => set({ reason: v })} />
         </>
       )
@@ -549,6 +587,9 @@ function Board({ onClose, onApplied, onSimple, existing }: DesignerProps) {
     return { source_topic: str(c.source_topic), consumer_group: str(c.consumer_group), workers: str(c.workers || 1), reject_topic: str(c.reject_topic), dead_letter_topic: str(c.dead_letter_topic) }
   })
   const [touched, setTouched] = useState(!!existing)
+  const kafka = useKafkaNames()
+  const [fallback, setFallback] = useState({ reject: !existing || !!str(existing.config.reject_topic), dlq: !existing || !!str(existing.config.dead_letter_topic) })
+  const effective = useMemo(() => ({ ...pipe, reject_topic: fallback.reject ? pipe.reject_topic : '', dead_letter_topic: fallback.dlq ? pipe.dead_letter_topic : '' }), [pipe, fallback])
   const [flow, setFlow] = useState<FlowCfg>(initial)
   const [pos, setPos] = useState<Record<string, { x: number; y: number }>>(() => layout(initial))
   const [dims, setDims] = useState<Record<string, { width: number; height: number }>>({})
@@ -563,7 +604,7 @@ function Board({ onClose, onApplied, onSimple, existing }: DesignerProps) {
     setFlow((f) => ({ ...f, steps: f.steps.map((s) => (s.id === 'result' && s.type === 'topic' ? { ...s, topic: `${n}.out` } : s)) }))
   }, [name, touched])
 
-  const issues = useMemo(() => issuesOf(name, pipe, flow), [name, pipe, flow])
+  const issues = useMemo(() => issuesOf(name, effective, flow), [name, effective, flow])
   const nodes: Node<NodeData>[] = useMemo(
     () => [
       { id: SOURCE, type: 'step', position: pos[SOURCE] ?? { x: 0, y: 0 }, measured: dims[SOURCE], selected: sel === SOURCE, deletable: false, data: { source: str(pipe.source_topic), issue: false } },
@@ -616,13 +657,17 @@ function Board({ onClose, onApplied, onSimple, existing }: DesignerProps) {
   const add = (type: StepType, at?: { x: number; y: number }) => {
     const id = uniqueId(flow.steps, type)
     setFlow((f) => ({ ...f, steps: [...f.steps, newStep(type, id)] }))
-    setPos((p) => ({ ...p, [id]: at ?? { x: Math.max(0, ...Object.values(p).map((v) => v.x)) + 260, y: 0 } }))
+    setPos((p) => ({ ...p, [id]: at ?? { x: Math.max(0, ...Object.values(p).map((v) => v.x)), y: Math.max(0, ...Object.values(p).map((v) => v.y)) + 130 } }))
     setSel(id)
   }
   const selected = flow.steps.find((s) => s.id === sel)
+  // Fit once, when the steps first show, and leave the view alone after
+  // that so adding or moving a step doesn't jump the board around.
+  const fitted = useRef(false)
   const allSized = flow.steps.every((s) => dims[s.id]) && !!dims[SOURCE]
   useEffect(() => {
-    if (!allSized) return
+    if (!allSized || fitted.current) return
+    fitted.current = true
     const id = setTimeout(() => flowApi.fitView({ padding: 0.15, maxZoom: 1, duration: 250 }), 40)
     return () => clearTimeout(id)
   }, [allSized, flowApi])
@@ -730,7 +775,9 @@ function Board({ onClose, onApplied, onSimple, existing }: DesignerProps) {
             </div>
             <span className="small dim mono">{selected.id}</span>
             <span className="small dim">{t(`fz.d.${selected.type}` as Key)}</span>
-            <StepFields step={selected} pipe={pipe} onChange={(s) => setFlow((f) => ({ ...f, steps: f.steps.map((x) => (x.id === s.id ? s : x)) }))} />
+            <TopicsContext.Provider value={kafka.topics}>
+              <StepFields step={selected} pipe={effective} onChange={(s) => setFlow((f) => ({ ...f, steps: f.steps.map((x) => (x.id === s.id ? s : x)) }))} />
+            </TopicsContext.Provider>
           </>
         ) : (
           <>
@@ -750,23 +797,52 @@ function Board({ onClose, onApplied, onSimple, existing }: DesignerProps) {
             </div>
             {(
               [
-                ['source_topic', 'cfg.source'],
-                ['consumer_group', 'cfg.group'],
-                ['workers', 'dz.f.workers'],
-                ['reject_topic', 'fz.f.rejectTopic'],
-                ['dead_letter_topic', 'fz.f.dlqTopic'],
-              ] as [string, Key][]
-            ).map(([k, label]) => (
+                ['source_topic', 'cfg.source', kafka.topics],
+                ['consumer_group', 'cfg.group', kafka.groups],
+                ['workers', 'dz.f.workers', undefined],
+              ] as [string, Key, string[] | undefined][]
+            ).map(([k, label, options]) => (
               <Input
                 key={k}
                 label={label}
                 value={str(pipe[k])}
+                options={options}
                 placeholder={k === 'consumer_group' ? `ark-${name || 'pipeline'}` : ''}
                 onChange={(v) => {
                   setTouched(true)
                   setPipe((p) => ({ ...p, [k]: v }))
                 }}
               />
+            ))}
+            {(
+              [
+                ['dlq', 'dead_letter_topic', 'fz.f.dlqTopic', 'fz.f.dlqHint'],
+                ['reject', 'reject_topic', 'fz.f.rejectTopic', 'fz.f.rejectHint'],
+              ] as ['dlq' | 'reject', string, Key, Key][]
+            ).map(([which, k, label, hint]) => (
+              <div key={k} className="fz-fallback stack">
+                <label className="row small" style={{ gap: 8, cursor: 'pointer' }}>
+                  <input type="checkbox" checked={fallback[which]} onChange={(e) => setFallback((f) => ({ ...f, [which]: e.target.checked }))} />
+                  <b>{t(label)}</b>
+                </label>
+                {fallback[which] && (
+                  <input
+                    className="input mono"
+                    value={str(pipe[k])}
+                    list={`fz-topics-${which}`}
+                    onChange={(e) => {
+                      setTouched(true)
+                      setPipe((p) => ({ ...p, [k]: e.target.value }))
+                    }}
+                  />
+                )}
+                <datalist id={`fz-topics-${which}`}>
+                  {kafka.topics.map((o) => (
+                    <option key={o} value={o} />
+                  ))}
+                </datalist>
+                <span className="small dim">{t(hint)}</span>
+              </div>
             ))}
             <span className="small dim">{t('fz.selectHint')}</span>
           </>
@@ -795,7 +871,7 @@ function Board({ onClose, onApplied, onSimple, existing }: DesignerProps) {
               {t('dz.simple')}
             </button>
           )}
-          <button className="btn primary" disabled={issues.length > 0} onClick={() => setYaml(yamlOf(toConfig(existing?.config ?? {}, name, project, pipe, flow)))}>
+          <button className="btn primary" disabled={issues.length > 0} onClick={() => setYaml(yamlOf(toConfig(existing?.config ?? {}, name, project, effective, flow)))}>
             {t('dz.review')}
           </button>
         </div>
