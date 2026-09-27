@@ -145,8 +145,11 @@ the side.
   webhook, send to topic, data check, reject, dead letter, drop) and draw
   lines from any way out to the next step, n8n style: a condition splits
   a message down several branches, a call has its own lines for the
-  answer, a 4xx and used-up retries. Review the generated config before
-  it is applied. Right-click a running pipeline to open it in the
+  answer, a 4xx and used-up retries. Ready-made app steps send to
+  OpenSearch, Elasticsearch, NiFi, another Kafka cluster, Slack, Discord,
+  Microsoft Teams or any HTTP API, each with the settings that product
+  needs. Topic and consumer group fields offer what the cluster already
+  has. Review the generated config before it is applied. Right-click a running pipeline to open it in the
   designer; a fixed-path pipeline opens as the flow that does the same.
 - **Visual rule builder.** Pick a field from real messages, an operator and
   a value, and see how many recent messages would match before you save.

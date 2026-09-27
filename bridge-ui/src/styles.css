@@ -467,3 +467,6 @@ table.list.compact .input, table.list.compact .select { height: 28px; }
 .n-block.k-dead_letter .ico, .dz-chip.k-dead_letter .ico { color: var(--bad); }
 .n-block.k-drop .ico, .dz-chip.k-drop .ico { color: var(--t3); }
 .fz-branch { padding: 10px; border-radius: 10px; background: var(--s2); gap: 6px; }
+.app-badge { width: 26px; height: 26px; flex: none; border-radius: 8px; display: grid; place-items: center; color: #fff; font: 700 10px var(--sans); letter-spacing: 0.02em; }
+.textarea.small-area { min-height: 72px; font-size: 12px; }
+

@@ -50,6 +50,13 @@ export interface Step {
   topic?: string
   url?: string
   reason?: string
+  app?: string
+  headers?: Record<string, string>
+  method?: string
+  body?: string
+  message?: string
+  message_field?: string
+  brokers?: string[]
 }
 
 interface FlowCfg {
@@ -71,6 +78,57 @@ const TYPES: { type: StepType; icon: IconName }[] = [
   { type: 'drop', icon: 'trash' },
 ]
 const iconOf = (t: StepType) => TYPES.find((x) => x.type === t)!.icon
+
+// APPS are ready-made steps for products people send messages to. Each is
+// a webhook or topic step set up the way that product expects.
+interface AppPreset {
+  app: string
+  label: string
+  badge: string
+  color: string
+  make: (id: string) => Step
+}
+const APPS: AppPreset[] = [
+  { app: 'opensearch', label: 'OpenSearch', badge: 'OS', color: '#005EB8', make: (id) => ({ id, type: 'webhook', app: 'opensearch', url: 'http://opensearch:9200/orders/_doc', next: [] }) },
+  { app: 'elasticsearch', label: 'Elasticsearch', badge: 'ES', color: '#00A9A5', make: (id) => ({ id, type: 'webhook', app: 'elasticsearch', url: 'http://elasticsearch:9200/orders/_doc', next: [] }) },
+  { app: 'nifi', label: 'NiFi', badge: 'Ni', color: '#728E9B', make: (id) => ({ id, type: 'webhook', app: 'nifi', url: 'http://nifi:8081/contentListener', next: [] }) },
+  { app: 'kafka', label: 'Kafka', badge: 'Kf', color: '#5A5A5A', make: (id) => ({ id, type: 'topic', app: 'kafka', topic: '', brokers: [], next: [] }) },
+  { app: 'slack', label: 'Slack', badge: 'Sl', color: '#611F69', make: (id) => ({ id, type: 'webhook', app: 'slack', url: '', message: 'Order {{.data.order_id}}: {{.reason}}', next: [] }) },
+  { app: 'discord', label: 'Discord', badge: 'Dc', color: '#5865F2', make: (id) => ({ id, type: 'webhook', app: 'discord', url: '', message: 'Order {{.data.order_id}}: {{.reason}}', message_field: 'content', next: [] }) },
+  { app: 'teams', label: 'Microsoft Teams', badge: 'Tm', color: '#4B53BC', make: (id) => ({ id, type: 'webhook', app: 'teams', url: '', message: 'Order {{.data.order_id}}: {{.reason}}', next: [] }) },
+  { app: 'http', label: 'HTTP API', badge: 'API', color: '#3A4047', make: (id) => ({ id, type: 'webhook', app: 'http', url: '', method: 'POST', next: [] }) },
+]
+const appOf = (s: Step) => APPS.find((a) => a.app === s.app)
+
+function AppBadge({ app }: { app: AppPreset }) {
+  return (
+    <span className="app-badge" style={{ background: app.color }}>
+      {app.badge}
+    </span>
+  )
+}
+
+// searchURL splits an index URL (http://host:9200/index/_doc) into its
+// base and index, and puts one back together.
+const searchParts = (url: string) => {
+  const m = /^(.*?)\/([^/]+)\/_doc\/?$/.exec(url)
+  return m ? { base: m[1], index: m[2] } : { base: url, index: '' }
+}
+const searchURL = (base: string, index: string) => `${base.replace(/\/+$/, '')}/${index || 'index'}/_doc`
+
+// headerText shows headers one per line as "Name: value" for editing.
+const headerText = (h?: Record<string, string>) =>
+  Object.entries(h ?? {})
+    .map(([k, v]) => `${k}: ${v}`)
+    .join('\n')
+const parseHeaders = (text: string) => {
+  const out: Record<string, string> = {}
+  for (const line of text.split('\n')) {
+    const i = line.indexOf(':')
+    if (i > 0) out[line.slice(0, i).trim()] = line.slice(i + 1).trim()
+  }
+  return Object.keys(out).length ? out : undefined
+}
 const TERMINAL: StepType[] = ['drop']
 
 const obj = (v: unknown): Fields => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Fields) : {})
@@ -226,8 +284,9 @@ function summary(s: Step): string {
         .map((f) => str(f.path))
         .join(', ') || '…'
     case 'topic':
-      return s.topic || '…'
+      return s.brokers?.length ? `${s.topic || '…'} @ ${s.brokers[0]}` : s.topic || '…'
     case 'webhook':
+      if (s.app === 'opensearch' || s.app === 'elasticsearch') return `index: ${searchParts(s.url ?? '').index || '…'}`
       return s.url || 'http://…'
     case 'reject':
     case 'dead_letter':
@@ -257,14 +316,19 @@ function StepNode({ data, selected }: NodeProps<Node<NodeData>>) {
   }
   const s = data.step!
   const hs = handlesOf(s)
+  const app = appOf(s)
   return (
     <div className={`n-block n-flow k-${s.type} ${selected ? 'selected' : ''} ${data.issue ? 'issue' : ''}`}>
       <Handle type="target" position={Position.Left} className="h-in" />
       <div className="bh">
-        <span className="ico">
-          <Icon name={iconOf(s.type)} className="" />
-        </span>
-        <b>{s.name || t(`fz.t.${s.type}` as Key)}</b>
+        {app ? (
+          <AppBadge app={app} />
+        ) : (
+          <span className="ico">
+            <Icon name={iconOf(s.type)} className="" />
+          </span>
+        )}
+        <b>{s.name || app?.label || t(`fz.t.${s.type}` as Key)}</b>
       </div>
       <div className="bs">{summary(s)}</div>
       {hs.length > 0 && (
@@ -534,16 +598,68 @@ function StepFields({ step, pipe, onChange }: { step: Step; pipe: Fields; onChan
       return (
         <>
           {name}
-          <Input label="dz.f.topic" value={step.topic ?? ''} placeholder="orders.processed" options={topics} onChange={(v) => set({ topic: v })} />
+          <Input label="dz.f.topic" value={step.topic ?? ''} placeholder="orders.processed" options={step.app === 'kafka' ? undefined : topics} onChange={(v) => set({ topic: v })} />
+          {(step.app === 'kafka' || step.brokers?.length) && (
+            <>
+              <Input label="fz.f.brokers" value={(step.brokers ?? []).join(', ')} placeholder="other-kafka:9092" onChange={(v) => set({ brokers: v.split(',').map((x) => x.trim()).filter(Boolean) })} />
+              <span className="small dim">{t('fz.f.brokersHint')}</span>
+            </>
+          )}
         </>
       )
-    case 'webhook':
+    case 'webhook': {
+      const headers = (
+        <div className="field">
+          <label>{t('fz.f.headers')}</label>
+          <textarea className="textarea small-area" value={headerText(step.headers)} placeholder={'Authorization: Bearer ${API_TOKEN}'} onChange={(e) => set({ headers: parseHeaders(e.target.value) })} />
+          <span className="small dim">{t('fz.f.secretHint')}</span>
+        </div>
+      )
+      if (step.app === 'opensearch' || step.app === 'elasticsearch') {
+        const { base, index } = searchParts(step.url ?? '')
+        return (
+          <>
+            {name}
+            <Input label="fz.f.baseUrl" value={base} placeholder="http://opensearch:9200" onChange={(v) => set({ url: searchURL(v, index) })} />
+            <Input label="fz.f.index" value={index} placeholder="orders" onChange={(v) => set({ url: searchURL(base, v) })} />
+            {headers}
+          </>
+        )
+      }
+      if (step.app === 'slack' || step.app === 'discord' || step.app === 'teams') {
+        return (
+          <>
+            {name}
+            <Input label="fz.f.url" value={step.url ?? ''} placeholder="https://hooks.slack.com/services/..." onChange={(v) => set({ url: v })} />
+            <div className="field">
+              <label>{t('fz.f.message')}</label>
+              <textarea className="textarea small-area" value={step.message ?? ''} onChange={(e) => set({ message: e.target.value })} />
+              <span className="small dim">{t('fz.f.templateHint')}</span>
+            </div>
+          </>
+        )
+      }
       return (
         <>
           {name}
           <Input label="fz.f.url" value={step.url ?? ''} placeholder="http://crm:8080/notify" onChange={(v) => set({ url: v })} />
+          <div className="field">
+            <label>{t('fz.f.method')}</label>
+            <select className="select" value={step.method || 'POST'} onChange={(e) => set({ method: e.target.value === 'POST' ? undefined : e.target.value })}>
+              {['POST', 'PUT', 'PATCH'].map((m) => (
+                <option key={m}>{m}</option>
+              ))}
+            </select>
+          </div>
+          {headers}
+          <div className="field">
+            <label>{t('fz.f.body')}</label>
+            <textarea className="textarea small-area" value={step.body ?? ''} placeholder={'{"id": {{json .data.order_id}}, "why": {{json .reason}}}'} onChange={(e) => set({ body: e.target.value || undefined })} />
+            <span className="small dim">{t('fz.f.bodyHint')}</span>
+          </div>
         </>
       )
+    }
     case 'reject':
     case 'dead_letter':
       return (
@@ -654,9 +770,10 @@ function Board({ onClose, onApplied, onSimple, existing }: DesignerProps) {
     }))
     setSel(null)
   }
-  const add = (type: StepType, at?: { x: number; y: number }) => {
-    const id = uniqueId(flow.steps, type)
-    setFlow((f) => ({ ...f, steps: [...f.steps, newStep(type, id)] }))
+  const add = (kind: string, at?: { x: number; y: number }) => {
+    const preset = kind.startsWith('app:') ? APPS.find((a) => `app:${a.app}` === kind) : undefined
+    const id = preset ? uniqueId(flow.steps, preset.app as StepType) : uniqueId(flow.steps, kind as StepType)
+    setFlow((f) => ({ ...f, steps: [...f.steps, preset ? preset.make(id) : newStep(kind as StepType, id)] }))
     setPos((p) => ({ ...p, [id]: at ?? { x: Math.max(0, ...Object.values(p).map((v) => v.x)), y: Math.max(0, ...Object.values(p).map((v) => v.y)) + 130 } }))
     setSel(id)
   }
@@ -717,6 +834,28 @@ function Board({ onClose, onApplied, onSimple, existing }: DesignerProps) {
             </span>
           </button>
         ))}
+        <div className="small dim" style={{ marginTop: 10 }}>
+          {t('fz.apps')}
+        </div>
+        {APPS.map((a) => (
+          <button
+            key={a.app}
+            className="dz-chip"
+            draggable
+            onDragStart={(e) => {
+              e.dataTransfer.setData(MIME, `app:${a.app}`)
+              e.dataTransfer.effectAllowed = 'move'
+            }}
+            onClick={() => add(`app:${a.app}`)}
+            title={t(`fz.a.${a.app}` as Key)}
+          >
+            <AppBadge app={a} />
+            <span className="lbl">
+              <b>{a.label}</b>
+              <span>{t(`fz.a.${a.app}` as Key)}</span>
+            </span>
+          </button>
+        ))}
         <div className="small dim" style={{ marginTop: 'auto' }}>
           {t('fz.dragHint')}
         </div>
@@ -730,11 +869,11 @@ function Board({ onClose, onApplied, onSimple, existing }: DesignerProps) {
           }
         }}
         onDrop={(e) => {
-          const type = e.dataTransfer.getData(MIME) as StepType
-          if (!type) return
+          const kind = e.dataTransfer.getData(MIME)
+          if (!kind) return
           e.preventDefault()
           const p = flowApi.screenToFlowPosition({ x: e.clientX, y: e.clientY })
-          add(type, { x: p.x - 100, y: p.y - 30 })
+          add(kind, { x: p.x - 100, y: p.y - 30 })
         }}
       >
         <ReactFlow
@@ -768,13 +907,13 @@ function Board({ onClose, onApplied, onSimple, existing }: DesignerProps) {
         {selected ? (
           <>
             <div className="row" style={{ justifyContent: 'space-between' }}>
-              <b>{t(`fz.t.${selected.type}` as Key)}</b>
+              <b>{appOf(selected)?.label ?? t(`fz.t.${selected.type}` as Key)}</b>
               <button className="btn ghost small" onClick={() => removeStep(selected.id)}>
                 <Icon name="trash" className="" /> {t('dz.remove')}
               </button>
             </div>
             <span className="small dim mono">{selected.id}</span>
-            <span className="small dim">{t(`fz.d.${selected.type}` as Key)}</span>
+            <span className="small dim">{t((appOf(selected) ? `fz.a.${selected.app}` : `fz.d.${selected.type}`) as Key)}</span>
             <TopicsContext.Provider value={kafka.topics}>
               <StepFields step={selected} pipe={effective} onChange={(s) => setFlow((f) => ({ ...f, steps: f.steps.map((x) => (x.id === s.id ? s : x)) }))} />
             </TopicsContext.Provider>

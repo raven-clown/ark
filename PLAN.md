@@ -1056,6 +1056,13 @@ rules only before and after one call.
       PUT with the secret header filled from the environment and the
       message rendered as `{"text": ...}` to an HTTP echo server, and a
       topic step wrote to a second Kafka broker and not the first.
+- [x] **App steps in the designer.** OpenSearch and Elasticsearch
+      (base URL and index), NiFi (ListenHTTP), Kafka on another cluster,
+      Slack, Discord and Microsoft Teams (message template) and a plain
+      HTTP API (method, headers, body template), each with its own badge.
+      Verified against a real OpenSearch 2.17: a flow built in the
+      designer indexed every answer of the app as a document while also
+      writing it to a topic.
 - [x] **Optional fallback topics.** A flow pipeline can go without a
       dead-letter or reject topic when every step that can fail or reject
       has its own line; validation and the designer's checklist say which
