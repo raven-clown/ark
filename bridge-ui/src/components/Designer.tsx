@@ -14,6 +14,11 @@ import {
   type NodeProps,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
+import type { IconType } from 'react-icons'
+import { BsMicrosoftTeams } from 'react-icons/bs'
+import { FaSlack } from 'react-icons/fa6'
+import { SiApachekafka, SiApachenifi, SiDiscord, SiElasticsearch, SiOpensearch } from 'react-icons/si'
+import { TbApi } from 'react-icons/tb'
 
 import { api } from '../api'
 import { useT, type Key } from '../i18n'
@@ -84,37 +89,125 @@ const iconOf = (t: StepType) => TYPES.find((x) => x.type === t)!.icon
 interface AppPreset {
   app: string
   label: string
-  badge: string
+  logo: IconType
   color: string
   make: (id: string) => Step
 }
 const APPS: AppPreset[] = [
-  { app: 'opensearch', label: 'OpenSearch', badge: 'OS', color: '#005EB8', make: (id) => ({ id, type: 'webhook', app: 'opensearch', url: 'http://opensearch:9200/orders/_doc', next: [] }) },
-  { app: 'elasticsearch', label: 'Elasticsearch', badge: 'ES', color: '#00A9A5', make: (id) => ({ id, type: 'webhook', app: 'elasticsearch', url: 'http://elasticsearch:9200/orders/_doc', next: [] }) },
-  { app: 'nifi', label: 'NiFi', badge: 'Ni', color: '#728E9B', make: (id) => ({ id, type: 'webhook', app: 'nifi', url: 'http://nifi:8081/contentListener', next: [] }) },
-  { app: 'kafka', label: 'Kafka', badge: 'Kf', color: '#5A5A5A', make: (id) => ({ id, type: 'topic', app: 'kafka', topic: '', brokers: [], next: [] }) },
-  { app: 'slack', label: 'Slack', badge: 'Sl', color: '#611F69', make: (id) => ({ id, type: 'webhook', app: 'slack', url: '', message: 'Order {{.data.order_id}}: {{.reason}}', next: [] }) },
-  { app: 'discord', label: 'Discord', badge: 'Dc', color: '#5865F2', make: (id) => ({ id, type: 'webhook', app: 'discord', url: '', message: 'Order {{.data.order_id}}: {{.reason}}', message_field: 'content', next: [] }) },
-  { app: 'teams', label: 'Microsoft Teams', badge: 'Tm', color: '#4B53BC', make: (id) => ({ id, type: 'webhook', app: 'teams', url: '', message: 'Order {{.data.order_id}}: {{.reason}}', next: [] }) },
-  { app: 'http', label: 'HTTP API', badge: 'API', color: '#3A4047', make: (id) => ({ id, type: 'webhook', app: 'http', url: '', method: 'POST', next: [] }) },
+  { app: 'opensearch', label: 'OpenSearch', logo: SiOpensearch, color: '#005EB8', make: (id) => webhookApp(id, 'opensearch', 'http://opensearch:9200', 'orders') },
+  { app: 'elasticsearch', label: 'Elasticsearch', logo: SiElasticsearch, color: '#00A9A5', make: (id) => webhookApp(id, 'elasticsearch', 'http://elasticsearch:9200', 'orders') },
+  { app: 'nifi', label: 'NiFi', logo: SiApachenifi, color: '#728E9B', make: (id) => webhookApp(id, 'nifi', 'http://nifi:8081/contentListener') },
+  { app: 'kafka', label: 'Kafka', logo: SiApachekafka, color: '#3A3F46', make: (id) => ({ id, type: 'topic', app: 'kafka', topic: '', brokers: [], next: [] }) },
+  { app: 'slack', label: 'Slack', logo: FaSlack, color: '#611F69', make: (id) => webhookApp(id, 'slack', '') },
+  { app: 'discord', label: 'Discord', logo: SiDiscord, color: '#5865F2', make: (id) => webhookApp(id, 'discord', '') },
+  { app: 'teams', label: 'Microsoft Teams', logo: BsMicrosoftTeams, color: '#4B53BC', make: (id) => webhookApp(id, 'teams', '') },
+  { app: 'http', label: 'HTTP API', logo: TbApi, color: '#3A4047', make: (id) => webhookApp(id, 'http', '') },
 ]
+const webhookApp = (id: string, app: string, base: string, index = ''): Step => ({ id, type: 'webhook', app, next: [], ...withPattern(app, PATTERNS[app][0].id, { base, index, id: '' }) })
 const appOf = (s: Step) => APPS.find((a) => a.app === s.app)
 
 function AppBadge({ app }: { app: AppPreset }) {
+  const Logo = app.logo
   return (
-    <span className="app-badge" style={{ background: app.color }}>
-      {app.badge}
+    <span className="app-badge" style={{ background: app.color }} title={app.label}>
+      <Logo aria-hidden />
     </span>
   )
 }
 
-// searchURL splits an index URL (http://host:9200/index/_doc) into its
-// base and index, and puts one back together.
-const searchParts = (url: string) => {
-  const m = /^(.*?)\/([^/]+)\/_doc\/?$/.exec(url)
-  return m ? { base: m[1], index: m[2] } : { base: url, index: '' }
+// UrlParts is a webhook url taken apart: its base address, the index for
+// search apps, and the value that fills in /{{path .<id>}}, such as
+// data.order_id or original.order_id.
+interface UrlParts {
+  base: string
+  index: string
+  id: string
 }
-const searchURL = (base: string, index: string) => `${base.replace(/\/+$/, '')}/${index || 'index'}/_doc`
+const isSearch = (app?: string) => app === 'opensearch' || app === 'elasticsearch'
+const isChat = (app?: string) => app === 'slack' || app === 'discord' || app === 'teams'
+const idRef = /\/\{\{path \.([\w.]+)\}\}\/?$/
+
+function urlParts(step: Step): UrlParts {
+  const url = step.url ?? ''
+  if (isSearch(step.app)) {
+    const m = /^(.*?)\/([^/]+)\/(?:_doc|_update)(?:\/\{\{path \.([\w.]+)\}\})?\/?$/.exec(url)
+    if (m) return { base: m[1], index: m[2], id: m[3] ?? '' }
+    return { base: url, index: '', id: '' }
+  }
+  const m = idRef.exec(url)
+  return m ? { base: url.slice(0, m.index), index: '', id: m[1] } : { base: url, index: '', id: '' }
+}
+
+// webhookURLOK accepts template actions only after http(s)://host/, the
+// same rule the engine checks.
+const webhookURLOK = (url: string) => {
+  const at = url.indexOf('{{')
+  return at < 0 ? /^https?:\/\/\S+$/.test(url) : /^https?:\/\/[^\s/?#{]+[/?]/.test(url.slice(0, at))
+}
+const trimSlash = (s: string) => s.replace(/\/+$/, '')
+const idAction = (id: string) => `{{path .${id || 'data.id'}}}`
+const byIdURL = (p: UrlParts) => `${trimSlash(p.base)}/${idAction(p.id)}`
+const searchURL = (p: UrlParts, op: '_doc' | '_update', withId: boolean) =>
+  `${trimSlash(p.base)}/${p.index || 'index'}/${op}${withId ? `/${idAction(p.id)}` : ''}`
+
+const cardTitle = '{{json (or .reason "New message")}}'
+const dataBlock = '{{json (printf "```%s```" (json .data))}}'
+const envelope = '{"data": {{json .data}}, "key": {{json .key}}, "headers": {{json .headers}}, "reason": {{json .reason}}}'
+
+// A Pattern is one way of sending to an app: the url, method and body or
+// message that kind of request needs.
+interface Pattern {
+  id: string
+  label: Key
+  make: (p: UrlParts) => Partial<Step>
+}
+const plain = { method: undefined, body: undefined, message: undefined, message_field: undefined }
+const chat = (field?: string, card?: string): Pattern[] => [
+  { id: 'text', label: 'fz.p.text', make: (p) => ({ ...plain, url: p.base, message: '{{or .reason "New message"}}', message_field: field }) },
+  { id: 'details', label: 'fz.p.details', make: (p) => ({ ...plain, url: p.base, message: '{{or .reason "New message"}}\n```{{json .data}}```', message_field: field }) },
+  { id: 'card', label: 'fz.p.card', make: (p) => ({ ...plain, url: p.base, body: card }) },
+]
+const search: Pattern[] = [
+  { id: 'index', label: 'fz.p.index', make: (p) => ({ ...plain, url: searchURL(p, '_doc', false), body: '{{json .data}}' }) },
+  { id: 'byId', label: 'fz.p.byId', make: (p) => ({ ...plain, url: searchURL(p, '_doc', true), method: 'PUT', body: '{{json .data}}' }) },
+  { id: 'update', label: 'fz.p.update', make: (p) => ({ ...plain, url: searchURL(p, '_update', true), body: '{"doc": {{json .data}}, "doc_as_upsert": true}' }) },
+  { id: 'answer', label: 'fz.p.answer', make: (p) => ({ ...plain, url: searchURL(p, '_doc', false), body: '{{json .response.body}}' }) },
+]
+const PATTERNS: Record<string, Pattern[]> = {
+  opensearch: search,
+  elasticsearch: search,
+  nifi: [
+    { id: 'asIs', label: 'fz.p.asIs', make: (p) => ({ ...plain, url: p.base }) },
+    { id: 'answer', label: 'fz.p.answer', make: (p) => ({ ...plain, url: p.base, body: '{{json .response.body}}' }) },
+    { id: 'envelope', label: 'fz.p.envelope', make: (p) => ({ ...plain, url: p.base, body: envelope }) },
+  ],
+  http: [
+    { id: 'asIs', label: 'fz.p.asIs', make: (p) => ({ ...plain, url: p.base }) },
+    { id: 'putById', label: 'fz.p.putById', make: (p) => ({ ...plain, url: byIdURL(p), method: 'PUT', body: '{{json .data}}' }) },
+    { id: 'patchById', label: 'fz.p.patchById', make: (p) => ({ ...plain, url: byIdURL(p), method: 'PATCH', body: '{{json .data}}' }) },
+    { id: 'envelope', label: 'fz.p.envelope', make: (p) => ({ ...plain, url: p.base, body: envelope }) },
+  ],
+  slack: chat(undefined, `{"text": ${cardTitle}, "blocks": [{"type": "header", "text": {"type": "plain_text", "text": ${cardTitle}}}, {"type": "section", "text": {"type": "mrkdwn", "text": ${dataBlock}}}]}`),
+  discord: chat('content', `{"embeds": [{"title": ${cardTitle}, "description": ${dataBlock}, "color": 3066993}]}`),
+  teams: chat(
+    undefined,
+    `{"type": "message", "attachments": [{"contentType": "application/vnd.microsoft.card.adaptive", "content": {"type": "AdaptiveCard", "version": "1.4", "body": [{"type": "TextBlock", "weight": "Bolder", "size": "Medium", "text": ${cardTitle}}, {"type": "TextBlock", "wrap": true, "fontType": "Monospace", "text": {{json (json .data)}}}]}}]}`,
+  ),
+}
+const CARD_NAME: Record<string, string> = { slack: 'Block Kit', discord: 'Embed', teams: 'Adaptive Card' }
+
+// patternOf names the pattern a step was made with, or '' once it has been
+// changed by hand.
+function patternOf(step: Step): string {
+  const parts = urlParts(step)
+  const same = (a?: string, b?: string) => (a || '') === (b || '')
+  const hit = (PATTERNS[step.app ?? ''] ?? []).find((p) => {
+    const want = p.make(parts)
+    return same(want.url, step.url) && same(want.method, step.method) && same(want.body, step.body) && same(want.message, step.message) && same(want.message_field, step.message_field)
+  })
+  return hit?.id ?? ''
+}
+const withPattern = (app: string, id: string, p: UrlParts) => PATTERNS[app].find((x) => x.id === id)!.make(p)
 
 // headerText shows headers one per line as "Name: value" for editing.
 const headerText = (h?: Record<string, string>) =>
@@ -286,7 +379,7 @@ function summary(s: Step): string {
     case 'topic':
       return s.brokers?.length ? `${s.topic || '…'} @ ${s.brokers[0]}` : s.topic || '…'
     case 'webhook':
-      if (s.app === 'opensearch' || s.app === 'elasticsearch') return `index: ${searchParts(s.url ?? '').index || '…'}`
+      if (isSearch(s.app)) return `index: ${urlParts(s).index || '…'}`
       return s.url || 'http://…'
     case 'reject':
     case 'dead_letter':
@@ -404,7 +497,7 @@ function issuesOf(name: string, pipe: Fields, flow: FlowCfg): Issue[] {
   for (const s of flow.steps) {
     if (!reached.has(s.id)) out.push({ key: 'fz.i.orphan', id: s.id })
     if (s.type === 'call' && !/^https?:\/\/\S+$/.test(str(obj(s.target).url)) && !list(obj(s.target).urls).length) out.push({ key: 'dz.i.url', id: s.id })
-    if (s.type === 'webhook' && !/^https?:\/\/\S+$/.test(s.url ?? '')) out.push({ key: 'dz.i.url', id: s.id })
+    if (s.type === 'webhook' && !webhookURLOK(s.url ?? '')) out.push({ key: 'dz.i.url', id: s.id })
     if (s.type === 'condition' && (!s.branches?.length || s.branches.some((b) => !b.when.trim()))) out.push({ key: 'dz.i.condition', id: s.id })
     if (s.type === 'topic' && !s.topic?.trim()) out.push({ key: 'fz.i.topic', id: s.id })
     if ((s.type === 'call' || s.type === 'webhook') && !dlq && !s.on_failure?.length) out.push({ key: 'fz.i.needFailed', id: s.id })
@@ -615,48 +708,79 @@ function StepFields({ step, pipe, onChange }: { step: Step; pipe: Fields; onChan
           <span className="small dim">{t('fz.f.secretHint')}</span>
         </div>
       )
-      if (step.app === 'opensearch' || step.app === 'elasticsearch') {
-        const { base, index } = searchParts(step.url ?? '')
-        return (
-          <>
-            {name}
-            <Input label="fz.f.baseUrl" value={base} placeholder="http://opensearch:9200" onChange={(v) => set({ url: searchURL(v, index) })} />
-            <Input label="fz.f.index" value={index} placeholder="orders" onChange={(v) => set({ url: searchURL(base, v) })} />
-            {headers}
-          </>
-        )
-      }
-      if (step.app === 'slack' || step.app === 'discord' || step.app === 'teams') {
-        return (
-          <>
-            {name}
-            <Input label="fz.f.url" value={step.url ?? ''} placeholder="https://hooks.slack.com/services/..." onChange={(v) => set({ url: v })} />
-            <div className="field">
-              <label>{t('fz.f.message')}</label>
-              <textarea className="textarea small-area" value={step.message ?? ''} onChange={(e) => set({ message: e.target.value })} />
-              <span className="small dim">{t('fz.f.templateHint')}</span>
-            </div>
-          </>
-        )
+      const app = step.app ?? ''
+      const patterns = PATTERNS[app]
+      const current = patterns ? patternOf(step) : ''
+      const parts = urlParts(step)
+      // Changing the address keeps the pattern when there is one, and edits
+      // the url in place when the step was changed by hand.
+      const setParts = (patch: Partial<UrlParts>) => {
+        const next = { ...parts, ...patch }
+        if (current) return set(withPattern(app, current, next))
+        if (patch.id !== undefined) return set({ url: (step.url ?? '').replace(idRef, `/${idAction(patch.id)}`) })
+        set({ url: isSearch(app) ? (step.url ?? '').replace(`${parts.base}/${parts.index}/`, `${trimSlash(next.base)}/${next.index}/`) : next.base })
       }
       return (
         <>
           {name}
-          <Input label="fz.f.url" value={step.url ?? ''} placeholder="http://crm:8080/notify" onChange={(v) => set({ url: v })} />
-          <div className="field">
-            <label>{t('fz.f.method')}</label>
-            <select className="select" value={step.method || 'POST'} onChange={(e) => set({ method: e.target.value === 'POST' ? undefined : e.target.value })}>
-              {['POST', 'PUT', 'PATCH'].map((m) => (
-                <option key={m}>{m}</option>
-              ))}
-            </select>
-          </div>
-          {headers}
-          <div className="field">
-            <label>{t('fz.f.body')}</label>
-            <textarea className="textarea small-area" value={step.body ?? ''} placeholder={'{"id": {{json .data.order_id}}, "why": {{json .reason}}}'} onChange={(e) => set({ body: e.target.value || undefined })} />
-            <span className="small dim">{t('fz.f.bodyHint')}</span>
-          </div>
+          {patterns && (
+            <div className="field">
+              <label>{t('fz.f.pattern')}</label>
+              <select className="select" value={current} onChange={(e) => set(withPattern(app, e.target.value, parts))}>
+                {patterns.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {t(p.label)}
+                    {p.id === 'card' ? ` (${CARD_NAME[app]})` : ''}
+                  </option>
+                ))}
+                {!current && <option value="">{t('fz.p.custom')}</option>}
+              </select>
+              <span className="small dim">{t('fz.f.patternHint')}</span>
+            </div>
+          )}
+          {isSearch(app) ? (
+            <>
+              <Input label="fz.f.baseUrl" value={parts.base} placeholder="http://opensearch:9200" onChange={(v) => setParts({ base: v })} />
+              <Input label="fz.f.index" value={parts.index} placeholder="orders" onChange={(v) => setParts({ index: v })} />
+            </>
+          ) : (
+            <Input
+              label="fz.f.url"
+              value={isChat(app) || !parts.id ? (step.url ?? '') : parts.base}
+              placeholder={isChat(app) ? 'https://hooks.slack.com/services/...' : 'http://crm:8080/notify'}
+              onChange={(v) => (isChat(app) || !parts.id ? (current ? setParts({ base: v }) : set({ url: v })) : setParts({ base: v }))}
+            />
+          )}
+          {parts.id && (
+            <>
+              <Input label="fz.f.idField" value={parts.id} placeholder="data.order_id" onChange={(v) => setParts({ id: v })} />
+              <span className="small dim">{t('fz.f.idHint')}</span>
+            </>
+          )}
+          {!isChat(app) && (
+            <div className="field">
+              <label>{t('fz.f.method')}</label>
+              <select className="select" value={step.method || 'POST'} onChange={(e) => set({ method: e.target.value === 'POST' ? undefined : e.target.value })}>
+                {['POST', 'PUT', 'PATCH'].map((m) => (
+                  <option key={m}>{m}</option>
+                ))}
+              </select>
+            </div>
+          )}
+          {!isChat(app) && headers}
+          {step.message !== undefined ? (
+            <div className="field">
+              <label>{t('fz.f.message')}</label>
+              <textarea className="textarea small-area" value={step.message} onChange={(e) => set({ message: e.target.value })} />
+              <span className="small dim">{t('fz.f.templateHint')}</span>
+            </div>
+          ) : (
+            <div className="field">
+              <label>{t('fz.f.body')}</label>
+              <textarea className="textarea small-area" value={step.body ?? ''} placeholder={'{"id": {{json .data.order_id}}, "why": {{json .reason}}}'} onChange={(e) => set({ body: e.target.value || undefined })} />
+              <span className="small dim">{t('fz.f.bodyHint')}</span>
+            </div>
+          )}
         </>
       )
     }
