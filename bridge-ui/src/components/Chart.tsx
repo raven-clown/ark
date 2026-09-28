@@ -37,6 +37,15 @@ function hexA(hex: string, a: number) {
   return `rgba(${n >> 16}, ${(n >> 8) & 255}, ${n & 255}, ${a})`
 }
 
+// wallMs reads an engine time as its own wall clock. The chart draws in UTC,
+// so the axis shows the engine's timezone like the rest of the console, not
+// the browser's.
+function wallMs(iso: string) {
+  const m = /([+-])(\d{2}):?(\d{2})$/.exec(iso)
+  const offset = m ? (m[1] === '-' ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3])) * 60000 : 0
+  return Date.parse(iso) + offset
+}
+
 function compact(v: number) {
   if (Math.abs(v) >= 1e6) return (v / 1e6).toFixed(1) + 'M'
   if (Math.abs(v) >= 1e3) return (v / 1e3).toFixed(1) + 'K'
@@ -67,6 +76,7 @@ export function TimeChart({ series, unit, height = 220, motion = true }: { serie
     const shortSpan = pts.length < 2 || Date.parse(pts[pts.length - 1][0]) - Date.parse(pts[0][0]) < 10 * 60 * 1000
     chart.current?.setOption(
       {
+        useUTC: true,
         animation: motion,
         animationDuration: 700,
         animationDurationUpdate: 600,
@@ -112,7 +122,7 @@ export function TimeChart({ series, unit, height = 220, motion = true }: { serie
             showSymbol: false,
             symbol: 'circle',
             symbolSize: 8,
-            data: s.points,
+            data: s.points.map(([t, v]) => [wallMs(t), v]),
             lineStyle: { width: 2, color: spec.color, type: spec.dash, cap: 'round', join: 'round' },
             itemStyle: { color: spec.color, borderColor: SURFACE, borderWidth: 2 },
             emphasis: { focus: 'series', scale: 1.25 },
