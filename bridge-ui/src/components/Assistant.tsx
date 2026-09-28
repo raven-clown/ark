@@ -108,7 +108,9 @@ export function AssistantPanel({ onClose }: { onClose: () => void }) {
     setTurns([])
     setConversation('')
   }, [project])
-  useEffect(() => end.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }), [turns, busy])
+  useEffect(() => {
+    end.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
+  }, [turns, busy])
 
   const send = async (text: string) => {
     if (!text.trim() || busy) return
