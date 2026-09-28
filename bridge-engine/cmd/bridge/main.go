@@ -19,6 +19,7 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/consumer"
 	"github.com/raven-clown/ark/bridge-engine/internal/dlq"
 	"github.com/raven-clown/ark/bridge-engine/internal/events"
+	"github.com/raven-clown/ark/bridge-engine/internal/kafkaadmin"
 	"github.com/raven-clown/ark/bridge-engine/internal/mcpserver"
 	"github.com/raven-clown/ark/bridge-engine/internal/orchestrator"
 	"github.com/raven-clown/ark/bridge-engine/internal/tuning"
@@ -164,6 +165,9 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	if err := kafkaadmin.WaitReady(ctx, cfg.Brokers, 30*time.Second, logger); err != nil {
+		return
+	}
 	dlqState, err := dlq.NewStateStore(ctx, cfg.Brokers, cfg.Topics.ReplicationFactor, logger)
 	if err != nil {
 		logger.Error("starting dlq state store failed", "error", err)

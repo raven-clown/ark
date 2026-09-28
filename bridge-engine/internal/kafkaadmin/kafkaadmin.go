@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"sort"
 	"strconv"
@@ -123,6 +124,30 @@ func DialAny(ctx context.Context, brokers []string) (*kafka.Conn, error) {
 		errs = append(errs, fmt.Errorf("%s: %w", b, err))
 	}
 	return nil, fmt.Errorf("no broker reachable: %w", errors.Join(errs...))
+}
+
+// WaitReady blocks until a broker answers a metadata request, backing off up
+// to max between tries, so ARK started before Kafka waits for it instead of
+// exiting. It returns early only when ctx ends.
+func WaitReady(ctx context.Context, brokers []string, max time.Duration, log *slog.Logger) error {
+	wait := time.Second
+	for {
+		conn, err := DialAny(ctx, brokers)
+		if err == nil {
+			_, err = conn.Brokers()
+			_ = conn.Close()
+			if err == nil {
+				return nil
+			}
+		}
+		log.Warn("waiting for Kafka", "brokers", brokers, "error", err, "retry_in", wait.String())
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(wait):
+		}
+		wait = min(wait*2, max)
+	}
 }
 
 // DialLeaderAny connects to the leader of topic/partition, looking it up
