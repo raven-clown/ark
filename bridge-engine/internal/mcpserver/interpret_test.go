@@ -52,6 +52,8 @@ func TestInterpretAcrossLanguages(t *testing.T) {
 		{"สวัสดีครับ", "greeting", ""},
 		{"你好", "greeting", ""},
 		{"เมื่อคืนเกิดอะไรขึ้นกับ payment-sync", "events", "payment-sync"},
+		{"How is the orders pipeline doing right now?", "overview", "order-processor"},
+		{"how's payment-sync?", "overview", "payment-sync"},
 	}
 	for _, c := range cases {
 		o := interpret(d, c.text)
@@ -63,6 +65,9 @@ func TestInterpretAcrossLanguages(t *testing.T) {
 		}
 		if len(o.Plan) == 0 {
 			t.Errorf("%q: expected a plan", c.text)
+		}
+		if c.intent == "overview" && len(o.Clarifications) > 0 {
+			t.Errorf("%q: a status question needs no question back, got %v", c.text, o.Clarifications)
 		}
 	}
 }
