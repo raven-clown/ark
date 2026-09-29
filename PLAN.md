@@ -1392,18 +1392,11 @@ plumbing. Treat it as **Phase 6b**, not a separate later phase.
   `X-Correlation-ID` header ARK already sends). Revisit only if a
   deployment must keep processing while Kafka itself is down, which
   would be a positioning change, not a fix.
-- Cluster v1 vs. v2: keep v1 as is until v2's C5/C6 land, and
-  document "same `consumer_group`, no cluster mode" as the default way
-  to scale. Decide whether to delete v1's worker-count placement once
-  C1 to C4 exist, since by then it adds little on its own.
-
-- Embed MCP server in the engine binary vs. a separate sidecar
-  process. Decide once Phase 5's REST API shape is settled.
 - Whether `reject` needs a synchronous response path back to an
   upstream caller, or is always fire-and-forget into `reject_topic`
-  (current assumption: fire-and-forget/async).
-- Single Git repo (monorepo, two binaries) vs. two repos. Leaning
-  monorepo for now to share config/schema types.
+  (current assumption: fire-and-forget/async). Worth deciding together
+  with the Phase 7 HTTP source, which is the first place a caller would
+  be waiting on the other end.
 - Manual partition pinning was requested (an operator choosing exactly
   which partition each worker reads, instead of Kafka's group
   coordinator deciding). Checked against kafka-go: `GroupID` and
@@ -1416,16 +1409,24 @@ plumbing. Treat it as **Phase 6b**, not a separate later phase.
   workers without that cost. Revisit only if a concrete need for
   guaranteed partition-to-worker pinning shows up that `workers: N`
   can't satisfy.
-- A general NiFi/n8n-style DAG engine (arbitrary chained processors,
-  transform then filter then enrich then callback, each independently
-  start/stoppable, wired together in a UI) was raised and explicitly
-  declined in favor of two bounded features that cover the same real
-  use cases without the redesign: chaining separate `pipelines:`
-  entries via intermediate topics (§5, already supported, no engine
-  change needed) for multi-stage flows, and `post_callback_rules` (§6,
-  Phase 3 extensions) for branching on a callback's result within one
-  stage. A full DAG engine would directly contradict §2/§3's
-  positioning against n8n/NiFi/Camel and is a multi-week redesign, not
-  a config addition. Revisit only if a real deployment hits a case
-  neither bounded feature can express, and treat that as a deliberate
-  positioning change requiring its own decision, not an incremental add.
+
+### Settled since
+
+- A general NiFi/n8n-style DAG engine was first declined in favor of
+  chaining pipelines through topics and `post_callback_rules`. On
+  2026-09-26 the decision changed deliberately, as this section asked:
+  flows (Phase 9) give one pipeline steps joined in any shape without
+  loops. The boundary that stays is the one in §2: what goes in is a
+  Kafka topic and what comes out is topics and HTTP, with no connector
+  catalogue and no independently started processors.
+- Cluster placement: there is one placer, run by the elected leader,
+  that spreads workers by count and by `placement.node_selector` labels
+  (C4), resizes in place (C5) and carries the v1 correctness fixes (C6).
+  The separate v1 worker-count placement no longer exists. "Same
+  `consumer_group`, no cluster mode" is still documented as the simplest
+  way to scale.
+- The MCP server is embedded in the engine binary, served on the API
+  port at `/mcp` and per project at `/mcp/<project>/<endpoint>`, sharing
+  the REST API's registry, config source and audit log.
+- One repository with two binaries (engine and console), sharing the
+  config schema and released together.
