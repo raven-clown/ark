@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -62,6 +63,66 @@ type chatSession struct {
 	cs      *mcp.ClientSession
 	tools   []llm.Tool
 	used    time.Time
+	// pending is a previewed config change waiting for the person's yes.
+	pending *awaitingYes
+}
+
+type awaitingYes struct {
+	tool, token string
+}
+
+// Short replies that mean yes or no to a previewed change, in the
+// languages the assistant answers in.
+var (
+	yesWords = []string{"yes", "yep", "confirm", "apply", "go ahead", "do it", "ok", "okay", "sure", "ยืนยัน", "ใช่", "ตกลง", "โอเค", "ใช้ได้", "ทำเลย", "จัดไป", "เอาเลย", "确认", "確認", "是的", "好的", "可以", "应用", "套用"}
+	noWords  = []string{"no", "cancel", "stop", "don't", "wait", "ไม่", "ยกเลิก", "อย่า", "รอก่อน", "不", "取消", "别", "別"}
+)
+
+// answersPreview reports whether message is a clear yes (true, true) or no
+// (false, true) to a pending change; anything longer or unclear is neither.
+func answersPreview(message string) (yes, clear bool) {
+	m := strings.ToLower(strings.TrimSpace(message))
+	if m == "" || len([]rune(m)) > 40 {
+		return false, false
+	}
+	latin := " " + strings.Join(strings.FieldsFunc(m, func(r rune) bool { return !unicode.IsLetter(r) && r != '\'' }), " ") + " "
+	has := func(w string) bool {
+		if w[0] < utf8.RuneSelf {
+			return strings.Contains(latin, " "+w+" ")
+		}
+		return strings.Contains(m, w)
+	}
+	for _, w := range noWords {
+		if has(w) {
+			return false, true
+		}
+	}
+	for _, w := range yesWords {
+		if has(w) {
+			return true, true
+		}
+	}
+	return false, false
+}
+
+// notePreview remembers or clears a pending change from a config tool's
+// result.
+func (s *chatSession) notePreview(tool, result string, isErr bool) {
+	if tool != "create_pipeline" && tool != "apply_pipeline_config" || isErr {
+		return
+	}
+	var r struct {
+		State        string `json:"state"`
+		ConfirmToken string `json:"confirm_token"`
+	}
+	if json.Unmarshal([]byte(result), &r) != nil {
+		return
+	}
+	if r.State == "awaiting_confirmation" && r.ConfirmToken != "" {
+		s.pending = &awaitingYes{tool: tool, token: r.ConfirmToken}
+	} else {
+		s.pending = nil
+	}
 }
 
 type assistant struct {
@@ -242,6 +303,18 @@ func (a *assistant) Chat(ctx context.Context, caller authz.Caller, conversationI
 	if err != nil {
 		return out, err
 	}
+	lang := replyLanguage(reply, message)
+
+	// A yes to a previewed change applies it here rather than trusting the
+	// model to pass the confirm token back; a no drops it.
+	if p := s.pending; p != nil {
+		if yes, clear := answersPreview(message); clear {
+			s.pending = nil
+			if yes {
+				return a.applyPending(ctx, provider, s, out, p, message, lang)
+			}
+		}
+	}
 
 	// Pass 1: understand.
 	hint, _ := s.callTool(ctx, "interpret_request", json.RawMessage(mustJSON(map[string]string{"message": message})))
@@ -252,7 +325,6 @@ func (a *assistant) Chat(ctx context.Context, caller authz.Caller, conversationI
 		}
 	}
 	convo = append(convo, llm.Message{Role: "user", Text: message + "\n\n[ARK's parser hint]\n" + hint})
-	lang := replyLanguage(reply, message)
 	understand := understandPrompt
 	if lang != "" {
 		understand += " Write both fields in " + languageNames[lang] + "."
@@ -311,6 +383,7 @@ func (a *assistant) Chat(ctx context.Context, caller authz.Caller, conversationI
 		results := llm.Message{Role: "tool"}
 		for _, call := range reply.Message.ToolCalls {
 			text, isErr := s.callTool(ctx, call.Name, call.Args)
+			s.notePreview(call.Name, text, isErr)
 			step := ChatStep{Tool: call.Name, Args: call.Args}
 			if isErr {
 				step.Error = firstLine(text)
@@ -321,6 +394,31 @@ func (a *assistant) Chat(ctx context.Context, caller authz.Caller, conversationI
 		s.history = append(s.history, results)
 	}
 	out.Answer = "I couldn't finish within the step limit. Ask again with a narrower question."
+	return out, nil
+}
+
+// applyPending confirms p and has the model tell the person how it went.
+func (a *assistant) applyPending(ctx context.Context, provider llm.Provider, s *chatSession, out ChatOut, p *awaitingYes, message, lang string) (ChatOut, error) {
+	args := json.RawMessage(mustJSON(map[string]string{"confirm_token": p.token}))
+	text, isErr := s.callTool(ctx, p.tool, args)
+	step := ChatStep{Tool: p.tool, Args: json.RawMessage(`{"confirm_token":"(from the preview)"}`)}
+	if isErr {
+		step.Error = firstLine(text)
+	}
+	out.Steps = append(out.Steps, step)
+	prompt := "The person confirmed a previewed ARK config change and ARK sent it. In two sentences at most, tell them whether it was applied, using only this result, and if it failed, why and what to do."
+	if lang != "" {
+		prompt += " Write in " + languageNames[lang] + "."
+	}
+	res, err := provider.Chat(ctx, prompt, []llm.Message{{Role: "user", Text: text}}, nil)
+	if err != nil {
+		return out, err
+	}
+	out.Answer = strings.TrimSpace(res.Message.Text)
+	if lang != "" && !written(out.Answer, lang) {
+		out.Answer = rewriteIn(ctx, provider, lang, out.Answer)
+	}
+	s.history = append(s.history, llm.Message{Role: "user", Text: message}, llm.Message{Role: "assistant", Text: out.Answer})
 	return out, nil
 }
 

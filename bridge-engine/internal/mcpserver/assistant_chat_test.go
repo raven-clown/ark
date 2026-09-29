@@ -171,3 +171,51 @@ func TestAssistantRewritesAnAnswerThatDriftedIntoEnglish(t *testing.T) {
 		t.Fatalf("out = %+v, calls %d", out, len(fake.systems))
 	}
 }
+
+func TestAssistantAppliesAPreviewWhenThePersonSaysYes(t *testing.T) {
+	change := pipelineYAML("orders", "orders.raw", "orders.done") + "project: commerce\nmcp_access: read_write\nworkers: 2\n"
+	fake := &scripted{replies: []llm.Reply{
+		text(`{"request": "ตั้ง workers ของ orders เป็น 2", "ask": ""}`),
+		{Message: llm.Message{Role: "assistant", ToolCalls: []llm.ToolCall{{ID: "1", Name: "apply_pipeline_config", Args: json.RawMessage(mustJSON(map[string]string{"yaml": change}))}}}},
+		text("นี่คือสิ่งที่จะเปลี่ยน workers 1 เป็น 2 ยืนยันไหม"),
+		text("เปลี่ยน workers ของ orders เป็น 2 แล้ว"),
+	}}
+	a := chatFixture(t, fake)
+	src := a.d.Config.(*memSource)
+	src.projects[0].AIAccess = config.AIAccessConfigure
+	alice := authz.Caller{ID: "alice", Scope: authz.ScopeAdmin}
+	out, err := a.Chat(context.Background(), alice, "", "commerce", "ตั้ง workers ของ orders เป็น 2", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if src.p[0].Workers == 2 {
+		t.Fatal("a preview must not change anything")
+	}
+	yes, err := a.Chat(context.Background(), alice, out.ConversationID, "commerce", "ยืนยัน", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(yes.Steps) != 1 || yes.Steps[0].Tool != "apply_pipeline_config" || yes.Steps[0].Error != "" {
+		t.Fatalf("steps = %+v", yes.Steps)
+	}
+	if src.p[0].Workers != 2 || yes.Answer != "เปลี่ยน workers ของ orders เป็น 2 แล้ว" {
+		t.Fatalf("workers %d, answer %q", src.p[0].Workers, yes.Answer)
+	}
+	if len(fake.replies) != 0 {
+		t.Fatalf("%d scripted replies left unused", len(fake.replies))
+	}
+}
+
+func TestAnswersPreviewOnlyTakesAClearReply(t *testing.T) {
+	cases := map[string][2]bool{
+		"ยืนยัน": {true, true}, "yes please": {true, true}, "确认": {true, true}, "OK": {true, true},
+		"ไม่เอา": {false, true}, "cancel": {false, true}, "no, wait": {false, true},
+		"yes, apply it now": {true, true}, "go ahead": {true, true}, "I know": {false, false},
+		"what would change for the dlq settings of orders?": {false, false},
+	}
+	for msg, want := range cases {
+		if yes, clear := answersPreview(msg); yes != want[0] || clear != want[1] {
+			t.Errorf("%q: yes=%v clear=%v, want %v", msg, yes, clear, want)
+		}
+	}
+}
