@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -229,7 +230,7 @@ func extractJSON(s string) map[string]string {
 // (asking back when something essential is missing), then it looks things
 // up and acts through the same MCP tools any agent uses, within the
 // caller's scope and the project's ai_access.
-func (a *assistant) Chat(ctx context.Context, caller authz.Caller, conversationID, project, message string) (ChatOut, error) {
+func (a *assistant) Chat(ctx context.Context, caller authz.Caller, conversationID, project, message, reply string) (ChatOut, error) {
 	s, id, err := a.session(ctx, conversationID, caller, project)
 	if err != nil {
 		return ChatOut{}, err
@@ -251,14 +252,19 @@ func (a *assistant) Chat(ctx context.Context, caller authz.Caller, conversationI
 		}
 	}
 	convo = append(convo, llm.Message{Role: "user", Text: message + "\n\n[ARK's parser hint]\n" + hint})
-	first, err := provider.Chat(ctx, understandPrompt, convo, nil)
+	lang := replyLanguage(reply, message)
+	understand := understandPrompt
+	if lang != "" {
+		understand += " Write both fields in " + languageNames[lang] + "."
+	}
+	first, err := provider.Chat(ctx, understand, convo, nil)
 	if err != nil {
 		return out, err
 	}
 	u := extractJSON(first.Message.Text)
 	out.Understood = u["request"]
 	s.history = append(s.history, llm.Message{Role: "user", Text: message})
-	if q := strings.TrimSpace(u["ask"]); q != "" {
+	if q := strings.TrimSpace(u["ask"]); q != "" && parserWouldAsk(hint) {
 		out.Answer, out.AskedBack = q, true
 		s.history = append(s.history, llm.Message{Role: "assistant", Text: q})
 		return out, nil
@@ -274,6 +280,10 @@ func (a *assistant) Chat(ctx context.Context, caller authz.Caller, conversationI
 		system += "\nWhat the person wants, restated: " + out.Understood
 	}
 	system += "\nThe person sees your answer as Markdown. They can't see tool results, so say what you found."
+	system += "\nEvery time from the tools is ISO 8601 in " + a.d.loc().String() + ", the engine's timezone. Quote times exactly as given, in that zone and format; never convert them to another zone."
+	if lang != "" {
+		system += "\nWrite your whole answer in " + languageNames[lang] + ", even though the tool results are in English."
+	}
 
 	steps := s.model.MaxSteps
 	if steps <= 0 {
@@ -288,11 +298,16 @@ func (a *assistant) Chat(ctx context.Context, caller authz.Caller, conversationI
 		if err != nil {
 			return out, err
 		}
-		s.history = append(s.history, reply.Message)
 		if reply.Done || len(reply.Message.ToolCalls) == 0 {
 			out.Answer = strings.TrimSpace(reply.Message.Text)
+			if lang != "" && !written(out.Answer, lang) {
+				out.Answer = rewriteIn(ctx, provider, lang, out.Answer)
+				reply.Message.Text = out.Answer
+			}
+			s.history = append(s.history, reply.Message)
 			return out, nil
 		}
+		s.history = append(s.history, reply.Message)
 		results := llm.Message{Role: "tool"}
 		for _, call := range reply.Message.ToolCalls {
 			text, isErr := s.callTool(ctx, call.Name, call.Args)
@@ -307,6 +322,97 @@ func (a *assistant) Chat(ctx context.Context, caller authz.Caller, conversationI
 	}
 	out.Answer = "I couldn't finish within the step limit. Ask again with a narrower question."
 	return out, nil
+}
+
+// parserWouldAsk reports whether interpret_request also found something the
+// tools can't answer. Small models ask back about things a tool would find,
+// so a question goes to the person only when the parser agrees one is needed.
+func parserWouldAsk(hint string) bool {
+	var h struct {
+		AskTheUser []string `json:"ask_the_user"`
+	}
+	if json.Unmarshal([]byte(hint), &h) != nil {
+		return true
+	}
+	return len(h.AskTheUser) > 0
+}
+
+// languageNames are the languages an answer can be asked for, by code: the
+// console's own languages, plus the scripts scriptOf recognizes.
+var languageNames = map[string]string{
+	"en":      "English",
+	"th":      "Thai",
+	"zh-Hans": "Simplified Chinese",
+	"zh-Hant": "Traditional Chinese",
+	"zh":      "Chinese, in the same script (simplified or traditional) they used",
+	"ja":      "Japanese",
+	"ko":      "Korean",
+}
+
+// replyLanguage picks the language to answer in: the one the person chose in
+// the console, or else the one their message is written in. It returns ""
+// when neither says anything beyond plain English.
+func replyLanguage(chosen, message string) string {
+	if _, ok := languageNames[chosen]; ok {
+		return chosen
+	}
+	return scriptOf(message)
+}
+
+// written reports whether text is in language code's script.
+func written(text, code string) bool {
+	want := code
+	switch code {
+	case "en":
+		want = ""
+	case "zh-Hans", "zh-Hant":
+		want = "zh"
+	}
+	return scriptOf(text) == want
+}
+
+// rewriteIn asks the model once to put an answer that drifted into another
+// language into the one asked for, keeping the original if that fails.
+func rewriteIn(ctx context.Context, provider llm.Provider, code, answer string) string {
+	prompt := "Rewrite the user's text in " + languageNames[code] + ". Keep every name, number, time, topic, URL, Markdown mark and code span exactly as it is. Reply with only the rewritten text."
+	r, err := provider.Chat(ctx, prompt, []llm.Message{{Role: "user", Text: answer}}, nil)
+	if err != nil {
+		return answer
+	}
+	if t := strings.TrimSpace(r.Message.Text); t != "" && written(t, code) {
+		return t
+	}
+	return answer
+}
+
+// scriptOf names the language of a message when its script makes it plain:
+// th, ja, ko or zh, and "" for Latin script. Small models tend to answer in
+// English after reading English tool results unless they're told.
+func scriptOf(s string) string {
+	var thai, kana, hangul, han int
+	for _, r := range s {
+		switch {
+		case unicode.Is(unicode.Thai, r):
+			thai++
+		case unicode.In(r, unicode.Hiragana, unicode.Katakana):
+			kana++
+		case unicode.Is(unicode.Hangul, r):
+			hangul++
+		case unicode.Is(unicode.Han, r):
+			han++
+		}
+	}
+	switch {
+	case thai > 0:
+		return "th"
+	case kana > 0:
+		return "ja"
+	case hangul > 0:
+		return "ko"
+	case han > 0:
+		return "zh"
+	}
+	return ""
 }
 
 func firstLine(s string) string {
@@ -332,6 +438,9 @@ func (c *Console) assistantRoutes(mux *http.ServeMux) {
 			ConversationID string `json:"conversation_id"`
 			Project        string `json:"project"`
 			Message        string `json:"message"`
+			// Reply is the language to answer in (en, th, zh-Hans, zh-Hant);
+			// empty follows the language of the message.
+			Reply string `json:"reply_language"`
 		}
 		if !readJSON(w, r, &in) {
 			return
@@ -342,7 +451,7 @@ func (c *Console) assistantRoutes(mux *http.ServeMux) {
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
 		defer cancel()
-		answer, err := a.Chat(ctx, callerOf(r), in.ConversationID, in.Project, in.Message)
+		answer, err := a.Chat(ctx, callerOf(r), in.ConversationID, in.Project, in.Message, in.Reply)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, errBody(err))
 			return

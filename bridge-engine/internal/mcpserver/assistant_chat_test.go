@@ -55,7 +55,7 @@ func TestAssistantUnderstandsThenUsesTools(t *testing.T) {
 		text("orders has no running workers on this node."),
 	}}
 	a := chatFixture(t, fake)
-	out, err := a.Chat(context.Background(), authz.Caller{ID: "alice", Scope: authz.ScopeAdmin}, "", "commerce", "ทำไม orders ช้า")
+	out, err := a.Chat(context.Background(), authz.Caller{ID: "alice", Scope: authz.ScopeAdmin}, "", "commerce", "why is orders slow", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestAssistantUnderstandsThenUsesTools(t *testing.T) {
 func TestAssistantAsksBack(t *testing.T) {
 	fake := &scripted{replies: []llm.Reply{text(`{"request": "", "ask": "Which URL should it call?"}`)}}
 	a := chatFixture(t, fake)
-	out, err := a.Chat(context.Background(), authz.Caller{ID: "alice", Scope: authz.ScopeAdmin}, "", "commerce", "create a pipeline for signups")
+	out, err := a.Chat(context.Background(), authz.Caller{ID: "alice", Scope: authz.ScopeAdmin}, "", "commerce", "create a pipeline for signups", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +94,7 @@ func TestAssistantAsksBack(t *testing.T) {
 func TestAssistantScopeIsTheLowerOfCallerAndProject(t *testing.T) {
 	fake := &scripted{replies: []llm.Reply{text(`{"request":"x","ask":""}`), text("ok")}}
 	a := chatFixture(t, fake)
-	out, err := a.Chat(context.Background(), authz.Caller{ID: "alice", Scope: authz.ScopeAdmin}, "", "commerce", "pause orders")
+	out, err := a.Chat(context.Background(), authz.Caller{ID: "alice", Scope: authz.ScopeAdmin}, "", "commerce", "pause orders", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,11 +111,63 @@ func TestAssistantScopeIsTheLowerOfCallerAndProject(t *testing.T) {
 func TestAssistantConversationIsBoundToCaller(t *testing.T) {
 	fake := &scripted{replies: []llm.Reply{text(`{"request":"x","ask":""}`), text("ok")}}
 	a := chatFixture(t, fake)
-	out, err := a.Chat(context.Background(), authz.Caller{ID: "alice", Scope: authz.ScopeViewer}, "", "commerce", "hi")
+	out, err := a.Chat(context.Background(), authz.Caller{ID: "alice", Scope: authz.ScopeViewer}, "", "commerce", "hi", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.Chat(context.Background(), authz.Caller{ID: "mallory", Scope: authz.ScopeViewer}, out.ConversationID, "commerce", "hi"); err == nil {
+	if _, err := a.Chat(context.Background(), authz.Caller{ID: "mallory", Scope: authz.ScopeViewer}, out.ConversationID, "commerce", "hi", ""); err == nil {
 		t.Fatal("another caller continued alice's conversation")
+	}
+}
+
+func TestReplyLanguageFollowsTheChoiceThenTheScript(t *testing.T) {
+	for _, c := range []struct{ chosen, msg, want string }{
+		{"", "pipeline orders ตอนนี้เป็นยังไงบ้าง", "th"},
+		{"", "How is orders doing?", ""},
+		{"", "orders 管道现在怎么样", "zh"},
+		{"", "ordersの状態は？", "ja"},
+		{"", "orders 상태 어때?", "ko"},
+		{"th", "How is orders doing?", "th"},
+		{"en", "orders เป็นยังไงบ้าง", "en"},
+		{"zh-Hant", "status?", "zh-Hant"},
+		{"xx", "status?", ""},
+	} {
+		if got := replyLanguage(c.chosen, c.msg); got != c.want {
+			t.Errorf("%q, %q: got %q, want %q", c.chosen, c.msg, got, c.want)
+		}
+	}
+	if !written("orders มี 200 รายการ", "th") || written("orders has 200", "th") || !written("orders has 200", "en") || !written("orders 有 200 条", "zh-Hans") {
+		t.Error("written got a script wrong")
+	}
+}
+
+func TestAssistantSkipsAQuestionTheToolsCanAnswer(t *testing.T) {
+	fake := &scripted{replies: []llm.Reply{
+		text(`{"request": "Why orders dead-letters so much", "ask": "Can you describe the errors?"}`),
+		text("Most dead letters are 500s from the target."),
+	}}
+	a := chatFixture(t, fake)
+	out, err := a.Chat(context.Background(), authz.Caller{ID: "alice", Scope: authz.ScopeAdmin}, "", "commerce", "why does orders dead-letter so much", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.AskedBack || out.Answer != "Most dead letters are 500s from the target." {
+		t.Fatalf("out = %+v", out)
+	}
+}
+
+func TestAssistantRewritesAnAnswerThatDriftedIntoEnglish(t *testing.T) {
+	fake := &scripted{replies: []llm.Reply{
+		text(`{"request": "สถานะ orders", "ask": ""}`),
+		text("orders has 200 dead letters."),
+		text("orders มี dead letter 200 รายการ"),
+	}}
+	a := chatFixture(t, fake)
+	out, err := a.Chat(context.Background(), authz.Caller{ID: "alice", Scope: authz.ScopeAdmin}, "", "commerce", "orders เป็นยังไงบ้าง", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Answer != "orders มี dead letter 200 รายการ" || len(fake.systems) != 3 || !strings.Contains(fake.systems[2], "Thai") {
+		t.Fatalf("out = %+v, calls %d", out, len(fake.systems))
 	}
 }
