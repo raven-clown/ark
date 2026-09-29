@@ -9,9 +9,8 @@ License: Apache License 2.0
 Status: Phases 1 to 6, 4b and 4c (cluster), 8 (projects and AI access),
 9 (flows) and the ARK Console are done. A full review on 2026-09-24
 found message-loss and auth gaps, tracked in "Phase 0: Hardening" at the
-top of §6; all of it except T1 (batching, deliberately deferred) is fixed
-and verified live. Open: batched callbacks (T1), and
-Phase 7 (sources and sinks).
+top of §6; all of it, including T1 (batched calls), is fixed and
+verified live. Open: Phase 7 (sources and sinks).
 CI (`.github/workflows/ci.yml`) runs build/vet/test, govulncheck,
 gosec, Semgrep, OSV-Scanner, Gitleaks, and a Trivy image scan on
 every PR.
@@ -324,16 +323,25 @@ old binary sent a 429'd message to `reject_topic`, the new one honored
 operator session replayed with a viewer token gets 403.
 
 **Throughput (T, when a real deployment needs it):**
-- [ ] **T1. One HTTP call per message caps throughput.** Still open,
-      and deliberately so for now: T0 removed the 1s-per-produce stall
-      that was the real bottleneck (about 30x faster measured), and
-      batching changes the callback contract (arrays in, per-item
-      results out, partial failures), so it should wait for a
-      deployment that actually needs more than the per-message ceiling. Ceiling is
-      roughly `workers x max_in_flight / callback latency` (4 x 10 /
-      50ms is about 800 msg/s). Add an optional batch mode
-      (`target.batch_size`, `target.batch_linger_ms`) that posts an
-      array and maps a per-item result array back.
+- [x] **T1. One HTTP call per message caps throughput.** Fixed with an
+      opt-in batch mode per target (pipeline or flow call step):
+      `target.batch_size` (2 to 1000) and `target.batch_linger_ms`
+      (default 5). Contract: ARK posts `{"items": [{"id", "key",
+      "value"}]}` with `X-Ark-Batch-Size`; the app answers 2xx with
+      `{"results": [{"id", "status", "body"}]}`, matched by id. Each
+      message is routed by its own status (2xx destination, reject
+      status reject, 408/425/429 wait, 5xx or missing result a failed
+      attempt for that message only); a non-2xx for the whole request
+      applies to every message. Batching sits in the caller, below
+      the per-message path, so retries, rules, ordering lanes and
+      in-order commits are unchanged. Config review warns when
+      `workers x max_in_flight` is below `batch_size`, since a batch
+      then never fills. Measured on compose against an app costing
+      20 ms per request with 8 at a time (4 workers, `max_in_flight:
+      50`, 20,000 preloaded messages): 386 msg/s per message, 3,118
+      msg/s with `batch_size: 50`; the output topic held all 20,000
+      exactly once with every key matching its own message, and a
+      mixed batch routed its 200, 400 and 500 items separately.
 
 ### Backend: Phase 1: Core engine (MVP), done
 - [x] Go module scaffold (`cmd/bridge`, `internal/...`)

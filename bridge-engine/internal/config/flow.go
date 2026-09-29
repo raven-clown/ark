@@ -255,6 +255,9 @@ func validateStep(p Pipeline, s Step) error {
 		if t.TimeoutMs < 1 {
 			return fmt.Errorf("target.timeout_ms must be positive")
 		}
+		if err := validateBatch(*t); err != nil {
+			return err
+		}
 		if s.Retry.MaxAttempts < 1 {
 			return fmt.Errorf("retry.max_attempts must be at least 1")
 		}

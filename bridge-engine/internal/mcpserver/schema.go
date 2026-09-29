@@ -36,6 +36,8 @@ var pipelineSchema = []fieldDoc{
 	{"target.health_check_interval_seconds", "int", "no", "10", nil, "Probe interval."},
 	{"target.timeout_ms", "int", "no", "30000", nil, "Callback timeout."},
 	{"target.reject_statuses", "[]int", "no", "every 4xx except 408, 425, 429", nil, "Statuses routed to reject_topic."},
+	{"target.batch_size", "int", "no", "0 (one message per call)", nil, "2 to 1000 sends that many messages in one POST as {\"items\": [{\"id\", \"key\", \"value\"}]}; the target answers {\"results\": [{\"id\", \"status\", \"body\"}]} and each message is routed by its own status. Needs workers x max_in_flight of at least batch_size to fill."},
+	{"target.batch_linger_ms", "int", "no", "5", nil, "The longest a message waits for its batch to fill."},
 	{"fast_path_rules", "[]rule", "no", "", nil, "Rules checked before the callback: {name, condition, action, destination_override | webhook_override}. condition uses expr syntax over `data` (the JSON message), e.g. \"data.amount < 1000\" (use nil, not null)."},
 	{"post_callback_rules", "[]rule", "no", "", nil, "Same shape, checked after the callback, with `response.status` and `response.body` available."},
 	{"rule.action", "string", "yes (per rule)", "", []string{"pass_through", "reject", "drop", "dead_letter", "transform_route"}, "transform_route needs exactly one of destination_override or webhook_override."},

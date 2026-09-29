@@ -447,6 +447,49 @@ a `flow:` by hand (see *Flows* under [Reference](#reference)).
 </details>
 
 <details>
+<summary><b>Batched calls</b></summary>
+
+For an app with a cost per request (a database round trip, a slow
+upstream), `target.batch_size` sends several messages in one POST. It is
+off unless you set it, and works on flow call steps too.
+
+```yaml
+target:
+  url: http://order-app:8080/batch
+  batch_size: 50        # 2 to 1000
+  batch_linger_ms: 5    # longest wait for a batch to fill (default 5)
+```
+
+ARK posts, with an `X-Ark-Batch-Size` header:
+
+```json
+{"items": [{"id": "30176dd1...", "key": "A1", "value": {"order_id": "A1", "amount": 10}}]}
+```
+
+`id` is the message's correlation ID and `value` is the message (as a
+string when it isn't JSON). The app answers with a 2xx:
+
+```json
+{"results": [{"id": "30176dd1...", "status": 200, "body": {"ok": true}}]}
+```
+
+Each message is then handled exactly as if it had been sent alone: a 2xx
+`status` (the default) sends `body` to `destination_topic`, a reject
+status sends it to `reject_topic`, 408, 425 and 429 wait, and a 5xx or a
+missing result is a failed attempt for that message only. A non-2xx for
+the whole request applies to every message in it. Retries, rules,
+ordering and commits stay per message.
+
+A batch fills only when enough messages are waiting, so keep
+`workers x max_in_flight` at least `batch_size`; config review warns
+when it isn't. Measured on the compose stack against an app that takes
+20 ms per request and handles 8 at a time (4 workers, `max_in_flight:
+50`, 20,000 messages): 386 msg/s one message per call, 3,118 msg/s with
+`batch_size: 50`.
+
+</details>
+
+<details>
 <summary><b>Data rules</b></summary>
 
 ```yaml
@@ -790,8 +833,6 @@ tenant.
 
 ## Roadmap
 
-- **Batched callbacks:** send several messages per HTTP call for targets
-  that support it.
 - **Sources and sinks:** an HTTP source that turns inbound requests into
   Kafka messages, and a database step for flows.
 

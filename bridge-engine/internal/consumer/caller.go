@@ -31,11 +31,12 @@ type caller struct {
 	client  *callback.Client
 	breaker *breaker.Breaker
 	pool    *targetpool.Pool
+	batch   *batcher
 }
 
 func newCaller(step string, t config.Target, r config.Retry, cb config.CircuitBreaker) *caller {
 	client := callback.NewClient(time.Duration(t.TimeoutMs) * time.Millisecond)
-	return &caller{
+	c := &caller{
 		step:    step,
 		target:  t,
 		retry:   r,
@@ -43,6 +44,10 @@ func newCaller(step string, t config.Target, r config.Retry, cb config.CircuitBr
 		breaker: breaker.New(cb.FailureThreshold, time.Duration(cb.CooldownSeconds)*time.Second),
 		pool:    targetpool.New(t, client),
 	}
+	if t.Batched() {
+		c.batch = newBatcher(c)
+	}
+	return c
 }
 
 // callOutcome is how a call ended: answered (resp set, neither flag), a
@@ -70,7 +75,10 @@ func (r *Runner) call(ctx context.Context, c *caller, partition int, correlation
 			continue
 		}
 
-		url, release, ok := c.pool.Pick(partition)
+		resp, url, elapsed, err, ok := c.send(ctx, partition, correlationID, key, value)
+		if ctx.Err() != nil {
+			return out, ctx.Err()
+		}
 		if !ok {
 			metrics.Backpressured.WithLabelValues(r.pipeline.Name, r.workerLabel, r.pipeline.Tenant).Inc()
 			log.Warn("callback blocked, every target.urls endpoint is unhealthy, waiting before retrying this message", "step", c.step)
@@ -81,10 +89,6 @@ func (r *Runner) call(ctx context.Context, c *caller, partition int, correlation
 		}
 
 		out.attempts++
-		callStart := time.Now()
-		resp, err := c.client.Send(ctx, http.MethodPost, url, correlationID, value, expandHeaders(c.headers))
-		release()
-		elapsed := time.Since(callStart)
 		r.counters.callbackNanos.Add(elapsed.Nanoseconds())
 		r.counters.callbackCount.Add(1)
 		metrics.CallbackDuration.WithLabelValues(r.pipeline.Name, r.pipeline.Tenant).Observe(elapsed.Seconds())
@@ -151,6 +155,26 @@ func (r *Runner) call(ctx context.Context, c *caller, partition int, correlation
 	out.failed = true
 	out.reason = fmt.Sprintf("callback failed %d time(s), max_attempts reached; last failure: %s", out.attempts, lastFailure)
 	return out, nil
+}
+
+// send makes one attempt, alone or as part of a batch. ok is false when no
+// target endpoint is healthy.
+func (c *caller) send(ctx context.Context, partition int, correlationID string, key, value []byte) (*callback.Response, string, time.Duration, error, bool) {
+	if c.batch != nil {
+		res, err := c.batch.submit(ctx, &batchItem{id: correlationID, key: key, value: value, partition: partition})
+		if err != nil {
+			return nil, "", 0, err, true
+		}
+		return res.resp, res.url, res.elapsed, res.err, !res.noURL
+	}
+	url, release, ok := c.pool.Pick(partition)
+	if !ok {
+		return nil, "", 0, nil, false
+	}
+	start := time.Now()
+	resp, err := c.client.Send(ctx, http.MethodPost, url, correlationID, value, expandHeaders(c.headers))
+	release()
+	return resp, url, time.Since(start), err, true
 }
 
 // probeHealth closes c's breaker as soon as its health check answers again.

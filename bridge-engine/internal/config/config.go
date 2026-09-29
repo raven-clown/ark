@@ -70,6 +70,26 @@ type Target struct {
 	HealthCheckSecs int            `yaml:"health_check_interval_seconds"`
 	TimeoutMs       int            `yaml:"timeout_ms"`
 	RejectStatuses  []int          `yaml:"reject_statuses"`
+	// BatchSize above 1 sends up to that many messages per call, as
+	// {"items": [...]}, and reads one result per item back.
+	BatchSize     int `yaml:"batch_size,omitempty"`
+	BatchLingerMs int `yaml:"batch_linger_ms,omitempty"`
+}
+
+// Batched reports whether calls carry several messages at once.
+func (t Target) Batched() bool { return t.BatchSize > 1 }
+
+func validateBatch(t Target) error {
+	if t.BatchSize < 0 || t.BatchSize > 1000 {
+		return fmt.Errorf("target.batch_size must be between 0 and 1000, got %d", t.BatchSize)
+	}
+	if t.BatchLingerMs < 0 || t.BatchLingerMs > 1000 {
+		return fmt.Errorf("target.batch_linger_ms must be between 0 and 1000, got %d", t.BatchLingerMs)
+	}
+	if t.BatchLingerMs > 0 && !t.Batched() {
+		return fmt.Errorf("target.batch_linger_ms needs a batch_size of 2 or more")
+	}
+	return nil
 }
 
 // IsReject reports whether a callback status routes the message to
@@ -511,6 +531,9 @@ func ValidatePipelines(pipelines []Pipeline) error {
 			if s < 400 || s > 499 {
 				return fmt.Errorf("pipeline %q: target.reject_statuses may only contain 4xx codes, got %d", p.Name, s)
 			}
+		}
+		if err := validateBatch(p.Target); err != nil {
+			return fmt.Errorf("pipeline %q: %w", p.Name, err)
 		}
 
 		if err := validateRules(p.Name, "fast_path_rules", p.FastPathRules); err != nil {

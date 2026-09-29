@@ -106,6 +106,10 @@ pipelines:
       # Statuses routed to reject_topic. Default: every 4xx except 408, 425
       # and 429, which are retried (honoring Retry-After).
       # reject_statuses: [400, 404, 409, 410, 422]
+      # Send up to batch_size messages per call as {"items": [...]}; the app
+      # answers {"results": [...]} with one status per item. Off by default.
+      # batch_size: 50
+      # batch_linger_ms: 5
 
     concurrency:
       max_in_flight: 10

@@ -119,6 +119,11 @@ func reviewConfig(d Deps, p config.Pipeline) []Finding {
 				"Set target.health_check_url so recovery is detected right away.")
 		}
 	}
+	if inFlight := max(1, p.Workers) * max(1, p.Concurrency.MaxInFlight); p.Target.BatchSize > inFlight {
+		add(SeverityWarning, fmt.Sprintf("target.batch_size (%d) is more than workers x max_in_flight (%d).", p.Target.BatchSize, inFlight),
+			"No more messages than that are ever waiting at once, so a batch never fills and every call waits batch_linger_ms.",
+			fmt.Sprintf("Raise concurrency.max_in_flight to at least %d, or lower batch_size.", (p.Target.BatchSize+max(1, p.Workers)-1)/max(1, p.Workers)))
+	}
 	if p.Retry.MaxAttempts <= 1 {
 		add(SeverityWarning, "retry.max_attempts is 1.", "A single transient failure sends the message straight to the dead-letter topic.",
 			"Use 3 or more attempts.")
