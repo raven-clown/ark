@@ -36,6 +36,7 @@ function writePref(key: string, value: string) {
 export function App() {
   const [lang, setLangState] = useState<Lang>(detectLang)
   const [motion, setMotionState] = useState(() => readPref('ark.motion', 'on') === 'on')
+  const [chatLang, setChatLangState] = useState(() => readPref('ark.chatLang', 'auto'))
   const [authed, setAuthed] = useState(false)
   const [checking, setChecking] = useState(true)
   const [view, setView] = useState<View>('pipelines')
@@ -59,6 +60,10 @@ export function App() {
   const setMotion = (m: boolean) => {
     setMotionState(m)
     writePref('ark.motion', m ? 'on' : 'off')
+  }
+  const setChatLang = (v: string) => {
+    setChatLangState(v)
+    writePref('ark.chatLang', v)
   }
   const toast = useCallback((text: string, error?: boolean) => {
     setToastMsg({ text, error })
@@ -290,6 +295,8 @@ export function App() {
               setLang={setLang}
               motion={motion}
               setMotion={setMotion}
+              chatLang={chatLang}
+              setChatLang={setChatLang}
               timezone={overview?.timezone ?? ''}
               onSignOut={() => {
                 setToken('')
@@ -298,7 +305,7 @@ export function App() {
               toast={toast}
             />
           )}
-          {chatOpen && <AssistantPanel onClose={() => setChatOpen(false)} />}
+          {chatOpen && <AssistantPanel replyLanguage={chatLang === 'app' ? lang : ''} onClose={() => setChatOpen(false)} />}
         </main>
       </div>
       {creating === 'designer' && (

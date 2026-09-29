@@ -92,7 +92,7 @@ function Markdown({ text }: { text: string }) {
   return <Fragment>{blocks}</Fragment>
 }
 
-export function AssistantPanel({ onClose }: { onClose: () => void }) {
+export function AssistantPanel({ onClose, replyLanguage }: { onClose: () => void; replyLanguage: string }) {
   const t = useT()
   const projects = useProjects()
   const [project, setProject] = useState('')
@@ -119,7 +119,7 @@ export function AssistantPanel({ onClose }: { onClose: () => void }) {
     setBusy(true)
     try {
       const out = await api<{ conversation_id: string; answer: string; understood?: string; asked_back: boolean; steps: Step[] }>('/assistant/chat', {
-        body: { conversation_id: conversation, project, message: text },
+        body: { conversation_id: conversation, project, message: text, reply_language: replyLanguage },
       })
       setConversation(out.conversation_id)
       setTurns((cur) => [...cur, { role: 'ark', text: out.answer, understood: out.understood, asked: out.asked_back, steps: out.steps }])

@@ -166,9 +166,12 @@ the side.
 - **Projects.** Group pipelines, decide how far AI may go with them, give
   agents their own MCP endpoints, and choose each project's AI model.
 - **Ask ARK.** Chat with an assistant backed by the model you choose. It
-  works out what you mean first, asks back when it must, and uses the
-  same tools as any MCP agent, within your permissions.
-- **Settings.** Timezone, default AI model and every engine tuning value.
+  works out what you mean first, asks back only when the tools can't find
+  the answer, and uses the same tools as any MCP agent, within your
+  permissions. It answers in the language you write in, or always in the
+  console's language if you choose that in Settings.
+- **Settings.** Console language, Ask ARK's reply language, timezone,
+  default AI model and every engine tuning value.
 - In English, Thai, and simplified and traditional Chinese.
 
 <table>
@@ -672,6 +675,15 @@ the model restates what you mean, or asks one question back; then it
 looks things up and acts through ARK's MCP tools. Its permissions are the
 lower of your API token's scope and the project's `ai_access`.
 
+It replies in `reply_language` when the request sets one (`en`, `th`,
+`zh-Hans`, `zh-Hant`), and otherwise in the language the message is
+written in, told to the model explicitly because small local models drift
+into English after reading English tool results; an answer that still
+comes back in the wrong language is rewritten once. Times are quoted as
+the tools give them, ISO 8601 in the engine's timezone. A question back to
+you only goes out when ARK's own parser agrees something is missing that
+no tool can look up.
+
 </details>
 
 <details>
@@ -753,7 +765,7 @@ separate from the MCP tokens.
 | `GET /api/v1/pipelines/{name}/rules`, `POST .../rules/test`, `.../rules/preview` | Read rules, test a condition on recent messages, change rules (admin) |
 | `GET /api/v1/history` | Per-pipeline rates, lag and latency percentiles over the last hour |
 | `GET /api/v1/projects`, `PUT`/`DELETE /api/v1/config/projects/{name}` | Projects, their endpoints and models (changes need admin) |
-| `POST /api/v1/assistant/chat` | Ask the assistant (acts within your scope) |
+| `POST /api/v1/assistant/chat` | Ask the assistant (acts within your scope; optional `reply_language`) |
 | `GET`/`PUT /api/v1/config/settings` | Timezone, default model and tuning (changes need admin) |
 
 </details>

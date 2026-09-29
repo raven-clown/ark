@@ -232,7 +232,17 @@ export function TopicsView() {
   )
 }
 
-export function SettingsView(props: { lang: Lang; setLang: (l: Lang) => void; motion: boolean; setMotion: (m: boolean) => void; timezone: string; onSignOut: () => void; toast: (m: string, e?: boolean) => void }) {
+export function SettingsView(props: {
+  lang: Lang
+  setLang: (l: Lang) => void
+  motion: boolean
+  setMotion: (m: boolean) => void
+  chatLang: string
+  setChatLang: (v: string) => void
+  timezone: string
+  onSignOut: () => void
+  toast: (m: string, e?: boolean) => void
+}) {
   const t = useT()
   return (
     <div className="page">
@@ -250,6 +260,13 @@ export function SettingsView(props: { lang: Lang; setLang: (l: Lang) => void; mo
                 {l.label}
               </option>
             ))}
+          </select>
+        </div>
+        <div className="field">
+          <label>{t('settings.chatLang')}</label>
+          <select className="select" value={props.chatLang} onChange={(e) => props.setChatLang(e.target.value)}>
+            <option value="auto">{t('settings.chatAuto')}</option>
+            <option value="app">{t('settings.chatApp')}</option>
           </select>
         </div>
         <label className="check">
