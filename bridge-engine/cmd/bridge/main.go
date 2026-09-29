@@ -22,6 +22,7 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/kafkaadmin"
 	"github.com/raven-clown/ark/bridge-engine/internal/mcpserver"
 	"github.com/raven-clown/ark/bridge-engine/internal/orchestrator"
+	"github.com/raven-clown/ark/bridge-engine/internal/source"
 	"github.com/raven-clown/ark/bridge-engine/internal/tuning"
 )
 
@@ -37,7 +38,8 @@ type configReloader struct {
 	log       *slog.Logger
 	// loaded is told about every config that passed validation, so the MCP
 	// config tools see what's actually applied.
-	loaded func(*config.Config)
+	loaded  func(*config.Config)
+	sources *source.HTTP
 }
 
 func (c *configReloader) Reload() error {
@@ -48,6 +50,14 @@ func (c *configReloader) Reload() error {
 	tuning.Set(cfg.Tuning)
 	if c.loaded != nil {
 		c.loaded(cfg)
+	}
+	if c.sources != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		err := c.sources.Set(ctx, cfg.Sources)
+		cancel()
+		if err != nil {
+			c.log.Error("setting up sources failed", "error", err)
+		}
 	}
 	if errs := c.reconcile(cfg.Pipelines); len(errs) > 0 {
 		for _, e := range errs {
@@ -230,7 +240,11 @@ func main() {
 	}
 	go mgr.RunRedrive(ctx, redriveGate)
 
-	reload := &configReloader{path: *configPath, reconcile: reconcile, log: logger}
+	sources := source.NewHTTP(cfg.Brokers, cfg.Topics.ReplicationFactor, logger)
+	if err := sources.Set(ctx, cfg.Sources); err != nil {
+		logger.Error("setting up sources failed", "error", err)
+	}
+	reload := &configReloader{path: *configPath, reconcile: reconcile, log: logger, sources: sources}
 	var configSource mcpserver.ConfigSource
 	if clusterNode != nil {
 		configSource = clusterSource{node: clusterNode, model: cfg.Assistant.Model, settings: mcpserver.Settings{Timezone: cfg.Timezone, Model: cfg.Assistant.Model, Tuning: cfg.Tuning}}
@@ -269,6 +283,7 @@ func main() {
 		Version:           version,
 		Location:          displayLocation,
 		History:           mcpserver.NewHistory(),
+		Sources:           sources.List,
 	}
 	consoleDeps := deps
 	consoleDeps.Audit = logger.With("component", "console-audit")
@@ -283,6 +298,8 @@ func main() {
 	projectDeps := deps
 	projectDeps.Audit = logger.With("component", "mcp-audit")
 	rootMux.Handle("/mcp/", mcpserver.NewProjectHandler(projectDeps))
+	// Each source checks its own token, so ingest stays off the API guard.
+	rootMux.Handle("/ingest/", sources)
 
 	mcpTokens := mcpserver.LoadTokenStoreFromEnv()
 	if mcpTokens.Enabled() {

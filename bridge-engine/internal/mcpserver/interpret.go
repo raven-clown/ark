@@ -76,7 +76,7 @@ type interpretOut struct {
 	Pipelines      []nameMatch `json:"pipelines"`
 	Topics         []string    `json:"topics,omitempty"`
 	Tenants        []string    `json:"tenants,omitempty"`
-	URLs         []string    `json:"urls,omitempty"`
+	URLs           []string    `json:"urls,omitempty"`
 	RatePerSec     float64     `json:"rate_per_sec,omitempty"`
 	SinceMinutes   int         `json:"since_minutes,omitempty"`
 	ErrorText      string      `json:"error_text,omitempty"`

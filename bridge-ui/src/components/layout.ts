@@ -9,7 +9,7 @@ export interface Placed {
 const COL_W = 310
 const PIPE_ROW = 280
 const TOPIC_GAP = 64
-const ROLE_ORDER = ['destination', 'override', 'webhook', 'reject', 'dead_letter']
+const ROLE_ORDER = ['destination', 'override', 'webhook', 'database', 'reject', 'dead_letter']
 
 // layout places a topology left to right: source topics, then the
 // pipelines reading them, then what they write to, so a chain of pipelines
@@ -110,6 +110,13 @@ export function layout(topo: Topology): Map<string, Placed> {
       .forEach((e, i) => {
         if (!placed.has(e.to)) placed.set(e.to, { id: e.to, x: at.x + 16, y: at.y - 96 - i * 40 })
       })
+  }
+  // HTTP sources: just left of the topic they write to.
+  for (const n of nodes) {
+    if (n.kind !== 'source') continue
+    const to = outs(n.id).find((e) => e.role === 'ingest')
+    const at = to && placed.get(to.to)
+    if (at) placed.set(n.id, { id: n.id, x: at.x - 300, y: at.y })
   }
   for (const n of nodes) if (!placed.has(n.id)) placed.set(n.id, { id: n.id, x: 0, y: 0 })
   return placed

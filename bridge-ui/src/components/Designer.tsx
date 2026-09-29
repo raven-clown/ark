@@ -17,7 +17,7 @@ import '@xyflow/react/dist/style.css'
 import type { IconType } from 'react-icons'
 import { BsMicrosoftTeams } from 'react-icons/bs'
 import { FaSlack } from 'react-icons/fa6'
-import { SiApachekafka, SiApachenifi, SiDiscord, SiElasticsearch, SiOpensearch } from 'react-icons/si'
+import { SiApachekafka, SiApachenifi, SiDiscord, SiElasticsearch, SiOpensearch, SiPostgresql } from 'react-icons/si'
 import { TbApi } from 'react-icons/tb'
 
 import { api } from '../api'
@@ -29,7 +29,15 @@ import { useProjects } from './ProjectsView'
 // Fields is a pipeline, or part of one, as its config file keys.
 type Fields = Record<string, unknown>
 
-export type StepType = 'call' | 'condition' | 'data_check' | 'topic' | 'webhook' | 'reject' | 'dead_letter' | 'drop'
+export type StepType = 'call' | 'condition' | 'data_check' | 'topic' | 'webhook' | 'database' | 'reject' | 'dead_letter' | 'drop'
+
+interface DatabaseCfg {
+  driver: string
+  dsn_env: string
+  table: string
+  columns: Record<string, string>
+  upsert_on?: string[]
+}
 
 interface BranchCfg {
   name?: string
@@ -62,6 +70,7 @@ export interface Step {
   message?: string
   message_field?: string
   brokers?: string[]
+  database?: DatabaseCfg
 }
 
 interface FlowCfg {
@@ -77,6 +86,7 @@ const TYPES: { type: StepType; icon: IconName }[] = [
   { type: 'call', icon: 'globe' },
   { type: 'webhook', icon: 'signout' },
   { type: 'topic', icon: 'stream' },
+  { type: 'database', icon: 'database' },
   { type: 'data_check', icon: 'check' },
   { type: 'reject', icon: 'inbox' },
   { type: 'dead_letter', icon: 'alert' },
@@ -98,6 +108,7 @@ const APPS: AppPreset[] = [
   { app: 'elasticsearch', label: 'Elasticsearch', logo: SiElasticsearch, color: '#00A9A5', make: (id) => webhookApp(id, 'elasticsearch', 'http://elasticsearch:9200', 'orders') },
   { app: 'nifi', label: 'NiFi', logo: SiApachenifi, color: '#728E9B', make: (id) => webhookApp(id, 'nifi', 'http://nifi:8081/contentListener') },
   { app: 'kafka', label: 'Kafka', logo: SiApachekafka, color: '#3A3F46', make: (id) => ({ id, type: 'topic', app: 'kafka', topic: '', brokers: [], next: [] }) },
+  { app: 'postgres', label: 'PostgreSQL', logo: SiPostgresql, color: '#336791', make: (id) => ({ ...newStep('database', id), app: 'postgres' }) },
   { app: 'slack', label: 'Slack', logo: FaSlack, color: '#611F69', make: (id) => webhookApp(id, 'slack', '') },
   { app: 'discord', label: 'Discord', logo: SiDiscord, color: '#5865F2', make: (id) => webhookApp(id, 'discord', '') },
   { app: 'teams', label: 'Microsoft Teams', logo: BsMicrosoftTeams, color: '#4B53BC', make: (id) => webhookApp(id, 'teams', '') },
@@ -144,6 +155,28 @@ const webhookURLOK = (url: string) => {
   const at = url.indexOf('{{')
   return at < 0 ? /^https?:\/\/\S+$/.test(url) : /^https?:\/\/[^\s/?#{]+[/?]/.test(url.slice(0, at))
 }
+const sqlName = /^[A-Za-z_][A-Za-z0-9_]{0,62}$/
+// dbOK mirrors the engine's check: plain table and column names, and an
+// environment variable for the connection string.
+const dbOK = (d?: DatabaseCfg) =>
+  !!d &&
+  /^[A-Z_][A-Z0-9_]*$/.test(d.dsn_env) &&
+  d.table.split('.').length <= 2 &&
+  d.table.split('.').every((p) => sqlName.test(p)) &&
+  Object.keys(d.columns ?? {}).length > 0 &&
+  Object.keys(d.columns).every((c) => sqlName.test(c)) &&
+  (d.upsert_on ?? []).every((c) => c in d.columns)
+const columnsText = (c: Record<string, string>) =>
+  Object.entries(c)
+    .map(([k, v]) => `${k}: ${v}`)
+    .join('\n')
+const parseColumns = (text: string) =>
+  Object.fromEntries(
+    text
+      .split('\n')
+      .map((l) => [l.slice(0, l.indexOf(':')).trim(), l.slice(l.indexOf(':') + 1).trim()])
+      .filter(([k]) => k),
+  )
 const trimSlash = (s: string) => s.replace(/\/+$/, '')
 const idAction = (id: string) => `{{path .${id || 'data.id'}}}`
 const byIdURL = (p: UrlParts) => `${trimSlash(p.base)}/${idAction(p.id)}`
@@ -247,6 +280,7 @@ function handlesOf(s: Step): { key: string; label: string }[] {
         { key: 'on_fail', label: 'fz.h.fail' },
       ]
     case 'webhook':
+    case 'database':
       return [
         { key: 'next', label: 'fz.h.then' },
         { key: 'on_failure', label: 'fz.h.failed' },
@@ -381,6 +415,8 @@ function summary(s: Step): string {
     case 'webhook':
       if (isSearch(s.app)) return `index: ${urlParts(s).index || '…'}`
       return s.url || 'http://…'
+    case 'database':
+      return s.database?.table ? `${s.database.table} (${Object.keys(s.database.columns ?? {}).length})` : '…'
     case 'reject':
     case 'dead_letter':
       return s.topic || s.reason || ''
@@ -454,6 +490,8 @@ function newStep(type: StepType, id: string): Step {
       return { id, type, topic: '', next: [] }
     case 'webhook':
       return { id, type, url: '', next: [] }
+    case 'database':
+      return { id, type, database: { driver: 'postgres', dsn_env: 'ARK_DB', table: '', columns: { id: '{{.data.id}}', raw: '{{json .data}}' }, upsert_on: ['id'] }, next: [] }
     default:
       return { id, type }
   }
@@ -500,7 +538,8 @@ function issuesOf(name: string, pipe: Fields, flow: FlowCfg): Issue[] {
     if (s.type === 'webhook' && !webhookURLOK(s.url ?? '')) out.push({ key: 'dz.i.url', id: s.id })
     if (s.type === 'condition' && (!s.branches?.length || s.branches.some((b) => !b.when.trim()))) out.push({ key: 'dz.i.condition', id: s.id })
     if (s.type === 'topic' && !s.topic?.trim()) out.push({ key: 'fz.i.topic', id: s.id })
-    if ((s.type === 'call' || s.type === 'webhook') && !dlq && !s.on_failure?.length) out.push({ key: 'fz.i.needFailed', id: s.id })
+    if (s.type === 'database' && !dbOK(s.database)) out.push({ key: 'fz.i.database', id: s.id })
+    if ((s.type === 'call' || s.type === 'webhook' || s.type === 'database') && !dlq && !s.on_failure?.length) out.push({ key: 'fz.i.needFailed', id: s.id })
     if (s.type === 'call' && !rejects && !s.on_reject?.length) out.push({ key: 'fz.i.needReject', id: s.id })
     if (s.type === 'data_check' && !rejects && !s.on_fail?.length && str(obj(s.rules).on_violation) !== 'tag') out.push({ key: 'fz.i.needFail', id: s.id })
     if (s.type === 'dead_letter' && !dlq && !s.topic?.trim()) out.push({ key: 'fz.i.topic', id: s.id })
@@ -684,6 +723,25 @@ function StepFields({ step, pipe, onChange }: { step: Step; pipe: Fields; onChan
               <option value="tag">tag</option>
             </select>
           </div>
+        </>
+      )
+    }
+    case 'database': {
+      const db = step.database ?? { driver: 'postgres', dsn_env: '', table: '', columns: {} }
+      const setDB = (patch: Partial<DatabaseCfg>) => set({ database: { ...db, ...patch } })
+      return (
+        <>
+          {name}
+          <Input label="fz.f.dsnEnv" value={db.dsn_env} placeholder="ARK_ORDERS_DB" onChange={(v) => setDB({ dsn_env: v })} />
+          <span className="small dim">{t('fz.f.dsnHint')}</span>
+          <Input label="fz.f.table" value={db.table} placeholder="public.orders" onChange={(v) => setDB({ table: v })} />
+          <div className="field">
+            <label>{t('fz.f.columns')}</label>
+            <textarea className="textarea small-area mono" value={columnsText(db.columns)} placeholder={'id: {{.data.order_id}}\namount: {{.data.amount}}'} onChange={(e) => setDB({ columns: parseColumns(e.target.value) })} />
+            <span className="small dim">{t('fz.f.columnsHint')}</span>
+          </div>
+          <Input label="fz.f.upsertOn" value={(db.upsert_on ?? []).join(', ')} placeholder="id" onChange={(v) => setDB({ upsert_on: v.split(',').map((x) => x.trim()).filter(Boolean) })} />
+          <span className="small dim">{t('fz.f.upsertHint')}</span>
         </>
       )
     }

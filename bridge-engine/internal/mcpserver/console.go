@@ -489,6 +489,10 @@ func flowEdges(p config.Pipeline, pid string, node func(id, kind, label string),
 		case config.StepWebhook:
 			node("webhook:"+s.URL, "webhook", s.URL)
 			add("webhook:"+s.URL, "webhook", s.ID)
+		case config.StepDatabase:
+			id := "database:" + s.Database.DSNEnv + "/" + s.Database.Table
+			node(id, "database", s.Database.Table)
+			add(id, "database", s.ID)
 		case config.StepReject:
 			if t := cmp.Or(s.Topic, p.RejectTopic); t != "" {
 				add(topic(t), "reject", s.ID)
@@ -569,6 +573,14 @@ func topology(d Deps) Topology {
 				node("webhook:"+rule.WebhookOverride, "webhook", rule.WebhookOverride)
 				edge(pid, "webhook:"+rule.WebhookOverride, "webhook", rule.Name)
 			}
+		}
+	}
+	if d.Sources != nil {
+		sources := d.Sources()
+		sort.Slice(sources, func(i, j int) bool { return sources[i].Name < sources[j].Name })
+		for _, s := range sources {
+			node("source:"+s.Name, "source", "/ingest/"+s.Name)
+			edge("source:"+s.Name, topic(s.Topic), "ingest", "")
 		}
 	}
 	return t

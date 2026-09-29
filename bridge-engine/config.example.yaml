@@ -78,6 +78,19 @@ timezone: UTC
 #   cluster_catch_up_seconds: 10       # (restart)
 #   compacted_idle_seconds: 2
 
+# HTTP sources: POST /ingest/<name> with "Authorization: Bearer <token>"
+# writes the body to topic, answering 202 once Kafka has it.
+# sources:
+#   - name: shop
+#     type: http
+#     topic: shop.orders
+#     token_env: ARK_SOURCE_SHOP_TOKEN
+#     key: order_id                  # JSON path used as the Kafka key
+#     max_body_bytes: 1048576
+#     data_rules:                    # a violation is answered with 422
+#       fields:
+#         - {path: order_id, required: true, type: string}
+
 pipelines:
   - name: order-processor
     tenant: team-a

@@ -76,6 +76,11 @@ var (
 		Help: "Messages matched by a fast_path_rule, skipping the HTTP callback entirely.",
 	}, []string{"pipeline", "rule", "action", "tenant"})
 
+	SourceRequests = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "ark_source_requests_total",
+		Help: "Requests to an HTTP source, by outcome: accepted, rejected (data rules), unauthorized, too_large, bad_request, unavailable (Kafka didn't take it).",
+	}, []string{"source", "outcome"})
+
 	PostCallbackMatches = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Name: "ark_post_callback_rule_matches_total",
 		Help: "Callback responses matched by a post_callback_rule.",
@@ -83,5 +88,5 @@ var (
 )
 
 func init() {
-	prometheus.MustRegister(Processed, Rejected, DeadLettered, Failed, Backpressured, CallbackDuration, ConsumerLag, OldestUncommittedAge, DataRuleViolations, CircuitBreakerOpen, Paused, WorkerUp, LastActivityTimestamp, FastPathMatches, PostCallbackMatches)
+	prometheus.MustRegister(Processed, Rejected, DeadLettered, Failed, Backpressured, CallbackDuration, ConsumerLag, OldestUncommittedAge, DataRuleViolations, CircuitBreakerOpen, Paused, WorkerUp, LastActivityTimestamp, FastPathMatches, PostCallbackMatches, SourceRequests)
 }

@@ -57,6 +57,8 @@ type Deps struct {
 	Project string
 	// History is what get_metrics reads; the console samples into it.
 	History *History
+	// Sources lists the HTTP sources being served.
+	Sources func() []config.Source
 }
 
 func (d Deps) loc() *time.Location {

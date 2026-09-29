@@ -10,7 +10,7 @@ Status: Phases 1 to 6, 4b and 4c (cluster), 8 (projects and AI access),
 9 (flows) and the ARK Console are done. A full review on 2026-09-24
 found message-loss and auth gaps, tracked in "Phase 0: Hardening" at the
 top of §6; all of it, including T1 (batched calls), is fixed and
-verified live. Open: Phase 7 (sources and sinks).
+verified live. Phase 7 (HTTP source, sinks, database step) is done too.
 CI (`.github/workflows/ci.yml`) runs build/vet/test, govulncheck,
 gosec, Semgrep, OSV-Scanner, Gitleaks, and a Trivy image scan on
 every PR.
@@ -1036,12 +1036,33 @@ the calling agent to self-restrict):**
   tool description's exact wording rather than guessing.
 
 ### Backend: Phase 7: Extensibility
-- [ ] `Source` and `Sink` interfaces (Kafka is one implementation of each)
-- [ ] Database sink (direct insert/upsert, bypassing HTTP callback)
-- [ ] Fan-out destinations (topic, webhook, and DB in one pipeline).
-      Topics, webhooks and apps already fan out through flows (Phase 9);
-      what is left is a database step once the sink exists.
-- [ ] **HTTP source** (webhook receiver), the mirror image of
+- [x] `Source` and `Sink` interfaces. `internal/sink.Sink` has a Kafka
+      and a PostgreSQL implementation; every Kafka write (destination,
+      flow topic steps) and the new database step go through it.
+      `internal/source.Source` has the HTTP implementation. Pipelines
+      still only consume Kafka, on purpose: committed offsets are the
+      delivery guarantee, so a source's job is to get a message durably
+      onto a topic, and a pipeline reads it from there.
+- [x] Database sink: flow step `type: database` (`driver: postgres`,
+      `dsn_env`, `table`, `columns` as templates, `upsert_on`). Table
+      and column names must be plain identifiers and are quoted; every
+      value is a query parameter, so a message can't change the
+      statement. `upsert_on` makes redelivery idempotent. Writes retry
+      `retry.max_attempts` times, then take `on_failure` or the
+      dead-letter topic. An unset `dsn_env` fails that step's writes
+      instead of stopping ARK from starting (found live: it used to
+      crash-loop the whole process).
+- [x] Fan-out destinations: topic, webhook and database in one flow.
+      Verified live: an HTTP source feeding a flow that writes every
+      order to `shop.orders.copy` and to a Postgres table with upsert.
+      600 accepted requests (500 orders plus 100 resends with new
+      amounts) gave 600 messages on each topic and exactly 500 rows, the
+      100 resent ones updated; with Postgres stopped, orders retried
+      and were saved when it came back, and when it stayed down they
+      went to the dead-letter step. The console canvas shows sources
+      and database tables, and the designer has a database step and a
+      PostgreSQL app.
+- [x] **HTTP source** (webhook receiver), the mirror image of
       everything built so far. Today a pipeline's only direction is
       Kafka to ARK to outbound HTTP callback; this is inbound HTTP to
       ARK to Kafka instead. An external caller (Stripe, GitHub, an
@@ -1058,6 +1079,19 @@ the calling agent to self-restrict):**
       (does the caller wait for the produce to confirm, or get a 202
       immediately?), rather than being a small addition to the
       existing Kafka-source path.
+      Built as top-level `sources:` (`type: http`, `topic`,
+      `token_env`, optional `key` path, `max_body_bytes`, `partitions`,
+      `data_rules`), served at `POST /ingest/<name>` outside the API
+      guard. Decisions: the source writes to a topic and a normal
+      pipeline consumes it (so retries, flows and DLQ are the existing
+      ones); the caller waits for Kafka to accept the message and gets
+      202, or 503 with Retry-After when Kafka didn't take it, so an
+      accepted request is never lost; a bearer token from an env var,
+      compared in constant time; 413 over the size limit; data rules
+      answer 422 with the violations right away. Metric
+      `ark_source_requests_total{source,outcome}`. Verified live: 500
+      orders accepted, 20 that broke the rules got 422 and 5 with a
+      wrong token got 401, and none of those 25 reached Kafka.
 - [ ] Revisit: CDC source, RabbitMQ/NATS, schedule trigger, only if
       real demand shows up after Phase 1 through 6 are solid
 
@@ -1424,11 +1458,13 @@ plumbing. Treat it as **Phase 6b**, not a separate later phase.
   `X-Correlation-ID` header ARK already sends). Revisit only if a
   deployment must keep processing while Kafka itself is down, which
   would be a positioning change, not a fix.
-- Whether `reject` needs a synchronous response path back to an
-  upstream caller, or is always fire-and-forget into `reject_topic`
-  (current assumption: fire-and-forget/async). Worth deciding together
-  with the Phase 7 HTTP source, which is the first place a caller would
-  be waiting on the other end.
+- Decided with the Phase 7 HTTP source: a caller waiting on the other
+  end gets bad data refused synchronously (422 with the violations,
+  from the source's `data_rules`), before anything is written. Rejects
+  that happen later, once a pipeline processes the message, stay
+  asynchronous into `reject_topic`: the caller already has its 202 and
+  holding the request open for a whole pipeline would tie delivery to
+  the caller's timeout.
 - Manual partition pinning was requested (an operator choosing exactly
   which partition each worker reads, instead of Kafka's group
   coordinator deciding). Checked against kafka-go: `GroupID` and

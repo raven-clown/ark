@@ -52,7 +52,78 @@ const (
 	StepDeadLetter StepType = "dead_letter"
 	// StepDrop discards the message.
 	StepDrop StepType = "drop"
+	// StepDatabase writes the message as a row, then continues on next;
+	// on_failure when the write keeps failing.
+	StepDatabase StepType = "database"
 )
+
+// Database is where a database step writes. Each column's value is a
+// text/template over the message, sent as a query parameter.
+type Database struct {
+	// Driver is postgres, the only one so far.
+	Driver string `yaml:"driver"`
+	// DSNEnv names the environment variable holding the connection
+	// string, so credentials stay out of the config.
+	DSNEnv  string            `yaml:"dsn_env"`
+	Table   string            `yaml:"table"`
+	Columns map[string]string `yaml:"columns"`
+	// UpsertOn makes the insert update the row with the same values in
+	// these columns instead of failing, so a redelivered message doesn't
+	// write twice. It needs a unique index on them.
+	UpsertOn []string `yaml:"upsert_on,omitempty"`
+}
+
+var sqlIdent = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,62}$`)
+
+// SQLIdent reports whether name is a plain table or column name, optionally
+// schema-qualified for a table.
+func SQLIdent(name string, qualified bool) bool {
+	parts := []string{name}
+	if qualified {
+		parts = strings.Split(name, ".")
+		if len(parts) > 2 {
+			return false
+		}
+	}
+	for _, p := range parts {
+		if !sqlIdent.MatchString(p) {
+			return false
+		}
+	}
+	return true
+}
+
+func validateDatabase(d *Database) error {
+	if d == nil {
+		return fmt.Errorf("database is required")
+	}
+	if d.Driver != "postgres" {
+		return fmt.Errorf("database.driver must be postgres, got %q", d.Driver)
+	}
+	if !envVarName.MatchString(d.DSNEnv) {
+		return fmt.Errorf("database.dsn_env must name an environment variable such as ARK_ORDERS_DB")
+	}
+	if !SQLIdent(d.Table, true) {
+		return fmt.Errorf("database.table %q must be a plain name like orders or public.orders", d.Table)
+	}
+	if len(d.Columns) == 0 {
+		return fmt.Errorf("database.columns needs at least one column")
+	}
+	for col, src := range d.Columns {
+		if !SQLIdent(col, false) {
+			return fmt.Errorf("database.columns: %q is not a plain column name", col)
+		}
+		if _, err := template.New(col).Funcs(templateStubs).Parse(src); err != nil {
+			return fmt.Errorf("database.columns.%s: %w", col, err)
+		}
+	}
+	for _, col := range d.UpsertOn {
+		if _, ok := d.Columns[col]; !ok {
+			return fmt.Errorf("database.upsert_on: %q is not one of the columns", col)
+		}
+	}
+	return nil
+}
 
 // Flow is a pipeline drawn as steps joined in any shape without loops: every
 // step can lead to several others, and conditions can split the message
@@ -118,6 +189,8 @@ type Step struct {
 	Brokers []string `yaml:"brokers,omitempty"`
 	// reject and dead_letter
 	Reason string `yaml:"reason,omitempty"`
+	// database
+	Database *Database `yaml:"database,omitempty"`
 }
 
 // Outputs lists every step this one can lead to.
@@ -326,6 +399,13 @@ func validateStep(p Pipeline, s Step) error {
 		if len(s.OnFailure) == 0 && p.DeadLetterTopic == "" {
 			return fmt.Errorf("needs on_failure, or a pipeline dead_letter_topic to fall back to")
 		}
+	case StepDatabase:
+		if err := validateDatabase(s.Database); err != nil {
+			return err
+		}
+		if len(s.OnFailure) == 0 && p.DeadLetterTopic == "" {
+			return fmt.Errorf("needs on_failure, or a pipeline dead_letter_topic to fall back to")
+		}
 	case StepReject:
 		if s.Topic == "" && p.RejectTopic == "" && p.DeadLetterTopic == "" {
 			return fmt.Errorf("topic is required when the pipeline has no reject_topic or dead_letter_topic")
@@ -337,7 +417,7 @@ func validateStep(p Pipeline, s Step) error {
 	case StepDrop:
 		return terminal()
 	default:
-		return fmt.Errorf("unknown type %q (call, condition, data_check, topic, webhook, reject, dead_letter, drop)", s.Type)
+		return fmt.Errorf("unknown type %q (call, condition, data_check, topic, webhook, database, reject, dead_letter, drop)", s.Type)
 	}
 	return nil
 }

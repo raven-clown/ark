@@ -24,6 +24,7 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/events"
 	"github.com/raven-clown/ark/bridge-engine/internal/kafkaadmin"
 	"github.com/raven-clown/ark/bridge-engine/internal/metrics"
+	"github.com/raven-clown/ark/bridge-engine/internal/sink"
 	"github.com/raven-clown/ark/bridge-engine/internal/tap"
 )
 
@@ -37,6 +38,7 @@ type flowRuntime struct {
 	checkers   map[string]*datarules.Checker
 	bodies     map[string]*template.Template
 	urls       map[string]*template.Template
+	sinks      map[string]sink.Sink
 	brokers    []string
 }
 
@@ -65,7 +67,7 @@ var flowEnv = map[string]any{
 }
 
 func newFlowRuntime(ctx context.Context, deps Deps, p config.Pipeline) (*flowRuntime, error) {
-	rt := &flowRuntime{flow: p.Flow, callers: map[string]*caller{}, branches: map[string][]*vm.Program{}, checkers: map[string]*datarules.Checker{}, bodies: map[string]*template.Template{}, urls: map[string]*template.Template{}, brokers: deps.Brokers}
+	rt := &flowRuntime{flow: p.Flow, callers: map[string]*caller{}, branches: map[string][]*vm.Program{}, checkers: map[string]*datarules.Checker{}, bodies: map[string]*template.Template{}, urls: map[string]*template.Template{}, sinks: map[string]sink.Sink{}, brokers: deps.Brokers}
 	for _, s := range p.Flow.Steps {
 		switch s.Type {
 		case config.StepCall:
@@ -102,6 +104,15 @@ func newFlowRuntime(ctx context.Context, deps Deps, p config.Pipeline) (*flowRun
 				}
 				rt.urls[s.ID] = tmpl
 			}
+		case config.StepDatabase:
+			db, err := sink.NewDatabase(*s.Database, templateFuncs)
+			if err != nil {
+				for _, open := range rt.sinks {
+					_ = open.Close()
+				}
+				return nil, fmt.Errorf("flow step %q: %w", s.ID, err)
+			}
+			rt.sinks[s.ID] = db
 		case config.StepReject, config.StepDeadLetter:
 			if s.Topic != "" {
 				if err := kafkaadmin.EnsureTopic(ctx, deps.Brokers, s.Topic, 1, deps.ReplicationFactor); err != nil {
@@ -249,7 +260,7 @@ func (r *Runner) runStep(ctx context.Context, id string, partition int, m flowMs
 		if len(s.Brokers) > 0 {
 			target = r.shared.clusterProducer(s.Brokers, s.Topic)
 		}
-		if err := r.sendWithRetry(ctx, target, m.key, m.value, m.headers, log); err != nil {
+		if err := r.writeUntilDone(ctx, sink.Kafka{P: target}, sink.Message{Key: m.key, Value: m.value, Headers: m.headers}, log); err != nil {
 			return fmt.Errorf("step %s producing to %s: %w", id, s.Topic, err)
 		}
 		r.tapOut(tap.ToDestination, s.Topic, id, "", statusOf(m.response), m.key, m.value, m.headers)
@@ -285,6 +296,27 @@ func (r *Runner) runStep(ctx context.Context, id string, partition int, m flowMs
 		if r.watching() {
 			rec := r.tapRecord(tap.StageOut, correlationID, m.key, m.headers)
 			rec.To, rec.Target, rec.Rule = tap.ToWebhook, target, id
+			rec.SetValue(m.value)
+			tap.Default.Publish(rec)
+		}
+		out.delivered = true
+		return r.runSteps(ctx, s.Next, partition, m, out, log)
+
+	case config.StepDatabase:
+		err := r.writeWithRetry(ctx, rt.sinks[id], sink.Message{Key: m.key, Value: m.value, Headers: m.headers, Env: m.env()}, log)
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			m.reason = fmt.Sprintf("step %s: %v", id, err)
+			if len(s.OnFailure) == 0 {
+				return r.flowDeadLetter(ctx, config.Step{ID: id}, m, out, log)
+			}
+			return r.runSteps(ctx, s.OnFailure, partition, m, out, log)
+		}
+		if r.watching() {
+			rec := r.tapRecord(tap.StageOut, correlationID, m.key, m.headers)
+			rec.To, rec.Target, rec.Rule = tap.ToDestination, s.Database.Table, id
 			rec.SetValue(m.value)
 			tap.Default.Publish(rec)
 		}

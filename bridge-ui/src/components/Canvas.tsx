@@ -63,6 +63,8 @@ const roleColor: Record<string, string> = {
   destination: '#34D399',
   override: '#34D399',
   webhook: '#34D399',
+  database: '#34D399',
+  ingest: '#34D399',
   reject: '#E4A951',
   dead_letter: '#EC6B77',
 }
@@ -126,14 +128,16 @@ function TopicNode({ data }: NodeProps<Node<TopicData>>) {
 }
 
 function TargetNode({ data }: NodeProps<Node<TargetData>>) {
+  const icon = data.kind === 'database' ? 'database' : data.kind === 'source' ? 'signin' : 'globe'
   return (
-    <div className={`n-target ${data.dimmed ? 'dimmed' : ''}`} title={data.label}>
+    <div className={`n-target ${data.kind} ${data.dimmed ? 'dimmed' : ''}`} title={data.label}>
       <Handle type="target" position={Position.Bottom} />
       <Handle type="target" id="left" position={Position.Left} />
       <span className="ico">
-        <Icon name="globe" className="" />
+        <Icon name={icon} className="" />
       </span>
       <span className="u">{data.label}</span>
+      <Handle type="source" id="right" position={Position.Right} />
     </div>
   )
 }
@@ -457,14 +461,14 @@ export function Canvas({ search, health, motion, selected, onSelect, onNew, refr
         const r = rates[pid]
         const s = stats.get(pid)
         const rate =
-          e.role === 'consume' ? r?.in ?? 0 : e.role === 'call' ? r?.calls ?? 0 : e.role === 'destination' || e.role === 'override' || e.role === 'webhook' ? r?.out ?? 0 : e.role === 'reject' ? r?.reject ?? 0 : r?.dlq ?? 0
+          e.role === 'ingest' ? 0 : e.role === 'consume' ? r?.in ?? 0 : e.role === 'call' ? r?.calls ?? 0 : e.role === 'destination' || e.role === 'override' || e.role === 'webhook' || e.role === 'database' ? r?.out ?? 0 : e.role === 'reject' ? r?.reject ?? 0 : r?.dlq ?? 0
         const breakerOpen = s?.breaker_state === 'open'
         return {
           id: `${e.from}>${e.to}>${e.role}>${i}`,
           source: e.from,
           target: e.to,
-          sourceHandle: e.role === 'call' ? 'top' : undefined,
-          targetHandle: e.role === 'webhook' ? 'left' : undefined,
+          sourceHandle: e.role === 'call' ? 'top' : e.role === 'ingest' ? 'right' : undefined,
+          targetHandle: e.role === 'webhook' || e.role === 'database' ? 'left' : undefined,
           type: 'flow',
           data: { role: e.role, rate, perDot, motion, rule: e.rule, alert: e.role === 'call' && breakerOpen ? 'coral' : s?.paused && e.role === 'consume' ? 'amber' : undefined },
         }

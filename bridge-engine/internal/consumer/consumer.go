@@ -23,6 +23,7 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/metrics"
 	"github.com/raven-clown/ark/bridge-engine/internal/producer"
 	"github.com/raven-clown/ark/bridge-engine/internal/rules"
+	"github.com/raven-clown/ark/bridge-engine/internal/sink"
 	"github.com/raven-clown/ark/bridge-engine/internal/tap"
 	"github.com/raven-clown/ark/bridge-engine/internal/tuning"
 )
@@ -204,6 +205,13 @@ func (s *shared) Close() error {
 	if s.reject != nil {
 		if closeErr := s.reject.Close(); closeErr != nil && err == nil {
 			err = closeErr
+		}
+	}
+	if s.flow != nil {
+		for _, sk := range s.flow.sinks {
+			if closeErr := sk.Close(); closeErr != nil && err == nil {
+				err = closeErr
+			}
 		}
 	}
 	s.overrideMu.Lock()
@@ -881,9 +889,31 @@ func (r *Runner) httpWithRetry(ctx context.Context, method, url, correlationID s
 // failure means Kafka itself is unavailable, not that the message is bad,
 // so giving up would only force the callback to be repeated later.
 func (r *Runner) sendWithRetry(ctx context.Context, target *producer.Producer, key, value []byte, headers map[string]string, log *slog.Logger) error {
+	return r.writeUntilDone(ctx, sink.Kafka{P: target}, sink.Message{Key: key, Value: value, Headers: headers}, log)
+}
+
+// writeWithRetry tries a write retry.max_attempts times, for sinks where a
+// write that keeps failing should take the step's failure path.
+func (r *Runner) writeWithRetry(ctx context.Context, to sink.Sink, m sink.Message, log *slog.Logger) error {
+	var err error
+	for attempt := 1; attempt <= r.pipeline.Retry.MaxAttempts; attempt++ {
+		if err = to.Write(ctx, m); err == nil {
+			return nil
+		}
+		log.Warn("write attempt failed", "attempt", attempt, "error", err)
+		if attempt < r.pipeline.Retry.MaxAttempts {
+			if serr := sleep(ctx, time.Duration(r.pipeline.Retry.BackoffMs)*time.Millisecond); serr != nil {
+				return serr
+			}
+		}
+	}
+	return err
+}
+
+func (r *Runner) writeUntilDone(ctx context.Context, to sink.Sink, m sink.Message, log *slog.Logger) error {
 	backoff := time.Duration(r.pipeline.Retry.BackoffMs) * time.Millisecond
 	for attempt := 1; ; attempt++ {
-		err := target.Send(ctx, key, value, headers)
+		err := to.Write(ctx, m)
 		if err == nil {
 			return nil
 		}

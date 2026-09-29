@@ -574,8 +574,8 @@ flow:
     - {id: bad, type: reject}
 ```
 
-Steps: `call`, `condition`, `data_check`, `topic`, `webhook`, `reject`,
-`dead_letter`, `drop`. Conditions read `data` (the message at that step),
+Steps: `call`, `condition`, `data_check`, `topic`, `webhook`, `database`,
+`reject`, `dead_letter`, `drop`. Conditions read `data` (the message at that step),
 `original`, `response` (`status` and `body` of the last call), `reason`,
 `key` and `headers`. Every step but `drop` can lead on to more steps,
 reject and dead letter included, so a reject can also go to a webhook or
@@ -598,6 +598,76 @@ it; when set, they catch the steps that don't. Call steps take the same
 `target`, `retry` and `circuit_breaker` options as the fixed path. Loops
 are refused; to go around again, send to a topic a pipeline reads. A
 message is committed once every path it took is done, and counted once.
+
+A `database` step writes the message as a row in PostgreSQL:
+
+```yaml
+- id: save
+  type: database
+  database:
+    driver: postgres
+    dsn_env: ARK_ORDERS_DB          # env var with the connection string
+    table: public.orders
+    columns:
+      id: "{{.data.order_id}}"
+      amount: "{{.data.amount}}"
+      raw: "{{json .data}}"
+    upsert_on: [id]                 # needs a unique index on id
+  on_failure: [dead]
+```
+
+Each value is a template sent as a query parameter (an empty one is
+NULL), and table and column names must be plain names, so a message can
+never change the SQL. With `upsert_on`, a message delivered twice updates
+its row instead of adding another. A write retries `retry.max_attempts`
+times, then takes `on_failure` (or the dead-letter topic). If `dsn_env`
+isn't set on the server, the step's writes fail that way too; the rest of
+ARK keeps running.
+
+</details>
+
+<details>
+<summary><b>HTTP sources</b></summary>
+
+An app that can only POST (a payment provider's webhooks, a form, a
+script) can send straight into Kafka through ARK:
+
+```yaml
+sources:
+  - name: shop
+    type: http
+    topic: shop.orders
+    token_env: ARK_SOURCE_SHOP_TOKEN   # env var with the bearer token
+    key: order_id                      # optional: JSON path used as the Kafka key
+    max_body_bytes: 1048576
+    partitions: 3                      # used when ARK creates the topic
+    data_rules:                        # optional
+      fields:
+        - {path: order_id, required: true, type: string}
+```
+
+```
+POST /ingest/shop
+Authorization: Bearer <token>
+
+{"order_id": "A1", "amount": 10}
+```
+
+ARK answers once Kafka has the message:
+
+| Status | Meaning |
+|---|---|
+| 202 | On the topic. Any pipeline reading it takes it from there. |
+| 401 | Missing or wrong token. |
+| 413 | Over `max_body_bytes`. |
+| 400 | Not a JSON object, when `key` or `data_rules` needs one. |
+| 422 | Broke a data rule; the body lists each violation. Nothing was written. |
+| 503 | Kafka didn't take it; send it again after `Retry-After`. |
+
+An `X-Correlation-ID` on the request is kept on the message, and
+`X-Ark-Source` says which source it came from. Sources show on the
+console canvas beside their topic. `ark_source_requests_total` counts
+requests by source and outcome.
 
 </details>
 
@@ -786,6 +856,7 @@ separate from the MCP tokens.
 |---|---|
 | `GET /healthz` | Liveness |
 | `GET /metrics` | Prometheus metrics |
+| `POST /ingest/<source>` | An HTTP source; its own bearer token, see *HTTP sources* |
 | `GET /api/v1/pipelines` | Status of every pipeline worker |
 | `GET /api/v1/pipelines/{name}` | Status of one pipeline |
 | `POST /api/v1/pipelines/{name}/pause`, `/resume` | Pause or resume |
@@ -833,8 +904,8 @@ tenant.
 
 ## Roadmap
 
-- **Sources and sinks:** an HTTP source that turns inbound requests into
-  Kafka messages, and a database step for flows.
+- **More sources and sinks,** such as change data capture or other
+  brokers, if there is demand for them.
 
 The full plan, with the reasoning behind every decision, is in
 [PLAN.md](PLAN.md).

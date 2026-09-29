@@ -119,7 +119,7 @@ export interface PipelineStats {
 
 export interface TopologyNode {
   id: string
-  kind: 'topic' | 'pipeline' | 'target' | 'webhook'
+  kind: 'topic' | 'pipeline' | 'target' | 'webhook' | 'database' | 'source'
   label: string
   stats?: PipelineStats
 }
@@ -127,7 +127,7 @@ export interface TopologyNode {
 export interface TopologyEdge {
   from: string
   to: string
-  role: 'consume' | 'call' | 'destination' | 'reject' | 'dead_letter' | 'override' | 'webhook'
+  role: 'consume' | 'call' | 'destination' | 'reject' | 'dead_letter' | 'override' | 'webhook' | 'database' | 'ingest'
   rule?: string
 }
 

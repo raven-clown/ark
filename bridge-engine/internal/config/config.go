@@ -270,6 +270,7 @@ type Config struct {
 	// ARK used before it was configurable.
 	Tuning    tuning.Values `yaml:"tuning,omitempty"`
 	Projects  []Project     `yaml:"projects,omitempty"`
+	Sources   []Source      `yaml:"sources,omitempty"`
 	Pipelines []Pipeline    `yaml:"pipelines"`
 }
 
@@ -402,6 +403,10 @@ func (c *Config) Validate() error {
 
 	if c.Topics.ReplicationFactor < 1 {
 		return fmt.Errorf("topics.replication_factor must be at least 1, got %d", c.Topics.ReplicationFactor)
+	}
+
+	if err := validateSources(c.Sources); err != nil {
+		return err
 	}
 
 	if c.Cluster.Enabled {
