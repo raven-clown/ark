@@ -68,7 +68,8 @@ jobs:
         with:
           go-version-file: bridge-engine/go.mod
           check-latest: true
-      - run: go install github.com/securego/gosec/v2/cmd/gosec@latest
+      # Pinned: @latest broke once when a dependency of gosec stopped building.
+      - run: go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0
       - run: gosec ./...
 
   osv-scanner:

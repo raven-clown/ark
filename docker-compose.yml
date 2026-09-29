@@ -44,6 +44,8 @@ services:
       ARK_MCP_ADMIN_TOKENS: ${ARK_MCP_ADMIN_TOKENS:-demo-mcp-token}
       # Bearer token for the demo HTTP source (POST /ingest/demo).
       ARK_SOURCE_DEMO_TOKEN: ${ARK_SOURCE_DEMO_TOKEN:-demo-source-token}
+      # Tokens for project MCP endpoints with tokens_env: ARK_PROJECT_DEMO_TOKENS.
+      ARK_PROJECT_DEMO_TOKENS: ${ARK_PROJECT_DEMO_TOKENS:-demo-project-token}
       # Connection string for flow database steps with dsn_env: ARK_DEMO_DB.
       ARK_DEMO_DB: ${ARK_DEMO_DB:-}
     # The config file is copied into the ark-config volume on first start,

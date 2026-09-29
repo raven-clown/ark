@@ -1,6 +1,43 @@
 package mcpserver
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	"github.com/raven-clown/ark/bridge-engine/internal/api"
+	"github.com/raven-clown/ark/bridge-engine/internal/config"
+)
+
+// Found live: a project's MCP endpoint could pause another project's
+// pipeline, and the global endpoint ignored a project's ai_access, because
+// the write tools checked only the pipeline's own mcp_access.
+func TestWriteToolsStayInsideTheProjectAndItsAIAccess(t *testing.T) {
+	pipe := func(name, project string) config.Pipeline {
+		return config.Pipeline{Name: name, Project: project, MCPAccess: config.MCPAccessReadWrite}
+	}
+	src := &memSource{
+		p:        []config.Pipeline{pipe("shop-flow", "shop"), pipe("parts", ""), pipe("ledger", "vault")},
+		projects: []config.Project{{Name: "shop", AIAccess: config.AIAccessOperate}, {Name: "vault", AIAccess: config.AIAccessReadOnly}},
+	}
+	d := Deps{Registry: api.NewRegistry(nil), Config: src}
+	hidden := func(err error) bool { return err != nil && strings.Contains(err.Error(), "not visible") }
+	running := func(err error) bool { return err != nil && strings.Contains(err.Error(), "isn't running") }
+
+	shop := d
+	shop.Project = "shop"
+	if err := writablePipeline(shop, "parts"); !hidden(err) {
+		t.Errorf("shop's endpoint reached parts: %v", err)
+	}
+	if err := writablePipeline(shop, "shop-flow"); !running(err) {
+		t.Errorf("shop's endpoint should pass the access checks for its own pipeline, got %v", err)
+	}
+	if err := writablePipeline(d, "ledger"); err == nil || !strings.Contains(err.Error(), "mcp_access: read_only") {
+		t.Errorf("a project with ai_access: read_only must cap writes on the global endpoint, got %v", err)
+	}
+	if _, _, err := findDLQBrowser(shop, "parts", "dlq"); !hidden(err) {
+		t.Errorf("shop's endpoint reached parts' DLQ: %v", err)
+	}
+}
 
 func TestVisibleToMCP(t *testing.T) {
 	cases := map[string]bool{

@@ -24,7 +24,7 @@ type PipelineSummary struct {
 }
 
 func buildServer(scope Scope, d Deps, cf *confirmations) *mcp.Server {
-	reg, audit := d.Registry, d.Audit
+	audit := d.Audit
 	s := mcp.NewServer(&mcp.Implementation{Name: "ark", Title: "ARK Kafka callback bridge", Version: d.Version}, &mcp.ServerOptions{Instructions: instructions})
 	registerPrompts(s)
 
@@ -160,7 +160,7 @@ func buildServer(scope Scope, d Deps, cf *confirmations) *mcp.Server {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "get_pipeline_status",
 		Description: "Raw live status for one pipeline, per worker: counters, circuit breaker, pause state, lag, callback latency. diagnose_pipeline is usually more useful.",
-	}, getPipelineStatus(reg))
+	}, getPipelineStatus(d))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "list_dlq_messages",
@@ -176,22 +176,22 @@ func buildServer(scope Scope, d Deps, cf *confirmations) *mcp.Server {
 		mcp.AddTool(s, &mcp.Tool{
 			Name:        "pause_pipeline",
 			Description: "Pause a pipeline (everywhere, in cluster mode). Messages wait safely in source_topic and continue exactly where they stopped once resumed. Requires mcp_access: read_write.",
-		}, pausePipeline(reg, scope, audit))
+		}, pausePipeline(d, scope, audit))
 
 		mcp.AddTool(s, &mcp.Tool{
 			Name:        "resume_pipeline",
 			Description: "Resume a paused pipeline. Requires mcp_access: read_write.",
-		}, resumePipeline(reg, scope, audit))
+		}, resumePipeline(d, scope, audit))
 
 		mcp.AddTool(s, &mcp.Tool{
 			Name:        "retry_dlq_message",
 			Description: "Resend a dlq/reject entry to the pipeline's source_topic so it's processed again from the top. It's recorded as handled, so it can't be retried twice. Requires mcp_access: read_write.",
-		}, retryDLQMessage(reg, scope, audit))
+		}, retryDLQMessage(d, scope, audit))
 
 		mcp.AddTool(s, &mcp.Tool{
 			Name:        "discard_dlq_message",
 			Description: "Mark a dlq/reject entry as handled without retrying it, on every node and across restarts. The Kafka message itself stays until retention removes it. Requires mcp_access: read_write.",
-		}, discardDLQMessage(reg, scope, audit))
+		}, discardDLQMessage(d, scope, audit))
 	}
 
 	if scope == ScopeAdmin && d.Config != nil {
@@ -292,33 +292,36 @@ type getPipelineStatusOut struct {
 	Workers []consumer.Status `json:"workers"`
 }
 
-func getPipelineStatus(reg api.Registry) mcp.ToolHandlerFor[pipelineNameIn, getPipelineStatusOut] {
+func getPipelineStatus(d Deps) mcp.ToolHandlerFor[pipelineNameIn, getPipelineStatusOut] {
 	return func(_ context.Context, _ *mcp.CallToolRequest, in pipelineNameIn) (*mcp.CallToolResult, getPipelineStatusOut, error) {
-		statuses := pipelineStatuses(reg, in.Name)
-		if len(statuses) == 0 {
+		p, ok := d.pipeline(in.Name)
+		statuses := pipelineStatuses(d.Registry, in.Name)
+		if !ok || len(statuses) == 0 {
 			return nil, getPipelineStatusOut{}, fmt.Errorf("pipeline not found or not visible: %s", in.Name)
 		}
-		if !visibleToMCP(statuses[0].MCPAccess) {
-			return nil, getPipelineStatusOut{}, fmt.Errorf("pipeline %s has mcp_access: none", in.Name)
+		for i := range statuses {
+			statuses[i].MCPAccess = string(p.MCPAccess)
 		}
 		return nil, getPipelineStatusOut{Workers: statuses}, nil
 	}
 }
 
-func findDLQBrowser(reg api.Registry, name, kind string) (*dlq.Browser, string, error) {
-	statuses := pipelineStatuses(reg, name)
-	if len(statuses) == 0 {
-		b, access, ok := reg.DLQBrowser(name, kind)
-		if !ok {
-			return nil, "", fmt.Errorf("pipeline not found: %s", name)
-		}
-		if !visibleToMCP(string(access)) {
-			return nil, "", fmt.Errorf("pipeline %s has mcp_access: none", name)
-		}
-		return b, string(access), nil
+// findDLQBrowser returns name's dlq or reject browser and the access this
+// caller has to it. The pipeline must be visible to the caller: in its
+// project, and not hidden by mcp_access or the project's ai_access.
+func findDLQBrowser(d Deps, name, kind string) (*dlq.Browser, string, error) {
+	p, ok := d.pipeline(name)
+	if !ok {
+		return nil, "", fmt.Errorf("pipeline not found or not visible: %s", name)
 	}
-	if !visibleToMCP(statuses[0].MCPAccess) {
-		return nil, "", fmt.Errorf("pipeline %s has mcp_access: none", name)
+	access := string(p.MCPAccess)
+	reg := d.Registry
+	if len(pipelineStatuses(reg, name)) == 0 {
+		b, _, found := reg.DLQBrowser(name, kind)
+		if !found {
+			return nil, "", fmt.Errorf("pipeline %s has no %s topic configured", name, kind)
+		}
+		return b, access, nil
 	}
 
 	var browser *dlq.Browser
@@ -338,7 +341,7 @@ func findDLQBrowser(reg api.Registry, name, kind string) (*dlq.Browser, string, 
 	if browser == nil {
 		return nil, "", fmt.Errorf("pipeline %s has no %s topic configured", name, kind)
 	}
-	return browser, statuses[0].MCPAccess, nil
+	return browser, access, nil
 }
 
 type listDLQIn struct {
@@ -352,7 +355,7 @@ type listDLQOut struct {
 
 func listDLQMessages(d Deps) mcp.ToolHandlerFor[listDLQIn, listDLQOut] {
 	return func(_ context.Context, _ *mcp.CallToolRequest, in listDLQIn) (*mcp.CallToolResult, listDLQOut, error) {
-		browser, _, err := findDLQBrowser(d.Registry, in.Name, in.Kind)
+		browser, _, err := findDLQBrowser(d, in.Name, in.Kind)
 		if err != nil {
 			return nil, listDLQOut{}, err
 		}
@@ -368,7 +371,7 @@ type dlqEntryIn struct {
 
 func getDLQMessage(d Deps) mcp.ToolHandlerFor[dlqEntryIn, dlq.Entry] {
 	return func(_ context.Context, _ *mcp.CallToolRequest, in dlqEntryIn) (*mcp.CallToolResult, dlq.Entry, error) {
-		browser, _, err := findDLQBrowser(d.Registry, in.Name, in.Kind)
+		browser, _, err := findDLQBrowser(d, in.Name, in.Kind)
 		if err != nil {
 			return nil, dlq.Entry{}, err
 		}
@@ -391,39 +394,48 @@ func requireWritable(access, pipeline string) error {
 	return nil
 }
 
-func pausePipeline(reg api.Registry, scope Scope, audit *slog.Logger) mcp.ToolHandlerFor[pipelineNameIn, actionOut] {
+// writablePipeline is name when the caller may change it: visible to them
+// (project, ai_access, mcp_access) and mcp_access: read_write after the
+// project's ai_access cap.
+func writablePipeline(d Deps, name string) error {
+	p, ok := d.pipeline(name)
+	if !ok {
+		return fmt.Errorf("pipeline not found or not visible: %s", name)
+	}
+	if err := requireWritable(string(p.MCPAccess), name); err != nil {
+		return err
+	}
+	if len(pipelineStatuses(d.Registry, name)) == 0 {
+		return fmt.Errorf("pipeline %s isn't running on this node", name)
+	}
+	return nil
+}
+
+func pausePipeline(d Deps, scope Scope, audit *slog.Logger) mcp.ToolHandlerFor[pipelineNameIn, actionOut] {
 	return func(_ context.Context, _ *mcp.CallToolRequest, in pipelineNameIn) (*mcp.CallToolResult, actionOut, error) {
-		statuses := pipelineStatuses(reg, in.Name)
-		if len(statuses) == 0 {
-			return nil, actionOut{}, fmt.Errorf("pipeline not found: %s", in.Name)
-		}
-		if err := requireWritable(statuses[0].MCPAccess, in.Name); err != nil {
+		if err := writablePipeline(d, in.Name); err != nil {
 			return nil, actionOut{}, err
 		}
-		reg.SetPaused(in.Name, true)
+		d.Registry.SetPaused(in.Name, true)
 		audit.Info("mcp write", "scope", scope, "action", "pause_pipeline", "pipeline", in.Name)
 		return nil, actionOut{State: "paused"}, nil
 	}
 }
 
-func resumePipeline(reg api.Registry, scope Scope, audit *slog.Logger) mcp.ToolHandlerFor[pipelineNameIn, actionOut] {
+func resumePipeline(d Deps, scope Scope, audit *slog.Logger) mcp.ToolHandlerFor[pipelineNameIn, actionOut] {
 	return func(_ context.Context, _ *mcp.CallToolRequest, in pipelineNameIn) (*mcp.CallToolResult, actionOut, error) {
-		statuses := pipelineStatuses(reg, in.Name)
-		if len(statuses) == 0 {
-			return nil, actionOut{}, fmt.Errorf("pipeline not found: %s", in.Name)
-		}
-		if err := requireWritable(statuses[0].MCPAccess, in.Name); err != nil {
+		if err := writablePipeline(d, in.Name); err != nil {
 			return nil, actionOut{}, err
 		}
-		reg.SetPaused(in.Name, false)
+		d.Registry.SetPaused(in.Name, false)
 		audit.Info("mcp write", "scope", scope, "action", "resume_pipeline", "pipeline", in.Name)
 		return nil, actionOut{State: "running"}, nil
 	}
 }
 
-func retryDLQMessage(reg api.Registry, scope Scope, audit *slog.Logger) mcp.ToolHandlerFor[dlqEntryIn, actionOut] {
+func retryDLQMessage(d Deps, scope Scope, audit *slog.Logger) mcp.ToolHandlerFor[dlqEntryIn, actionOut] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, in dlqEntryIn) (*mcp.CallToolResult, actionOut, error) {
-		browser, access, err := findDLQBrowser(reg, in.Name, in.Kind)
+		browser, access, err := findDLQBrowser(d, in.Name, in.Kind)
 		if err != nil {
 			return nil, actionOut{}, err
 		}
@@ -438,9 +450,9 @@ func retryDLQMessage(reg api.Registry, scope Scope, audit *slog.Logger) mcp.Tool
 	}
 }
 
-func discardDLQMessage(reg api.Registry, scope Scope, audit *slog.Logger) mcp.ToolHandlerFor[dlqEntryIn, actionOut] {
+func discardDLQMessage(d Deps, scope Scope, audit *slog.Logger) mcp.ToolHandlerFor[dlqEntryIn, actionOut] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, in dlqEntryIn) (*mcp.CallToolResult, actionOut, error) {
-		browser, access, err := findDLQBrowser(reg, in.Name, in.Kind)
+		browser, access, err := findDLQBrowser(d, in.Name, in.Kind)
 		if err != nil {
 			return nil, actionOut{}, err
 		}

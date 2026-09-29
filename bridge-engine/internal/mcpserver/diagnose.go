@@ -111,10 +111,10 @@ func diagnose(d Deps, p config.Pipeline) Diagnosis {
 	}
 
 	var dlqEntries, rejectEntries []dlq.Entry
-	if b, _, err := findDLQBrowser(d.Registry, p.Name, "dlq"); err == nil {
+	if b, _, err := findDLQBrowser(d, p.Name, "dlq"); err == nil {
 		dlqEntries = b.List()
 	}
-	if b, _, err := findDLQBrowser(d.Registry, p.Name, "reject"); err == nil {
+	if b, _, err := findDLQBrowser(d, p.Name, "reject"); err == nil {
 		rejectEntries = b.List()
 	}
 	n.PendingDLQ, n.PendingRejects = len(dlqEntries), len(rejectEntries)
