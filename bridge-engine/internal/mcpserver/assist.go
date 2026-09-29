@@ -21,6 +21,7 @@ How to help:
 - "How is X / what's happening / why is X slow, stuck, failing": call diagnose_pipeline. Explain in plain words what is happening, why (quote the evidence it returns), and what to do. Offer follow-ups (show DLQ entries, recent events, tuning).
 - An error message or log line: call explain_error with the text. Say where it comes from, what it means, and how to fix it.
 - "What happened (recently / at 3am / to X)": call get_recent_events.
+- Numbers over time ("how busy was X since 9am", "was lag high last night", a tenant's traffic): call get_metrics with name or tenant and the time window.
 - Odd data, bad formats, strange fields or parameters: call check_data (and test_message for a specific example). To catch such data from now on, propose data_rules (check_data returns a draft), start with on_violation: tag, and apply through the confirm flow.
 - Capacity, performance, sizing, "how should I configure": call recommend_tuning (pass target_msgs_per_sec if the user has a goal).
 - Creating or changing a pipeline: call get_pipeline_schema and list_topics, draft YAML (use a flow, as in flow_example_yaml, when the user wants branches, several destinations or custom reject/failure paths), call validate_pipeline_config and fix every error, then call create_pipeline or apply_pipeline_config WITHOUT a confirm_token to get a preview. Show the user the diff and warnings and ask for explicit confirmation. Only after they agree, call it again with the confirm_token. Never confirm on the user's behalf.
@@ -79,6 +80,7 @@ func help(d Deps, scope Scope) helpOut {
 
 type overviewPipeline struct {
 	Name    string `json:"name"`
+	Tenant  string `json:"tenant,omitempty"`
 	Health  string `json:"health"`
 	Summary string `json:"summary"`
 	Lag     int64  `json:"lag"`
@@ -98,7 +100,7 @@ func overview(d Deps) overviewOut {
 	out := overviewOut{Time: d.localize(time.Now()).Format(time.RFC3339), Timezone: d.loc().String()}
 	for _, p := range d.visiblePipelines() {
 		diag := diagnose(d, p)
-		out.Pipelines = append(out.Pipelines, overviewPipeline{Name: p.Name, Health: diag.Health, Summary: diag.Summary, Lag: diag.Numbers.Lag, DLQ: diag.Numbers.PendingDLQ})
+		out.Pipelines = append(out.Pipelines, overviewPipeline{Name: p.Name, Tenant: p.Tenant, Health: diag.Health, Summary: diag.Summary, Lag: diag.Numbers.Lag, DLQ: diag.Numbers.PendingDLQ})
 		if diag.Health != "healthy" {
 			out.NeedsAttention = append(out.NeedsAttention, fmt.Sprintf("%s (%s): %s", p.Name, diag.Health, diag.Summary))
 		}

@@ -112,6 +112,66 @@ func PartitionCount(ctx context.Context, brokers []string, topic string) (int, e
 	return len(parts), nil
 }
 
+// PartitionLag is where a consumer group stands on one partition.
+type PartitionLag struct {
+	Partition int   `json:"partition"`
+	Committed int64 `json:"committed"`
+	End       int64 `json:"end"`
+	Lag       int64 `json:"lag"`
+}
+
+// GroupLag reads, from Kafka itself, where group has committed on each of
+// topic's partitions and where each partition ends, so the lag covers the
+// whole group rather than one consumer's view. A partition the group never
+// committed on counts from its first retained offset.
+func GroupLag(ctx context.Context, brokers []string, group, topic string) ([]PartitionLag, error) {
+	n, err := PartitionCount(ctx, brokers, topic)
+	if err != nil || n == 0 {
+		return nil, err
+	}
+	parts := make([]int, n)
+	reqs := make([]kafka.OffsetRequest, 0, 2*n)
+	for i := range parts {
+		parts[i] = i
+		reqs = append(reqs, kafka.FirstOffsetOf(i), kafka.LastOffsetOf(i))
+	}
+	c := &kafka.Client{Addr: kafka.TCP(brokers...), Timeout: 10 * time.Second}
+	ends, err := c.ListOffsets(ctx, &kafka.ListOffsetsRequest{Topics: map[string][]kafka.OffsetRequest{topic: reqs}})
+	if err != nil {
+		return nil, fmt.Errorf("reading the offsets of %s: %w", topic, err)
+	}
+	committed, err := c.OffsetFetch(ctx, &kafka.OffsetFetchRequest{GroupID: group, Topics: map[string][]int{topic: parts}})
+	if err != nil {
+		return nil, fmt.Errorf("reading %s's committed offsets: %w", group, err)
+	}
+	if committed.Error != nil {
+		return nil, fmt.Errorf("reading %s's committed offsets: %w", group, committed.Error)
+	}
+	out := make([]PartitionLag, n)
+	first := make([]int64, n)
+	for i := range out {
+		out[i].Partition, out[i].Committed = i, -1
+	}
+	for _, p := range ends.Topics[topic] {
+		if p.Error == nil && p.Partition >= 0 && p.Partition < n {
+			out[p.Partition].End, first[p.Partition] = p.LastOffset, p.FirstOffset
+		}
+	}
+	for _, p := range committed.Topics[topic] {
+		if p.Error == nil && p.Partition >= 0 && p.Partition < n {
+			out[p.Partition].Committed = p.CommittedOffset
+		}
+	}
+	for i := range out {
+		from := out[i].Committed
+		if from < 0 {
+			from = first[i]
+		}
+		out[i].Lag = max(0, out[i].End-from)
+	}
+	return out, nil
+}
+
 // DialAny connects to the first reachable broker, so one broker being down
 // doesn't stop ARK from reaching the cluster.
 func DialAny(ctx context.Context, brokers []string) (*kafka.Conn, error) {

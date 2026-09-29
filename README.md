@@ -161,8 +161,10 @@ the side.
   fixed-path pipeline opens as the flow that does the same.
 - **Visual rule builder.** Pick a field from real messages, an operator and
   a value, and see how many recent messages would match before you save.
-- **Metrics.** Throughput, lag and callback latency percentiles over the
-  last hour, plus the node's own resources.
+- **Metrics.** Throughput, lag and callback latency percentiles from the
+  last 5 minutes to the last 24 hours, per pipeline or summed per
+  tenant, lag and traffic per source partition, plus the node's own
+  resources.
 - **Projects.** Group pipelines, decide how far AI may go with them, give
   agents their own MCP endpoints, and choose each project's AI model.
 - **Ask ARK.** Chat with an assistant backed by the model you choose. It
@@ -605,6 +607,7 @@ the API port. Any MCP client and any model can use it.
 | "Why is orders slow?" | `diagnose_pipeline`: what, why, what to do |
 | "What does this error mean?" | `explain_error`: where it comes from and the fix |
 | "What happened at 3am?" | `get_recent_events` |
+| "How busy was tenant acme since 9am?" | `get_metrics`: a pipeline or a tenant over a time range |
 | "Any weird data coming in?" | `check_data`, `test_message` |
 | "How do I handle 2000 msg/s?" | `recommend_tuning` |
 | "Create a pipeline from A to B" | `get_pipeline_schema`, `validate_pipeline_config`, `create_pipeline` |
@@ -763,7 +766,7 @@ separate from the MCP tokens.
 | `POST /api/v1/config/validate` | Check a pipeline without applying it |
 | `POST /api/v1/config/preview`, `/config/confirm` | Create, change or delete a pipeline in two steps (admin) |
 | `GET /api/v1/pipelines/{name}/rules`, `POST .../rules/test`, `.../rules/preview` | Read rules, test a condition on recent messages, change rules (admin) |
-| `GET /api/v1/history` | Per-pipeline rates, lag and latency percentiles over the last hour |
+| `GET /api/v1/history?minutes=&pipeline=` or `&tenant=` | Rates, lag, latency percentiles and per-partition lag for a pipeline or a tenant's total; 5s points for the last hour, 1-minute points up to 24 hours |
 | `GET /api/v1/projects`, `PUT`/`DELETE /api/v1/config/projects/{name}` | Projects, their endpoints and models (changes need admin) |
 | `POST /api/v1/assistant/chat` | Ask the assistant (acts within your scope; optional `reply_language`) |
 | `GET`/`PUT /api/v1/config/settings` | Timezone, default model and tuning (changes need admin) |
@@ -787,8 +790,6 @@ tenant.
 
 ## Roadmap
 
-- **Longer history:** keep metrics beyond the last hour and per partition.
-- **Per-tenant metrics,** and `get_metrics` over MCP with a time range.
 - **Batched callbacks:** send several messages per HTTP call for targets
   that support it.
 - **Sources and sinks:** an HTTP source that turns inbound requests into

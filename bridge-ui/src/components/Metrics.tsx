@@ -20,13 +20,24 @@ export interface Sample {
   p99_ms: number
   workers: number
   running: number
+  partitions?: PartitionSample[]
+}
+
+export interface PartitionSample {
+  partition: number
+  lag: number
+  committed_per_sec: number
 }
 
 interface HistoryOut {
   timezone: string
   every_seconds: number
+  max_minutes?: number
   pipelines: Record<string, Sample[]>
+  tenants?: Record<string, Sample[]>
 }
+
+const RANGES = [5, 15, 30, 60, 360, 1440]
 
 // rolling averages each point with the ones before it (3 samples = 15s),
 // so bursty traffic reads as a trend. Charts that use it say so.
@@ -48,19 +59,20 @@ export function rolling(samples: Sample[], window = 3): Sample[] {
   })
 }
 
-export function useHistory(pipeline: string, minutes: number) {
+export function useHistory(pipeline: string, minutes: number, tenant?: string) {
   const [data, setData] = useState<HistoryOut | null>(null)
   const [error, setError] = useState('')
   const load = useCallback(async () => {
     try {
       const q = new URLSearchParams({ minutes: String(minutes) })
-      if (pipeline) q.set('pipeline', pipeline)
+      if (tenant !== undefined) q.set('tenant', tenant)
+      else if (pipeline) q.set('pipeline', pipeline)
       setData(await api<HistoryOut>(`/history?${q}`))
       setError('')
     } catch (e) {
       setError((e as Error).message)
     }
-  }, [pipeline, minutes])
+  }, [pipeline, minutes, tenant])
   useEffect(() => {
     load()
     const id = setInterval(load, 5000)
@@ -120,9 +132,60 @@ function uptime(s: number) {
   return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m ${s % 60}s`
 }
 
-export function MetricsView({ pipelines, motion }: { pipelines: string[]; motion: boolean }) {
+function PartitionsCard({ parts }: { parts: PartitionSample[] }) {
+  const t = useT()
+  const rate = parts.reduce((a, p) => a + p.committed_per_sec, 0)
+  const lag = Math.max(0, ...parts.map((p) => p.lag))
+  return (
+    <section className="card parts">
+      <h3>{t('metrics.partitions')}</h3>
+      <p className="small dim">{t('metrics.partitionsLead')}</p>
+      {parts.length === 0 ? (
+        <div className="empty small">{t('metrics.noPartitions')}</div>
+      ) : (
+        <div className="table-wrap">
+          <table className="list">
+            <thead>
+              <tr>
+                <th>{t('metrics.partition')}</th>
+                <th>{t('kpi.lag')}</th>
+                <th>{t('metrics.committedRate')}</th>
+                <th>{t('metrics.share')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {parts.map((p) => (
+                <tr key={p.partition}>
+                  <td className="mono">{p.partition}</td>
+                  <td className="mono">
+                    {p.lag}
+                    <div className="meter lag">
+                      <i style={{ width: `${lag > 0 ? (p.lag / lag) * 100 : 0}%` }} />
+                    </div>
+                  </td>
+                  <td className="mono">{p.committed_per_sec.toFixed(1)}</td>
+                  <td className="mono">
+                    {rate > 0 ? ((p.committed_per_sec / rate) * 100).toFixed(0) : 0}%
+                    <div className="meter">
+                      <i style={{ width: `${rate > 0 ? (p.committed_per_sec / rate) * 100 : 0}%` }} />
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  )
+}
+
+const TENANT = 'tenant:'
+
+export function MetricsView({ pipelines, tenants, motion }: { pipelines: string[]; tenants: string[]; motion: boolean }) {
   const t = useT()
   const [pipeline, setPipeline] = useState(pipelines[0] ?? '')
+  const tenant = pipeline.startsWith(TENANT) ? pipeline.slice(TENANT.length) : undefined
   const [minutes, setMinutes] = useState(15)
   const [node, setNode] = useState<NodeOut | null>(null)
   useEffect(() => {
@@ -134,8 +197,8 @@ export function MetricsView({ pipelines, motion }: { pipelines: string[]; motion
     const id = setInterval(load, 5000)
     return () => clearInterval(id)
   }, [])
-  const { data, error } = useHistory(pipeline, 60)
-  const all = (pipeline && data?.pipelines[pipeline]) || []
+  const { data, error } = useHistory(pipeline, Math.max(60, minutes), tenant)
+  const all = (tenant !== undefined ? data?.tenants?.[tenant] : pipeline && data?.pipelines[pipeline]) || []
   const cut = Date.now() - minutes * 60 * 1000
   const samples = all.filter((s) => Date.parse(s.time) >= cut)
   const before = all.filter((s) => Date.parse(s.time) >= cut - minutes * 60 * 1000 && Date.parse(s.time) < cut)
@@ -150,6 +213,7 @@ export function MetricsView({ pipelines, motion }: { pipelines: string[]; motion
   const lat = withCalls[withCalls.length - 1]
   const lagNow = samples[samples.length - 1]?.lag ?? 0
   const lagPeak = Math.max(0, ...samples.map((s) => s.lag))
+  const parts = [...samples].reverse().find((s) => s.partitions?.length)?.partitions ?? []
 
   const lag = useMemo<Series[]>(() => [{ name: t('stat.lag'), kind: 'single', points: samples.map((s) => [s.time, s.lag]) }], [samples, t])
   const pct = useMemo<Series[]>(
@@ -176,20 +240,31 @@ export function MetricsView({ pipelines, motion }: { pipelines: string[]; motion
         </div>
         <div className="row">
           <select className="select" style={{ width: 200 }} value={pipeline} onChange={(e) => setPipeline(e.target.value)}>
-            {pipelines.map((p) => (
-              <option key={p}>{p}</option>
-            ))}
+            <optgroup label={t('metrics.pipelines')}>
+              {pipelines.map((p) => (
+                <option key={p}>{p}</option>
+              ))}
+            </optgroup>
+            {tenants.length > 0 && (
+              <optgroup label={t('metrics.tenants')}>
+                {tenants.map((x) => (
+                  <option key={x} value={TENANT + x}>
+                    {x}
+                  </option>
+                ))}
+              </optgroup>
+            )}
           </select>
           <div className="seg">
-            {[5, 15, 30, 60].map((m) => (
+            {RANGES.filter((m) => m <= (data?.max_minutes ?? 60)).map((m) => (
               <button key={m} className={minutes === m ? 'active' : ''} onClick={() => setMinutes(m)}>
-                {m}m
+                {m >= 60 ? `${m / 60}h` : `${m}m`}
               </button>
             ))}
           </div>
           <span className="sc">
             <i className="live-dot" />
-            5s
+            {data?.every_seconds ?? 5}s
           </span>
           <span className="sc">{data?.timezone}</span>
         </div>
@@ -271,6 +346,13 @@ export function MetricsView({ pipelines, motion }: { pipelines: string[]; motion
             {withCalls.length > 1 ? <TimeChart series={pct} unit="ms" motion={motion} /> : <div className="empty small">{t('metrics.noData')}</div>}
           </section>
         </div>
+      )}
+      {tenant !== undefined ? (
+        <p className="small dim" style={{ marginTop: 12 }}>
+          {t('metrics.tenantLead')}
+        </p>
+      ) : (
+        <PartitionsCard parts={parts} />
       )}
       {node && (
         <div className="card instance">

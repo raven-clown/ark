@@ -28,7 +28,7 @@ import (
 type Console struct {
 	d    Deps
 	cf   *confirmations
-	hist *history
+	hist *History
 	chat *assistant
 	// Tap is where live tail records come from; nil means tap.Default.
 	Tap *tap.Hub
@@ -42,7 +42,10 @@ type Restarter interface {
 
 func NewConsole(d Deps) *Console {
 	d.AllPipelines = true
-	return &Console{d: d, cf: newConfirmations(), hist: newHistory()}
+	if d.History == nil {
+		d.History = NewHistory()
+	}
+	return &Console{d: d, cf: newConfirmations(), hist: d.History}
 }
 
 // Handler returns the console routes. Mount it behind api.Guard.

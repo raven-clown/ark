@@ -268,6 +268,7 @@ func main() {
 		Cluster:           clusterNode,
 		Version:           version,
 		Location:          displayLocation,
+		History:           mcpserver.NewHistory(),
 	}
 	consoleDeps := deps
 	consoleDeps.Audit = logger.With("component", "console-audit")

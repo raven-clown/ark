@@ -139,7 +139,7 @@ export interface Topology {
 export interface Overview {
   time: string
   timezone: string
-  pipelines: { name: string; health: Health; summary: string; lag: number; pending_dlq: number }[] | null
+  pipelines: { name: string; tenant?: string; health: Health; summary: string; lag: number; pending_dlq: number }[] | null
   needs_attention: string[] | null
   cluster?: ClusterStatus
 }

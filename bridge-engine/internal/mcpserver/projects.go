@@ -16,7 +16,7 @@ import (
 // allTools is every tool buildServer can register, so an endpoint's tool
 // list can be turned into the set to remove.
 var allTools = []string{
-	"interpret_request", "get_help", "get_overview", "diagnose_pipeline", "get_recent_events", "explain_error",
+	"interpret_request", "get_help", "get_overview", "diagnose_pipeline", "get_metrics", "get_recent_events", "explain_error",
 	"recommend_tuning", "check_data", "test_message", "get_pipeline_schema", "get_pipeline_config", "list_topics",
 	"validate_pipeline_config", "list_pipelines", "get_pipeline_status", "list_dlq_messages", "get_dlq_message",
 	"pause_pipeline", "resume_pipeline", "retry_dlq_message", "discard_dlq_message", "create_pipeline", "apply_pipeline_config",

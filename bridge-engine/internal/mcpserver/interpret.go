@@ -29,6 +29,7 @@ var intentRules = []intentRule{
 	{"overview", []string{"overview", "how is everything", "status", "how is", "how's", "how are", "doing", "ภาพรวม", "เป็นยังไงบ้าง", "เป็นไงบ้าง", "สถานะ", "ทั้งหมด", "ทุก pipeline", "summary", "สรุป", "ok ไหม", "ปกติไหม", "health"}, "The user wants the current state of ARK."},
 	{"diagnose", []string{"why", "slow", "stuck", "not working", "broken", "down", "lag", "failing", "problem", "issue", "wrong", "ทำไม", "ช้า", "ค้าง", "ไม่ทำงาน", "พัง", "ล่ม", "ปัญหา", "ผิดปกติ", "หยุด", "ไม่ไหล", "ไม่วิ่ง", "เกิดอะไร", "เป็นอะไร"}, "The user wants to know what is wrong with something and why."},
 	{"explain_error", []string{"error", "exception", "failed", "failure", "panic", "refused", "timeout", "unknown topic", "coordinator", "status 5", "status 4", "แปลว่า", "หมายความว่า", "มาจากไหน", "เออเร่อ", "เออเร่อร์", "ข้อผิดพลาด"}, "The user has an error or log line and wants it explained."},
+	{"metrics", []string{"metrics", "graph", "chart", "trend", "how busy", "how many messages", "traffic", "tenant", "per partition", "กราฟ", "สถิติ", "แนวโน้ม", "ปริมาณ", "ทราฟฟิก", "ย้อนหลัง", "พาร์ทิชัน"}, "The user wants numbers over a period of time for a pipeline or a tenant."},
 	{"events", []string{"what happened", "history", "recently", "last night", "yesterday", "timeline", "log", "เกิดอะไรขึ้น", "ที่ผ่านมา", "ล่าสุด", "เมื่อคืน", "เมื่อวาน", "ประวัติ", "เมื่อกี้", "เมื่อเช้า"}, "The user wants to know what happened over some period."},
 	{"tuning", []string{"tune", "tuning", "throughput", "capacity", "scale", "faster", "performance", "sizing", "spec", "how many workers", "msg/s", "msgs/s", "per second", "ปรับ", "เร็วขึ้น", "รองรับ", "สเปค", "สเปก", "ขนาด", "ต่อวินาที", "ประสิทธิภาพ", "แนะนำการตั้งค่า", "ควรตั้ง"}, "The user wants capacity/performance advice or recommended settings."},
 	{"dlq", []string{"dlq", "dead letter", "dead-letter", "reject", "failed messages", "ตก dlq", "ข้อความที่ล้ม", "ข้อความเสีย", "ถูก reject", "ค้างใน dlq"}, "The user is asking about dead-lettered or rejected messages."},
@@ -50,6 +51,7 @@ var planFor = map[string][]string{
 	"diagnose":      {"diagnose_pipeline (for each pipeline mentioned, or get_overview first if none)", "get_recent_events if the cause isn't clear yet"},
 	"explain_error": {"explain_error with the error text", "diagnose_pipeline for the pipeline where it occurred"},
 	"events":        {"get_recent_events with the time window below"},
+	"metrics":       {"get_metrics with the time window below (name for a pipeline, tenant for a tenant's total)"},
 	"tuning":        {"recommend_tuning (pass target_msgs_per_sec if a rate was mentioned)"},
 	"dlq":           {"list_dlq_messages", "diagnose_pipeline to see the most common reasons"},
 	"create":        {"get_pipeline_schema", "list_topics", "ask for anything still missing (see clarifications)", "validate_pipeline_config", "create_pipeline (preview, then confirm with the user)"},
@@ -73,7 +75,8 @@ type interpretOut struct {
 	Intents        []intentOut `json:"intents"`
 	Pipelines      []nameMatch `json:"pipelines"`
 	Topics         []string    `json:"topics,omitempty"`
-	URLs           []string    `json:"urls,omitempty"`
+	Tenants        []string    `json:"tenants,omitempty"`
+	URLs         []string    `json:"urls,omitempty"`
 	RatePerSec     float64     `json:"rate_per_sec,omitempty"`
 	SinceMinutes   int         `json:"since_minutes,omitempty"`
 	ErrorText      string      `json:"error_text,omitempty"`
@@ -179,6 +182,11 @@ func interpret(d Deps, text string) interpretOut {
 	pipelines := d.visiblePipelines()
 	out.Pipelines = matchPipelines(text, pipelines)
 	out.Topics = mentionedTopics(text, pipelines)
+	out.Tenants = mentionedTenants(text, pipelines)
+	if len(out.Tenants) > 0 && !seen["metrics"] {
+		seen["metrics"] = true
+		out.Intents = append(out.Intents, intentOut{Intent: "metrics", Meaning: "The user named a tenant; its numbers come from get_metrics with tenant."})
+	}
 
 	if len(out.Intents) == 0 {
 		out.Intents = append(out.Intents, intentOut{Intent: "unclear", Meaning: "No clear request was recognized."})
@@ -195,7 +203,7 @@ func interpret(d Deps, text string) interpretOut {
 		}
 	}
 	needsPipeline := seen["diagnose"] || seen["pause"] || seen["resume"] || seen["change"] || seen["tuning"] || seen["retry"] || seen["config_view"]
-	if needsPipeline && len(out.Pipelines) == 0 {
+	if needsPipeline && len(out.Pipelines) == 0 && len(out.Tenants) == 0 {
 		switch {
 		case len(pipelines) == 1:
 			out.Pipelines = append(out.Pipelines, nameMatch{Mentioned: "(only pipeline)", Pipeline: pipelines[0].Name, Confidence: 0.6})
@@ -249,6 +257,9 @@ func restate(o interpretOut) string {
 			names = append(names, p.Pipeline)
 		}
 		s += "; about pipeline(s) " + strings.Join(dedupe(names), ", ")
+	}
+	if len(o.Tenants) > 0 {
+		s += "; about tenant(s) " + strings.Join(o.Tenants, ", ")
 	}
 	if o.SinceMinutes > 0 {
 		s += fmt.Sprintf("; time window about the last %s", (time.Duration(o.SinceMinutes) * time.Minute).String())
@@ -316,6 +327,35 @@ func matchPipelines(text string, pipelines []config.Pipeline) []nameMatch {
 			}
 		}
 		return exact
+	}
+	return out
+}
+
+// mentionedTenants finds the tenants of visible pipelines named in text as
+// a whole word.
+func mentionedTenants(text string, pipelines []config.Pipeline) []string {
+	lower := strings.ToLower(text)
+	word := func(r byte) bool { return r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' || r == '_' }
+	seen := map[string]bool{}
+	var out []string
+	for _, p := range pipelines {
+		t := strings.ToLower(p.Tenant)
+		if t == "" || seen[t] {
+			continue
+		}
+		seen[t] = true
+		for i := strings.Index(lower, t); i >= 0; {
+			end := i + len(t)
+			if (i == 0 || !word(lower[i-1])) && (end == len(lower) || !word(lower[end])) {
+				out = append(out, p.Tenant)
+				break
+			}
+			next := strings.Index(lower[i+1:], t)
+			if next < 0 {
+				break
+			}
+			i += 1 + next
+		}
 	}
 	return out
 }

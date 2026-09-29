@@ -154,6 +154,7 @@ export function App() {
   const counts = { healthy: 0, degraded: 0, down: 0, paused: 0 }
   for (const h of Object.values(health)) counts[h]++
   const names = (overview?.pipelines ?? []).map((p) => p.name).sort()
+  const tenants = [...new Set((overview?.pipelines ?? []).flatMap((p) => (p.tenant ? [p.tenant] : [])))].sort()
 
   const alerts = counts.degraded + counts.down
 
@@ -285,7 +286,7 @@ export function App() {
             </>
           )}
           {view === 'projects' && <ProjectsView toast={toast} />}
-          {view === 'metrics' && <MetricsView pipelines={names} motion={motion} />}
+          {view === 'metrics' && <MetricsView pipelines={names} tenants={tenants} motion={motion} />}
           {view === 'events' && <EventsView pipelines={names} />}
           {view === 'cluster' && <ClusterView />}
           {view === 'topics' && <TopicsView />}

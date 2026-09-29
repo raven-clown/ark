@@ -34,6 +34,8 @@ const FIELD: Record<string, string> = {
   diagnosis_window_minutes: 'DiagnosisWindowMinutes',
   history_sample_seconds: 'HistorySampleSeconds',
   history_keep_minutes: 'HistoryKeepMinutes',
+  history_long_step_seconds: 'HistoryLongStepSeconds',
+  history_long_keep_hours: 'HistoryLongKeepHours',
   event_log_entries: 'EventLogEntries',
   tail_value_bytes: 'TailValueBytes',
   confirm_token_minutes: 'ConfirmTokenMinutes',

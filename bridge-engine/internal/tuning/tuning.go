@@ -27,6 +27,8 @@ type Values struct {
 	DiagnosisWindowMinutes    int `yaml:"diagnosis_window_minutes,omitempty"`
 	HistorySampleSeconds      int `yaml:"history_sample_seconds,omitempty"`
 	HistoryKeepMinutes        int `yaml:"history_keep_minutes,omitempty"`
+	HistoryLongStepSeconds    int `yaml:"history_long_step_seconds,omitempty"`
+	HistoryLongKeepHours      int `yaml:"history_long_keep_hours,omitempty"`
 	AssistantSessionMinutes   int `yaml:"assistant_session_minutes,omitempty"`
 	ConfirmTokenMinutes       int `yaml:"confirm_token_minutes,omitempty"`
 	ClusterCatchUpSeconds     int `yaml:"cluster_catch_up_seconds,omitempty"`
@@ -74,6 +76,13 @@ func HistorySample() time.Duration { return secs(get().HistorySampleSeconds, 5) 
 func HistoryKeep() time.Duration {
 	return time.Duration(or(get().HistoryKeepMinutes, 60)) * time.Minute
 }
+
+// HistoryLongStep and HistoryLongKeep shape the second, coarser tier of
+// metrics history that outlives HistoryKeep.
+func HistoryLongStep() time.Duration { return secs(get().HistoryLongStepSeconds, 60) }
+func HistoryLongKeep() time.Duration {
+	return time.Duration(or(get().HistoryLongKeepHours, 24)) * time.Hour
+}
 func AssistantSession() time.Duration {
 	return time.Duration(or(get().AssistantSessionMinutes, 120)) * time.Minute
 }
@@ -97,6 +106,7 @@ func (v Values) Validate() error {
 		{"diagnosis_stuck_seconds", v.DiagnosisStuckSeconds, 86400}, {"diagnosis_stalled_seconds", v.DiagnosisStalledSeconds, 86400},
 		{"diagnosis_window_minutes", v.DiagnosisWindowMinutes, 10080}, {"history_sample_seconds", v.HistorySampleSeconds, 3600},
 		{"history_keep_minutes", v.HistoryKeepMinutes, 10080}, {"assistant_session_minutes", v.AssistantSessionMinutes, 10080},
+		{"history_long_step_seconds", v.HistoryLongStepSeconds, 3600}, {"history_long_keep_hours", v.HistoryLongKeepHours, 720},
 		{"confirm_token_minutes", v.ConfirmTokenMinutes, 1440}, {"cluster_catch_up_seconds", v.ClusterCatchUpSeconds, 600},
 		{"tail_value_bytes", v.TailValueBytes, 1 << 20}, {"compacted_idle_seconds", v.CompactedIdleSeconds, 600},
 	}
@@ -133,6 +143,8 @@ func Describe() []Knob {
 		{"diagnosis_window_minutes", v.DiagnosisWindowMinutes, 15, "min", false},
 		{"history_sample_seconds", v.HistorySampleSeconds, 5, "s", true},
 		{"history_keep_minutes", v.HistoryKeepMinutes, 60, "min", false},
+		{"history_long_step_seconds", v.HistoryLongStepSeconds, 60, "s", false},
+		{"history_long_keep_hours", v.HistoryLongKeepHours, 24, "h", false},
 		{"event_log_entries", v.EventLogEntries, 2000, "", true},
 		{"tail_value_bytes", v.TailValueBytes, 4096, "B", false},
 		{"confirm_token_minutes", v.ConfirmTokenMinutes, 10, "min", false},

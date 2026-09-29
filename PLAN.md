@@ -10,8 +10,7 @@ Status: Phases 1 to 6, 4b and 4c (cluster), 8 (projects and AI access),
 9 (flows) and the ARK Console are done. A full review on 2026-09-24
 found message-loss and auth gaps, tracked in "Phase 0: Hardening" at the
 top of §6; all of it except T1 (batching, deliberately deferred) is fixed
-and verified live. Open: longer and per-partition metric history,
-per-tenant metrics, `get_metrics` over MCP, batched callbacks (T1), and
+and verified live. Open: batched callbacks (T1), and
 Phase 7 (sources and sinks).
 CI (`.github/workflows/ci.yml`) runs build/vet/test, govulncheck,
 gosec, Semgrep, OSV-Scanner, Gitleaks, and a Trivy image scan on
@@ -855,8 +854,24 @@ pipeline that only ever runs on the labeled node.
       liveness (`ark_worker_up`), last-activity timestamp (answers "is
       this pipeline actually flowing data right now" directly instead
       of inferring it from lag and throughput separately)
-- [ ] Per-tenant metric breakdown (tenant label isn't wired into
-      metrics yet, only into `Status`)
+- [x] Per-tenant metric breakdown. Every Prometheus series carries a
+      `tenant` label, and the history keeps a series per tenant: the
+      sum of its pipelines' rates, lag, workers, with percentiles from
+      the tenant's summed latency histogram. `GET /api/v1/history
+      ?tenant=` and the console's Metrics page (tenants under their own
+      group in the selector). Verified live with two tenants: every
+      tenant point equals the sum of its pipelines at the same time.
+- [x] Metric history beyond an hour and per partition. Two tiers: raw
+      5s samples for `history_keep_minutes` (60), and 60s rollups for
+      `history_long_keep_hours` (24). A rollup averages the rates, keeps
+      the last gauges, and takes its percentiles from the step's summed
+      latency histogram, not from averaging percentiles. Each sample
+      carries the consumer group's committed offset and lag per source
+      partition, read from Kafka (OffsetFetch and ListOffsets), so it
+      covers every consumer in the group, in cluster mode too.
+      `GET /api/v1/history?minutes=` takes up to the long keep and picks
+      the tier by range; the console adds 6h and 24h and a partition
+      table. Verified live on a 3-partition topic with skewed keys.
 - [x] REST API: list pipelines (`GET /api/v1/pipelines`), pipeline
       detail (`GET /api/v1/pipelines/{name}`), pause/resume
       (`POST .../pause`, `POST .../resume`)
@@ -983,10 +998,19 @@ the calling agent to self-restrict):**
   and an admin created a pipeline through preview and confirm, after
   which it was running, the file had a backup, and reusing the token was
   refused.
-- [ ] `get_metrics`: not built. `get_pipeline_status` already surfaces
-      the same counters Prometheus does; a real time-ranged metrics
-      query tool is closer to a small PromQL client than a naming
-      exercise, and nothing has asked for it yet.
+- [x] `get_metrics`: reads ARK's own history rather than being a PromQL
+      client. Takes `name` (a pipeline) or `tenant`, and `minutes` or
+      `from`/`to` in RFC 3339; returns a summary (average and peak
+      msg/s, messages handled, error %, lag now and at peak, peak p99)
+      plus the points, averaged down to `max_points` (12, small enough
+      for a local model's context). A tenant
+      total is refused when the tenant has a pipeline the token can't
+      see, so a hidden pipeline never leaks through a sum.
+      `interpret_request` recognizes tenant names and plans
+      `get_metrics` for "how busy", "traffic", "trend" and the Thai and
+      Chinese equivalents. Verified over the real `/mcp` endpoint: a
+      tenant total, a hidden pipeline refused, a tenant with a hidden
+      pipeline refused, and 401 for a wrong token.
 - [x] Audit log every write tool call: `logger.With("component",
       "mcp-audit")`, separate from the general structured log, logging
       scope, action, pipeline, and (for dlq tools) which entry, not the

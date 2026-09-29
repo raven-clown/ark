@@ -61,6 +61,14 @@ func buildServer(scope Scope, d Deps, cf *confirmations) *mcp.Server {
 	})
 
 	mcp.AddTool(s, &mcp.Tool{
+		Name:        "get_metrics",
+		Description: "Throughput, errors, lag and callback latency over a time range for one pipeline (name) or the sum of a tenant's pipelines (tenant): a summary (average and peak msg/s, messages handled, error %, lag now and at peak, peak p99) plus the points, 5s apart for the last hour and 1 minute apart up to a day back. Use for 'how busy was X since 9am' or 'was lag high last night'.",
+	}, func(_ context.Context, _ *mcp.CallToolRequest, in metricsIn) (*mcp.CallToolResult, metricsOut, error) {
+		out, err := getMetrics(d, in)
+		return nil, out, err
+	})
+
+	mcp.AddTool(s, &mcp.Tool{
 		Name:        "get_recent_events",
 		Description: "What happened and why, newest first: pipeline starts/stops/resizes, pauses, circuit breaker trips, messages retried in place, rejected or dead-lettered (with the reason), rate limiting, worker restarts, config changes, leader changes, DLQ redrives. Filter by pipeline, time window and kind.",
 	}, func(_ context.Context, _ *mcp.CallToolRequest, in eventsIn) (*mcp.CallToolResult, eventsOut, error) {

@@ -91,6 +91,26 @@ func TestInterpretRatesTimesAndHiddenPipelines(t *testing.T) {
 	}
 }
 
+func TestInterpretRecognizesTenants(t *testing.T) {
+	d := Deps{Config: staticSource{p: []config.Pipeline{
+		{Name: "orders", Tenant: "demo", MCPAccess: config.MCPAccessReadOnly},
+		{Name: "ledger", Tenant: "vault", MCPAccess: config.MCPAccessNone},
+	}}}
+	o := interpret(d, "tenant demo มีทราฟฟิกเท่าไหร่ใน 5 นาทีที่ผ่านมา lag สูงสุดเท่าไหร่")
+	if len(o.Tenants) != 1 || o.Tenants[0] != "demo" || !hasIntent(o, "metrics") {
+		t.Fatalf("tenants %v intents %+v", o.Tenants, o.Intents)
+	}
+	if len(o.Clarifications) != 0 {
+		t.Errorf("a named tenant is enough to answer, got %v", o.Clarifications)
+	}
+	if o := interpret(d, "show me a demonstration"); len(o.Tenants) != 0 {
+		t.Errorf("only whole words count, got %v", o.Tenants)
+	}
+	if o := interpret(d, "how busy is vault today"); len(o.Tenants) != 0 {
+		t.Errorf("a tenant with only hidden pipelines must not be matched, got %v", o.Tenants)
+	}
+}
+
 func TestConfirmTokenIsSingleUseAndBound(t *testing.T) {
 	cf := newConfirmations()
 	tok := cf.put(pendingChange{action: "create_pipeline", userID: "alice", expires: farFuture()})

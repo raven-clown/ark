@@ -55,6 +55,8 @@ type Deps struct {
 	// Project limits everything to one project's pipelines (a project MCP
 	// endpoint or the assistant working in a project).
 	Project string
+	// History is what get_metrics reads; the console samples into it.
+	History *History
 }
 
 func (d Deps) loc() *time.Location {
