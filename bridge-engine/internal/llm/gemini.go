@@ -45,8 +45,6 @@ type gmContent struct {
 	Parts []gmPart `json:"parts"`
 }
 
-// geminiSchema keeps the part of JSON Schema Gemini accepts; it rejects
-// keys such as additionalProperties and $schema that MCP schemas carry.
 func geminiSchema(v any) any {
 	switch s := v.(type) {
 	case map[string]any:

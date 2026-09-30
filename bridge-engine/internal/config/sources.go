@@ -8,17 +8,11 @@ import (
 // SourceTypeHTTP turns HTTP requests into Kafka messages.
 const SourceTypeHTTP = "http"
 
-// Source brings data into Kafka from outside, so a pipeline can read it
-// like any other topic. An HTTP source answers POST /ingest/<name>.
 type Source struct {
-	Name  string `yaml:"name"`
-	Type  string `yaml:"type"`
-	Topic string `yaml:"topic"`
-	// TokenEnv names the environment variable holding the bearer token
-	// callers must send; the token itself never sits in the config.
-	TokenEnv string `yaml:"token_env"`
-	// Key is a dotted path into the JSON body used as the Kafka key, so
-	// messages about the same thing keep their order.
+	Name         string     `yaml:"name"`
+	Type         string     `yaml:"type"`
+	Topic        string     `yaml:"topic"`
+	TokenEnv     string     `yaml:"token_env"`
 	Key          string     `yaml:"key,omitempty"`
 	MaxBodyBytes int        `yaml:"max_body_bytes,omitempty"`
 	Partitions   int        `yaml:"partitions,omitempty"`

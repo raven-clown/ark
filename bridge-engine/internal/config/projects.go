@@ -5,8 +5,6 @@ import (
 	"regexp"
 )
 
-// AIAccess is how much an AI agent may do in a project, from nothing to
-// changing its pipelines' config. Each step includes the ones before it.
 type AIAccess string
 
 const (
@@ -26,37 +24,22 @@ func (a AIAccess) Min(b AIAccess) AIAccess {
 	return b
 }
 
-// Project groups pipelines that belong together (for example ingest, fraud
-// check and notify for orders), with its own AI access and MCP endpoints.
 type Project struct {
-	Name        string   `yaml:"name" json:"name"`
-	Description string   `yaml:"description,omitempty" json:"description,omitempty"`
-	AIAccess    AIAccess `yaml:"ai_access,omitempty" json:"ai_access,omitempty"`
-	// MCPEndpoints are served at /mcp/<project>/<endpoint>, each with its
-	// own tokens, access level (never above AIAccess) and tool list.
-	MCPEndpoints []MCPEndpoint `yaml:"mcp_endpoints,omitempty" json:"mcp_endpoints,omitempty"`
-	// Assistant is the model the console's assistant uses for this
-	// project; empty falls back to assistant.model.
-	Assistant *AssistantModel `yaml:"assistant,omitempty" json:"assistant,omitempty"`
+	Name         string          `yaml:"name" json:"name"`
+	Description  string          `yaml:"description,omitempty" json:"description,omitempty"`
+	AIAccess     AIAccess        `yaml:"ai_access,omitempty" json:"ai_access,omitempty"`
+	MCPEndpoints []MCPEndpoint   `yaml:"mcp_endpoints,omitempty" json:"mcp_endpoints,omitempty"`
+	Assistant    *AssistantModel `yaml:"assistant,omitempty" json:"assistant,omitempty"`
 }
 
 type MCPEndpoint struct {
-	Name   string   `yaml:"name" json:"name"`
-	Access AIAccess `yaml:"access" json:"access"`
-	// TokensEnv names the environment variable holding this endpoint's
-	// bearer tokens (comma-separated), so tokens never sit in the config.
-	TokensEnv string `yaml:"tokens_env" json:"tokens_env"`
-	// Tools limits which MCP tools the endpoint offers; empty means every
-	// tool its access level allows.
-	Tools []string `yaml:"tools,omitempty" json:"tools,omitempty"`
+	Name      string   `yaml:"name" json:"name"`
+	Access    AIAccess `yaml:"access" json:"access"`
+	TokensEnv string   `yaml:"tokens_env" json:"tokens_env"`
+	Tools     []string `yaml:"tools,omitempty" json:"tools,omitempty"`
 }
 
-// AssistantModel says which AI model answers in the console. Keys stay in
-// the environment (APIKeyEnv), never in the config.
 type AssistantModel struct {
-	// Provider: anthropic, openai, gemini, or openai_compatible (any API
-	// that speaks the OpenAI chat format: DeepSeek, Qwen, Mistral, Groq,
-	// OpenRouter, Together, Azure OpenAI, Ollama, vLLM, LM Studio, ...).
 	Provider  string `yaml:"provider" json:"provider"`
 	Model     string `yaml:"model" json:"model"`
 	BaseURL   string `yaml:"base_url,omitempty" json:"base_url,omitempty"`
@@ -109,8 +92,6 @@ func ValidateModel(where string, m *AssistantModel) error {
 	return nil
 }
 
-// ValidateProjects checks projects on their own and against the pipelines
-// that reference them.
 func ValidateProjects(projects []Project, pipelines []Pipeline) error {
 	names := map[string]bool{}
 	for i, p := range projects {

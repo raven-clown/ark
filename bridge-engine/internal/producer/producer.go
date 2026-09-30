@@ -13,10 +13,6 @@ type Producer struct {
 	writer *kafka.Writer
 }
 
-// batchTimeout replaces kafka-go's 1s default. Every Send is synchronous,
-// and a partly-filled batch only flushes on this timeout, so the default
-// added up to a second of latency to every single produce.
-
 func New(brokers []string, topic string) *Producer {
 	return &Producer{
 		writer: &kafka.Writer{
@@ -30,8 +26,6 @@ func New(brokers []string, topic string) *Producer {
 	}
 }
 
-// SendMany writes all messages in one request, succeeding or failing
-// together.
 func (p *Producer) SendMany(ctx context.Context, msgs ...kafka.Message) error {
 	if err := p.writer.WriteMessages(ctx, msgs...); err != nil {
 		return fmt.Errorf("producing to %s: %w", p.writer.Topic, err)

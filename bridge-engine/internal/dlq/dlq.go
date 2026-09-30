@@ -18,15 +18,11 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/tuning"
 )
 
-// RedriveCountHeader counts how many times a message has been resent from
-// a dead-letter topic, so automatic redrive can stop after max_times.
 const RedriveCountHeader = "X-Ark-Redrive-Count"
 
 type Entry struct {
-	ID       string `json:"id"`
-	Redrives int    `json:"redrives"`
-	// Reason says why the message ended up here, as recorded by ARK when
-	// it routed it (callback status, last error, or the rule that matched).
+	ID            string    `json:"id"`
+	Redrives      int       `json:"redrives"`
 	Reason        string    `json:"reason,omitempty"`
 	FailedAt      string    `json:"failed_at,omitempty"`
 	CorrelationID string    `json:"correlation_id,omitempty"`
@@ -37,11 +33,6 @@ type Entry struct {
 	Offset        int64     `json:"offset"`
 }
 
-// Browser keeps the most recent entries of a dead-letter or reject topic
-// for inspection, retry and discard. It reads every partition directly
-// rather than through a consumer group, so every node in a cluster sees
-// the same entries, and it hides entries the shared StateStore says were
-// already retried or discarded, so they don't come back after a restart.
 type Browser struct {
 	brokers    []string
 	topic      string
@@ -56,8 +47,6 @@ type Browser struct {
 	log     *slog.Logger
 }
 
-// NewBrowser shows the entries pipeline sent to topic. Several pipelines can
-// share one topic, so entries another pipeline routed there are left out.
 func NewBrowser(brokers []string, topic, pipeline string, state *StateStore, maxEntries int, retryTo *producer.Producer, log *slog.Logger) *Browser {
 	return &Browser{
 		brokers:    brokers,
@@ -143,8 +132,6 @@ func (b *Browser) partitions(ctx context.Context) ([]kafka.Partition, error) {
 	return conn.ReadPartitions(b.topic)
 }
 
-// tail reads one partition starting maxEntries back from its end, since
-// only the most recent entries are ever kept.
 func (b *Browser) tail(ctx context.Context, partition int) {
 	start := kafka.FirstOffset
 	if conn, err := kafkaadmin.DialLeaderAny(ctx, b.brokers, b.topic, partition); err == nil {
@@ -187,8 +174,6 @@ func (b *Browser) tail(ctx context.Context, partition int) {
 	}
 }
 
-// Close is kept for callers that manage the Browser's lifetime explicitly;
-// readers are closed when Run's context ends.
 func (b *Browser) Close() error { return nil }
 
 func (b *Browser) add(msg kafka.Message) {
@@ -272,8 +257,6 @@ func (b *Browser) Get(id string) (Entry, bool) {
 	return Entry{}, false
 }
 
-// Discard hides an entry on every node, durably. The message itself stays
-// in the topic until retention removes it.
 func (b *Browser) Discard(ctx context.Context, id string) (bool, error) {
 	if _, ok := b.Get(id); !ok {
 		return false, nil
@@ -287,8 +270,6 @@ func (b *Browser) Discard(ctx context.Context, id string) (bool, error) {
 	return true, nil
 }
 
-// Retry resends an entry to the pipeline's source topic and records that
-// it was retried, so neither this node nor any other offers it again.
 func (b *Browser) Retry(ctx context.Context, id string) error {
 	entry, ok := b.Get(id)
 	if !ok {

@@ -10,10 +10,6 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/kafkatail"
 )
 
-// The control topic carries operator intent that must hold on every node
-// and survive restarts. Today that's pause/resume: pausing through any node
-// pauses the pipeline everywhere, including on nodes that only start
-// running it later.
 const pauseKeyPrefix = "pause/"
 
 var ErrUnknownPipeline = errors.New("pipeline is not configured in this cluster")
@@ -28,8 +24,6 @@ func (n *Node) watchControl(ctx context.Context) {
 	}, nil)
 }
 
-// PublishPause records a cluster-wide pause or resume for pipeline name.
-// Every node, this one included, applies it when it reads it back.
 func (n *Node) PublishPause(ctx context.Context, name string, paused bool) error {
 	if !n.configuredPipeline(name) {
 		return ErrUnknownPipeline
@@ -52,8 +46,6 @@ func (n *Node) configuredPipeline(name string) bool {
 	return false
 }
 
-// PipelineView is one pipeline's cluster-wide numbers, with the per-node
-// breakdown they were summed from.
 type PipelineView struct {
 	Total PipelineStats            `json:"total"`
 	Nodes map[string]PipelineStats `json:"nodes"`

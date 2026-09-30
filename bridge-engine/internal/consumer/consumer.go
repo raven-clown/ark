@@ -57,9 +57,7 @@ type Status struct {
 	Paused         bool    `json:"paused"`
 	LastActivityAt *string `json:"last_activity_at,omitempty"`
 	// Lag is how many messages on this worker's partitions are waiting.
-	Lag int64 `json:"lag"`
-	// OldestUncommittedSeconds is how long the message holding back this
-	// worker's commits has been in progress (0 when nothing is stuck).
+	Lag                      int64   `json:"lag"`
 	OldestUncommittedSeconds float64 `json:"oldest_uncommitted_seconds"`
 	// AvgCallbackMs is the mean callback latency since the worker started.
 	AvgCallbackMs float64 `json:"avg_callback_ms"`
@@ -153,8 +151,6 @@ func (s *shared) callers() []*caller {
 	return []*caller{s.caller}
 }
 
-// breakerState is "open" when any of the pipeline's targets has its
-// breaker open, so one failing call step shows on the pipeline.
 func (s *shared) breakerState() string {
 	state := "closed"
 	for _, c := range s.callers() {
@@ -306,9 +302,6 @@ func newRunner(sh *shared, p config.Pipeline, workerID int, log *slog.Logger) *R
 	}
 }
 
-// AddRunner creates one more worker for the same pipeline as sibling,
-// sharing its producers, target pool, breaker and pause state, so a
-// pipeline can scale up without being restarted.
 func AddRunner(sibling *Runner, workerID int, log *slog.Logger) *Runner {
 	log = log.With("pipeline", sibling.pipeline.Name, "tenant", sibling.pipeline.Tenant)
 	return newRunner(sibling.shared, sibling.pipeline, workerID, log)
@@ -396,12 +389,6 @@ type job struct {
 	fetchedAt time.Time
 }
 
-// finalCommitTimeout bounds the commits made while a worker drains after
-// its context is cancelled; those commits can't use the cancelled context.
-
-// maxRetryBackoff caps the in-place retry delay for a message that can't be
-// completed, so a recovered dependency is picked up within this long.
-
 func (r *Runner) Run(ctx context.Context) error {
 	r.counters.running.Store(true)
 	metrics.WorkerUp.WithLabelValues(r.pipeline.Name, r.workerLabel, r.pipeline.Tenant).Set(1)
@@ -452,8 +439,6 @@ func (r *Runner) Run(ctx context.Context) error {
 
 		msg, err := r.reader.FetchMessage(ctx)
 		if err != nil {
-			// Stop in-flight jobs too, or drain would wait on messages that
-			// retry in place forever and the worker would never restart.
 			cancelRun()
 			drain()
 			if ctx.Err() != nil {
@@ -496,8 +481,6 @@ func (r *Runner) Run(ctx context.Context) error {
 	}
 }
 
-// laneKey groups messages that must be processed one at a time, in fetch
-// order. An empty key means no ordering constraint for that message.
 func (r *Runner) laneKey(msg kafka.Message) string {
 	switch r.pipeline.Ordering {
 	case config.OrderingNone:
@@ -512,12 +495,6 @@ func (r *Runner) laneKey(msg kafka.Message) string {
 	}
 }
 
-// processUntilDone never gives up on a message while the worker is running:
-// a message that can't be completed (no DLQ to route to, a webhook override
-// that keeps failing) is retried in place with backoff instead of being
-// skipped, because committing any later offset on its partition would
-// permanently lose it. It only returns an error when ctx is cancelled, in
-// which case the message is left uncommitted and redelivered later.
 func (r *Runner) processUntilDone(ctx context.Context, msg kafka.Message) error {
 	backoff := time.Duration(r.pipeline.Retry.BackoffMs) * time.Millisecond
 	for {
@@ -543,11 +520,6 @@ func (r *Runner) processUntilDone(ctx context.Context, msg kafka.Message) error 
 	}
 }
 
-// commitInOrder commits finished jobs in fetch order. Once any job ends
-// without completing (only possible when the worker is stopping), nothing
-// after it is committed either: Kafka's committed offset is a single resume
-// point per partition, so committing past an unfinished message would
-// silently drop it.
 func (r *Runner) commitInOrder(queue chan *job, done chan<- error) {
 	halted := false
 	for j := range queue {
@@ -605,9 +577,6 @@ func (r *Runner) reportLag(ctx context.Context) {
 		}
 	}
 }
-
-// maxRetryAfter caps how long a target's Retry-After header can hold a
-// message, so a misconfigured target can't stall a partition for hours.
 
 func (r *Runner) process(ctx context.Context, msg kafka.Message) error {
 	correlationID := callback.MessageCorrelationID(msg.Topic, msg.Partition, msg.Offset)
@@ -705,21 +674,15 @@ func (r *Runner) process(ctx context.Context, msg kafka.Message) error {
 	return nil
 }
 
-// Headers ARK adds to every message it sends to a reject or dead-letter
-// topic, so whoever looks at it later can tell where it came from and why.
 const (
-	ReasonHeader   = "X-Ark-Reason"
-	PipelineHeader = "X-Ark-Pipeline"
-	FailedAtHeader = "X-Ark-Failed-At"
-	// ViolationsHeader lists broken data rules on a message let through
-	// with data_rules.on_violation: tag.
+	ReasonHeader     = "X-Ark-Reason"
+	PipelineHeader   = "X-Ark-Pipeline"
+	FailedAtHeader   = "X-Ark-Failed-At"
 	ViolationsHeader = "X-Ark-Violations"
 )
 
 func (r *Runner) route(ctx context.Context, target *producer.Producer, key, value []byte, headers map[string]string, log *slog.Logger, outcome string, statusCode int, reason string) error {
 	if target == nil && outcome == "rejected" {
-		// No reject_topic: a rejected message still has to go somewhere
-		// other than being skipped, and the DLQ is where it can be seen.
 		target, outcome = r.shared.dlq, "dead_lettered"
 		reason += " (no reject_topic, sent to the dead-letter topic instead)"
 	}
@@ -732,8 +695,6 @@ func (r *Runner) route(ctx context.Context, target *producer.Producer, key, valu
 	routed[FailedAtHeader] = time.Now().UTC().Format(time.RFC3339)
 	headers = routed
 	if target == nil {
-		// Only reachable with on_exhausted: block, which the operator chose
-		// knowing the message is retried in place until the target accepts.
 		return fmt.Errorf("%s but no topic configured for pipeline %s (on_exhausted: block keeps retrying it)", outcome, r.pipeline.Name)
 	}
 	if err := r.sendWithRetry(ctx, target, key, value, headers, log); err != nil {
@@ -775,8 +736,6 @@ func (r *Runner) tapOut(to, topic, rule, reason string, status int, key, value [
 	tap.Default.Publish(rec)
 }
 
-// recordBreaker feeds a callback result to the circuit breaker and records
-// an event whenever that flips the breaker, with what caused it.
 func (r *Runner) recordBreaker(b *breaker.Breaker, success bool, cause string) {
 	r.flipBreaker(b, func() { b.RecordResult(success) }, cause)
 }
@@ -885,15 +844,10 @@ func (r *Runner) httpWithRetry(ctx context.Context, method, url, correlationID s
 	return lastErr
 }
 
-// sendWithRetry retries a produce until it succeeds or ctx ends. A produce
-// failure means Kafka itself is unavailable, not that the message is bad,
-// so giving up would only force the callback to be repeated later.
 func (r *Runner) sendWithRetry(ctx context.Context, target *producer.Producer, key, value []byte, headers map[string]string, log *slog.Logger) error {
 	return r.writeUntilDone(ctx, sink.Kafka{P: target}, sink.Message{Key: key, Value: value, Headers: headers}, log)
 }
 
-// writeWithRetry tries a write retry.max_attempts times, for sinks where a
-// write that keeps failing should take the step's failure path.
 func (r *Runner) writeWithRetry(ctx context.Context, to sink.Sink, m sink.Message, log *slog.Logger) error {
 	var err error
 	for attempt := 1; attempt <= r.pipeline.Retry.MaxAttempts; attempt++ {

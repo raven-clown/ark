@@ -115,8 +115,6 @@ func getMetrics(d Deps, in metricsIn) (metricsOut, error) {
 	return out, nil
 }
 
-// tenantVisible refuses a tenant whose sum would include pipelines the
-// caller can't see.
 func tenantVisible(d Deps, tenant string) error {
 	visible := 0
 	for _, p := range d.visiblePipelines() {
@@ -172,8 +170,6 @@ func summarize(pts []Sample, every time.Duration) metricsSummary {
 	return s
 }
 
-// thin averages runs of points so at most n are left: rates and latencies
-// are averaged, gauges keep the run's last value.
 func thin(pts []Sample, every time.Duration, n int) ([]Sample, time.Duration) {
 	if len(pts) <= n {
 		return pts, every

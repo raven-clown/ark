@@ -13,8 +13,6 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/config"
 )
 
-// allTools is every tool buildServer can register, so an endpoint's tool
-// list can be turned into the set to remove.
 var allTools = []string{
 	"interpret_request", "get_help", "get_overview", "diagnose_pipeline", "get_metrics", "get_recent_events", "explain_error",
 	"recommend_tuning", "check_data", "test_message", "get_pipeline_schema", "get_pipeline_config", "list_topics",
@@ -35,11 +33,6 @@ func ScopeFor(a config.AIAccess) (Scope, bool) {
 	return "", false
 }
 
-// NewProjectHandler serves every project's MCP endpoints under
-// /mcp/<project>/<endpoint>. Each endpoint only sees its project's
-// pipelines, accepts only the tokens in its own environment variable, and
-// is limited to the lower of its access and the project's ai_access, and
-// to its tool list. Config changes take effect on the next request.
 func NewProjectHandler(d Deps) http.Handler {
 	var mu sync.Mutex
 	cache := map[string]http.Handler{}
@@ -92,7 +85,7 @@ func NewProjectHandler(d Deps) http.Handler {
 		if !ok {
 			pd := d
 			pd.Project = project.Name
-			h = newEndpointHandler(pd, authz.NewTokenStore(tokens, scope), endpoint.Tools)
+			h = newEndpointHandler(pd, &authz.Authenticator{Tokens: authz.NewTokenStore(tokens, scope)}, endpoint.Tools)
 			if len(cache) >= 256 {
 				clear(cache)
 			}

@@ -1,6 +1,3 @@
-// Command console serves the ARK Console: the built web app, plus a proxy
-// that forwards /api/v1/ to an ARK engine, so the browser only ever talks
-// to this origin and never to Kafka.
 package main
 
 import (
@@ -39,6 +36,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.Handle("/api/v1/", proxy)
+	mux.Handle("/auth/", proxy)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
 	mux.Handle("/", spa(site))
 

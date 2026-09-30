@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -60,26 +61,11 @@ func (s *staticRegistry) SetPaused(name string, paused bool) bool {
 	return true
 }
 
-// Reloader re-reads the config file from disk and reconciles running
-// pipelines to match it: starting new ones, stopping removed ones, and
-// restarting ones whose config changed. It returns an error if the file
-// fails to parse or validate, in which case the running pipelines are left
-// untouched. A pipeline (re)started by Reload keeps running past the
-// lifetime of whatever request triggered it, exactly like one started at
-// boot; implementations must not tie its lifetime to the caller's context.
 type Reloader interface {
 	Reload() error
 }
 
-// NewServer builds the REST API. clusterNode is nil when cluster mode is
-// off; GET /api/v1/cluster then reports that explicitly instead of a
-// snapshot. Every route except /healthz and /metrics requires a token from
-// tokens (see guard); with no tokens configured, only requests from this
-// host are served.
-func NewServer(reg Registry, reload Reloader, clusterNode *cluster.Node, tokens *authz.TokenStore) http.Handler {
-	if tokens == nil {
-		tokens = &authz.TokenStore{}
-	}
+func NewServer(reg Registry, reload Reloader, clusterNode *cluster.Node, authn *authz.Authenticator) http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
@@ -174,15 +160,12 @@ func NewServer(reg Registry, reload Reloader, clusterNode *cluster.Node, tokens 
 	registerDLQRoutes(mux, reg, "dlq", func(run *consumer.Runner) *dlq.Browser { return run.DLQBrowser() })
 	registerDLQRoutes(mux, reg, "reject", func(run *consumer.Runner) *dlq.Browser { return run.RejectBrowser() })
 
-	return guard(tokens, mux)
+	return Guard(authn, mux)
 }
 
-// requiredScope maps a request to the scope it needs. It is deliberately
-// path-agnostic apart from the public probes and the reload endpoint, so a
-// newly added route is protected by default rather than open by default.
 func requiredScope(r *http.Request) (scope authz.Scope, public bool) {
 	switch {
-	case r.Method == http.MethodGet && (r.URL.Path == "/healthz" || r.URL.Path == "/metrics"):
+	case r.Method == http.MethodGet && (r.URL.Path == "/healthz" || r.URL.Path == "/metrics" || r.URL.Path == "/api/v1/auth/info"):
 		return "", true
 	case r.Method == http.MethodGet || r.Method == http.MethodHead:
 		return authz.ScopeViewer, false
@@ -195,46 +178,41 @@ func requiredScope(r *http.Request) (scope authz.Scope, public bool) {
 	}
 }
 
-// Guard protects next with the same token rules as the rest of the API and
-// puts the caller on the request context (authz.CallerFrom).
-func Guard(tokens *authz.TokenStore, next http.Handler) http.Handler {
-	if tokens == nil {
-		tokens = &authz.TokenStore{}
+func Guard(authn *authz.Authenticator, next http.Handler) http.Handler {
+	if authn == nil {
+		authn = &authz.Authenticator{}
 	}
-	return guard(tokens, next)
-}
-
-func guard(tokens *authz.TokenStore, next http.Handler) http.Handler {
+	if authn.Tokens == nil {
+		authn.Tokens = &authz.TokenStore{}
+	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		min, public := requiredScope(r)
 		if public {
 			next.ServeHTTP(w, r)
 			return
 		}
-
-		if !tokens.Enabled() {
-			if authz.IsLoopback(r) {
-				next.ServeHTTP(w, r.WithContext(authz.WithCaller(r.Context(), authz.Caller{ID: "localhost", Scope: authz.ScopeAdmin})))
-				return
-			}
-			writeJSON(w, http.StatusForbidden, map[string]string{"error": "REST API tokens are not configured (ARK_API_VIEWER_TOKENS / ARK_API_OPERATOR_TOKENS / ARK_API_ADMIN_TOKENS), so only requests from localhost are accepted"})
+		caller, err := authn.Authenticate(r)
+		switch {
+		case errors.Is(err, authz.ErrNoCredentials) && !authn.Configured():
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "no way of signing in is configured (ARK_API_*_TOKENS, auth.oidc or auth.anonymous), so only requests from localhost are accepted"})
 			return
-		}
-
-		token, ok := authz.BearerToken(r)
-		scope, known := tokens.Lookup(token)
-		if !ok || !known {
+		case errors.Is(err, authz.ErrNotAllowed):
+			writeJSON(w, http.StatusForbidden, errBody(err))
+			return
+		case err != nil:
 			w.Header().Set("WWW-Authenticate", `Bearer realm="ark-api"`)
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid or missing bearer token"})
+			writeJSON(w, http.StatusUnauthorized, errBody(err))
 			return
 		}
-		if !scope.AtLeast(min) {
-			writeJSON(w, http.StatusForbidden, map[string]string{"error": "this action needs the " + string(min) + " scope, token has " + string(scope)})
+		if !caller.Scope.AtLeast(min) {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "this action needs the " + string(min) + " scope, you have " + string(caller.Scope)})
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(authz.WithCaller(r.Context(), authz.Caller{ID: authz.UserID(token), Scope: scope})))
+		next.ServeHTTP(w, r.WithContext(authz.WithCaller(r.Context(), caller)))
 	})
 }
+
+func errBody(err error) map[string]string { return map[string]string{"error": err.Error()} }
 
 func registerDLQRoutes(mux *http.ServeMux, reg Registry, kind string, pick func(*consumer.Runner) *dlq.Browser) {
 	findBrowser := func(pipelineName string) (*dlq.Browser, bool) {

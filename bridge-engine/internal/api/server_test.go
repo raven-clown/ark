@@ -34,10 +34,30 @@ func TestNoTokensOnlyLoopbackServed(t *testing.T) {
 	}
 }
 
+func TestAnonymousAccessGetsItsScopeOnly(t *testing.T) {
+	t.Setenv("TB_ADMIN_TOKENS", "adm")
+	h := NewServer(NewRegistry(nil), nil, nil, &authz.Authenticator{Tokens: authz.LoadFromEnv("TB"), Anonymous: authz.ScopeViewer})
+	remote := "10.0.0.5:1234"
+	cases := []struct {
+		method, path, token string
+		want                int
+	}{
+		{"GET", "/api/v1/pipelines", "", http.StatusOK},
+		{"POST", "/api/v1/pipelines/x/pause", "", http.StatusForbidden},
+		{"GET", "/api/v1/pipelines", "wrong", http.StatusUnauthorized},
+		{"POST", "/api/v1/config/reload", "adm", http.StatusNotImplemented},
+	}
+	for _, c := range cases {
+		if got := do(t, h, c.method, c.path, remote, c.token); got != c.want {
+			t.Errorf("%s %s token=%q: got %d, want %d", c.method, c.path, c.token, got, c.want)
+		}
+	}
+}
+
 func TestTokenScopesEnforced(t *testing.T) {
 	t.Setenv("TA_VIEWER_TOKENS", "view")
 	t.Setenv("TA_OPERATOR_TOKENS", "op")
-	h := NewServer(NewRegistry(nil), nil, nil, authz.LoadFromEnv("TA"))
+	h := NewServer(NewRegistry(nil), nil, nil, &authz.Authenticator{Tokens: authz.LoadFromEnv("TA")})
 	remote := "10.0.0.5:1234"
 
 	cases := []struct {

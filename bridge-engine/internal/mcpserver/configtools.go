@@ -28,10 +28,6 @@ type pendingChange struct {
 	expires  time.Time
 }
 
-// confirmations holds previewed config changes until the human behind the
-// agent confirms them. A token only works for the caller that previewed
-// it, only once, only within tuning.ConfirmToken(), and only if the pipeline hasn't
-// changed in between.
 type confirmations struct {
 	mu sync.Mutex
 	m  map[string]pendingChange
@@ -78,8 +74,6 @@ func callerID(req *mcp.CallToolRequest) string {
 	return ""
 }
 
-// parsePipelineYAML reads one pipeline from YAML, rejecting unknown or
-// misspelled fields instead of silently ignoring them.
 func parsePipelineYAML(src string) (config.Pipeline, error) {
 	var p config.Pipeline
 	dec := yaml.NewDecoder(strings.NewReader(src))
@@ -103,8 +97,6 @@ func pipelineHash(p *config.Pipeline) string {
 	return hex.EncodeToString(sum[:8])
 }
 
-// pipelineFields is the pipeline as its config file keys, for the console's
-// designer to read every field without parsing YAML.
 func pipelineFields(p config.Pipeline) map[string]any {
 	var out map[string]any
 	b, err := yaml.Marshal(p)
@@ -183,8 +175,6 @@ type validationOut struct {
 	AppliesTo      string    `json:"applies_to"`
 }
 
-// validate checks a proposed pipeline against the whole current config and
-// the live cluster (topics, partitions), without changing anything.
 func validate(ctx context.Context, d Deps, src string) (config.Pipeline, *config.Pipeline, validationOut) {
 	out := validationOut{AppliesTo: d.Config.Mode()}
 	p, err := parsePipelineYAML(src)

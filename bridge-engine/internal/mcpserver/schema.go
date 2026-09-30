@@ -1,7 +1,5 @@
 package mcpserver
 
-// fieldDoc describes one pipeline config field for get_pipeline_schema, so
-// an agent can write valid config without guessing.
 type fieldDoc struct {
 	Field       string   `json:"field"`
 	Type        string   `json:"type"`

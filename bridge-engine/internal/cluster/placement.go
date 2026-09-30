@@ -24,9 +24,6 @@ type placementRecord struct {
 	Assignments map[string]int `json:"assignments"` // node_id -> workers
 }
 
-// placer is the leader-side producer of placement decisions and, on every
-// node, the tailer that keeps this process's view of the cluster-wide
-// placement current.
 type placer struct {
 	brokers []string
 	topic   string
@@ -39,8 +36,6 @@ type placer struct {
 	assignments map[string]map[string]int // pipeline -> node_id -> workers
 	maxEpoch    int64
 
-	// leader-side memory of what this node last published, so unchanged
-	// placements aren't rewritten every tick.
 	pubEpoch int64
 	pub      map[string]map[string]int
 }
@@ -56,11 +51,6 @@ func newPlacer(brokers []string, topic string, log *slog.Logger) *placer {
 	}
 }
 
-// leaderEpoch returns the epoch a new leader publishes under: never lower
-// than anything already in the topic, so every node prefers the new
-// leader's records over a deposed leader's late writes. It waits until this
-// node has read the whole placement topic, otherwise it couldn't know the
-// highest epoch in it.
 func (p *placer) leaderEpoch(ctx context.Context, generation int32) (int64, error) {
 	for !p.caughtUp.Load() {
 		select {
@@ -93,13 +83,6 @@ func eligible(live map[string]heartbeatRecord, selector map[string]string) []str
 	return out
 }
 
-// publish writes, in one batch, the placement for every enabled pipeline
-// whose computed assignment differs from what this leader last published
-// under epoch, plus a tombstone for any pipeline no longer configured. Each
-// pipeline is spread only over live nodes matching its node_selector, and
-// never over more workers than its source topic has partitions (extra
-// consumers in a group just sit idle). It returns how many records it
-// wrote.
 func (p *placer) publish(ctx context.Context, epoch int64, pipelines []config.Pipeline, live map[string]heartbeatRecord, partitions map[string]int) (int, error) {
 	p.mu.Lock()
 	if p.pubEpoch != epoch {
@@ -155,9 +138,6 @@ func (p *placer) publish(ctx context.Context, epoch int64, pipelines []config.Pi
 	return len(msgs), nil
 }
 
-// distribute spreads total worker slots across nodes as evenly as
-// possible: base = total/len(nodes) each, with the remainder handed one
-// each to the first `total%len(nodes)` nodes in sorted order.
 func distribute(total int, nodes []string) map[string]int {
 	out := make(map[string]int, len(nodes))
 	if len(nodes) == 0 || total <= 0 {
@@ -175,12 +155,6 @@ func distribute(total int, nodes []string) map[string]int {
 	return out
 }
 
-// watch tails the placement topic from the beginning. Records from an epoch
-// older than the newest one already seen are ignored: they come from a
-// leader that has since been replaced. onUpdate receives the full
-// pipeline -> node_id -> workers view, but only once the replay of existing
-// records is complete, so a restarting node reconciles once against the
-// current placement rather than once per historical record.
 func (p *placer) watch(ctx context.Context, onUpdate func(map[string]map[string]int)) {
 	notify := func() {
 		p.mu.Lock()

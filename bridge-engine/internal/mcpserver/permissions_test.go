@@ -8,9 +8,6 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/config"
 )
 
-// Found live: a project's MCP endpoint could pause another project's
-// pipeline, and the global endpoint ignored a project's ai_access, because
-// the write tools checked only the pipeline's own mcp_access.
 func TestWriteToolsStayInsideTheProjectAndItsAIAccess(t *testing.T) {
 	pipe := func(name, project string) config.Pipeline {
 		return config.Pipeline{Name: name, Project: project, MCPAccess: config.MCPAccessReadWrite}
@@ -44,11 +41,7 @@ func TestVisibleToMCP(t *testing.T) {
 		"read_only":  true,
 		"read_write": true,
 		"none":       false,
-		// An empty string isn't a real config value in practice --
-		// config.applyDefaults always fills it in to "read_only" before
-		// this ever runs -- but matches that default's spirit: only an
-		// explicit "none" hides a pipeline.
-		"": true,
+		"":           true,
 	}
 	for access, want := range cases {
 		if got := visibleToMCP(access); got != want {

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"regexp"
@@ -42,10 +43,6 @@ const (
 	OrderingNone         Ordering = "none"
 )
 
-// OnExhausted says what happens to a message that can't be completed and
-// has nowhere to be routed. The only non-default value is "block": keep
-// retrying it in place, holding back its partition, instead of requiring a
-// dead_letter_topic.
 type OnExhausted string
 
 const OnExhaustedBlock OnExhausted = "block"
@@ -70,10 +67,8 @@ type Target struct {
 	HealthCheckSecs int            `yaml:"health_check_interval_seconds"`
 	TimeoutMs       int            `yaml:"timeout_ms"`
 	RejectStatuses  []int          `yaml:"reject_statuses"`
-	// BatchSize above 1 sends up to that many messages per call, as
-	// {"items": [...]}, and reads one result per item back.
-	BatchSize     int `yaml:"batch_size,omitempty"`
-	BatchLingerMs int `yaml:"batch_linger_ms,omitempty"`
+	BatchSize       int            `yaml:"batch_size,omitempty"`
+	BatchLingerMs   int            `yaml:"batch_linger_ms,omitempty"`
 }
 
 // Batched reports whether calls carry several messages at once.
@@ -92,9 +87,6 @@ func validateBatch(t Target) error {
 	return nil
 }
 
-// IsReject reports whether a callback status routes the message to
-// reject_topic. With no reject_statuses configured, every 4xx except the
-// "try again later" ones (408, 425, 429) is a reject.
 func (t Target) IsReject(status int) bool {
 	if len(t.RejectStatuses) > 0 {
 		for _, s := range t.RejectStatuses {
@@ -158,9 +150,7 @@ type Pipeline struct {
 	DeadLetterRedrive Redrive          `yaml:"dead_letter_redrive"`
 	OnExhausted       OnExhausted      `yaml:"on_exhausted"`
 	Enabled           *bool            `yaml:"enabled"`
-	// Flow replaces target, rules and output topics with steps joined in any
-	// shape. Pipelines without one keep the fixed path.
-	Flow *Flow `yaml:"flow,omitempty"`
+	Flow              *Flow            `yaml:"flow,omitempty"`
 }
 
 type Cluster struct {
@@ -173,12 +163,7 @@ type Cluster struct {
 	Labels                   map[string]string `yaml:"labels"`
 }
 
-// DataRules describe what a valid message looks like. Every message is
-// checked before fast_path_rules and before the callback; one that breaks a
-// rule is handled by OnViolation, with the broken rules as the reason.
 type DataRules struct {
-	// OnViolation: reject (default; reject_topic, or the DLQ without one),
-	// dead_letter, or tag (let it through with an X-Ark-Violations header).
 	OnViolation string `yaml:"on_violation,omitempty"`
 	// AllowUnknownFields: false flags top-level fields no rule mentions.
 	AllowUnknownFields *bool        `yaml:"allow_unknown_fields,omitempty"`
@@ -205,8 +190,6 @@ type HeaderRule struct {
 	ValueRule `yaml:",inline"`
 }
 
-// FieldRule constrains one field of a JSON message, addressed by a dot
-// path such as "customer.id".
 type FieldRule struct {
 	Path      string   `yaml:"path"`
 	Required  bool     `yaml:"required,omitempty"`
@@ -220,16 +203,11 @@ type FieldRule struct {
 	Format    string   `yaml:"format,omitempty"`
 }
 
-// CircuitBreaker controls when ARK stops calling a failing target:
-// after FailureThreshold different messages fail in a row it holds messages in place for
-// CooldownSeconds before trying again.
 type CircuitBreaker struct {
 	FailureThreshold int `yaml:"failure_threshold"`
 	CooldownSeconds  int `yaml:"cooldown_seconds"`
 }
 
-// Redrive automatically resends dead-lettered messages to source_topic
-// once they are AfterSeconds old, at most MaxTimes per original message.
 type Redrive struct {
 	AfterSeconds int `yaml:"after_seconds"`
 	MaxTimes     int `yaml:"max_times"`
@@ -237,8 +215,6 @@ type Redrive struct {
 
 func (r Redrive) Enabled() bool { return r.AfterSeconds > 0 }
 
-// Placement restricts which cluster nodes may run a pipeline: only nodes
-// whose cluster.labels contain every key/value in NodeSelector.
 type Placement struct {
 	NodeSelector map[string]string `yaml:"node_selector"`
 }
@@ -247,36 +223,25 @@ type Topics struct {
 	ReplicationFactor int `yaml:"replication_factor"`
 }
 
-// Assistant tunes the MCP assistant. Lexicon adds words (in any
-// language) that signal an intent, on top of the built-in English, Thai
-// and Chinese ones, e.g. {diagnose: ["langsam", "lento"]}.
 type Assistant struct {
 	Lexicon map[string][]string `yaml:"lexicon"`
-	// Model is the default model for the console's assistant, used by
-	// pipelines outside a project and projects without their own.
-	Model *AssistantModel `yaml:"model,omitempty"`
+	Model   *AssistantModel     `yaml:"model,omitempty"`
 }
 
 type Config struct {
-	Brokers []string `yaml:"brokers"`
-	// Timezone (IANA name, e.g. Asia/Bangkok) used when showing times over
-	// the API and MCP. Times are always ISO 8601 with an offset; storage and
-	// logs stay in UTC. Default UTC.
-	Timezone  string    `yaml:"timezone"`
-	Assistant Assistant `yaml:"assistant"`
-	Topics    Topics    `yaml:"topics"`
-	Cluster   Cluster   `yaml:"cluster"`
-	// Tuning holds engine-wide knobs; every one defaults to the value
-	// ARK used before it was configurable.
+	Brokers   []string      `yaml:"brokers"`
+	Timezone  string        `yaml:"timezone"`
+	Assistant Assistant     `yaml:"assistant"`
+	Topics    Topics        `yaml:"topics"`
+	Cluster   Cluster       `yaml:"cluster"`
 	Tuning    tuning.Values `yaml:"tuning,omitempty"`
 	Projects  []Project     `yaml:"projects,omitempty"`
 	Sources   []Source      `yaml:"sources,omitempty"`
-	Pipelines []Pipeline    `yaml:"pipelines"`
+	// Auth is read at startup; changes need a restart.
+	Auth      Auth       `yaml:"auth,omitempty"`
+	Pipelines []Pipeline `yaml:"pipelines"`
 }
 
-// minBrokerSessionTimeoutSeconds is Kafka's default
-// group.min.session.timeout.ms; a lower node_timeout_seconds makes every
-// election JoinGroup fail.
 const minBrokerSessionTimeoutSeconds = 6
 
 func (p *Pipeline) IsEnabled() bool {
@@ -287,23 +252,49 @@ func (p *Pipeline) IsEnabled() bool {
 }
 
 func Load(path string) (*Config, error) {
+	cfg, err := LoadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	ApplyEnv(cfg)
+	return finish(path, cfg)
+}
+
+// LoadFile is Load without the environment, for rewriting the file.
+func LoadFile(path string) (*Config, error) {
+	var cfg Config
 	raw, err := os.ReadFile(path) // #nosec G304 -- path is an operator-supplied CLI flag, not untrusted network input
+	if errors.Is(err, os.ErrNotExist) {
+		return &cfg, nil
+	}
 	if err != nil {
 		return nil, fmt.Errorf("reading config %s: %w", path, err)
 	}
-
-	var cfg Config
 	if err := yaml.Unmarshal(raw, &cfg); err != nil {
 		return nil, fmt.Errorf("parsing config %s: %w", path, err)
 	}
+	return &cfg, nil
+}
 
-	applyDefaults(&cfg)
+// Prepare is what Load does after reading, for a config built in memory.
+func Prepare(c *Config) error {
+	ApplyEnv(c)
+	applyDefaults(c)
+	return c.Validate()
+}
+
+func finish(path string, cfg *Config) (*Config, error) {
+	if len(cfg.Brokers) == 0 {
+		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("no config at %s and ARK_BROKERS isn't set; set ARK_BROKERS=kafka:9092 (or mount a config file)", path)
+		}
+	}
+	applyDefaults(cfg)
 
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("validating config %s: %w", path, err)
 	}
-
-	return &cfg, nil
+	return cfg, nil
 }
 
 func applyDefaults(cfg *Config) {
@@ -339,8 +330,6 @@ func applyDefaults(cfg *Config) {
 	}
 }
 
-// ApplyPipelineDefaults fills every unset pipeline field with its default,
-// the same way loading a config file does.
 func ApplyPipelineDefaults(p *Pipeline) {
 	if p.MCPAccess == "" {
 		p.MCPAccess = MCPAccessReadOnly
@@ -408,6 +397,9 @@ func (c *Config) Validate() error {
 	if err := validateSources(c.Sources); err != nil {
 		return err
 	}
+	if err := validateAuth(c.Auth); err != nil {
+		return err
+	}
 
 	if c.Cluster.Enabled {
 		cl := c.Cluster
@@ -439,8 +431,6 @@ func (c *Config) Validate() error {
 	return ValidatePipelines(c.Pipelines)
 }
 
-// ValidatePipelines checks a pipeline set on its own, for config that
-// arrives from somewhere other than a full file (the cluster config topic).
 func ValidatePipelines(pipelines []Pipeline) error {
 	seen := map[string]bool{}
 	for i, p := range pipelines {

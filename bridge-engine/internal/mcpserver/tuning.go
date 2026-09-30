@@ -28,10 +28,6 @@ type tuningNow struct {
 	LatencyMeasured bool    `json:"latency_measured"`
 }
 
-// recommendTuning estimates what a pipeline can sustain from its measured
-// callback latency (throughput ceiling is concurrency / latency) and
-// suggests settings for a target rate, then reviews its config against
-// ARK's best practices.
 func recommendTuning(ctx context.Context, d Deps, p config.Pipeline, targetPerSec float64) tuningOut {
 	out := tuningOut{Pipeline: p.Name}
 	diag := diagnose(d, p)
@@ -95,8 +91,6 @@ func recommendTuning(ctx context.Context, d Deps, p config.Pipeline, targetPerSe
 	return out
 }
 
-// reviewConfig checks a pipeline against ARK's best practices. It's shared
-// by recommend_tuning and validate_pipeline_config.
 func reviewConfig(d Deps, p config.Pipeline) []Finding {
 	var out []Finding
 	add := func(sev, what, why string, actions ...string) {

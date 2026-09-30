@@ -1,5 +1,3 @@
-// Package datarules checks messages against a pipeline's data_rules: the
-// shape of the JSON body, the key, the headers and the size.
 package datarules
 
 import (

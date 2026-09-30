@@ -32,9 +32,6 @@ type batchResult struct {
 	noURL   bool
 }
 
-// batcher collects the messages that are waiting on one caller and posts
-// them together, so every message keeps its own retries, rules, ordering
-// and commit while the target sees one request per batch.
 type batcher struct {
 	c      *caller
 	size   int
@@ -84,8 +81,6 @@ func (b *batcher) submit(ctx context.Context, it *batchItem) (batchResult, error
 	}
 }
 
-// enqueue adds it and returns the batch when that filled it; otherwise the
-// linger timer sends what is queued.
 func (b *batcher) enqueue(it *batchItem) []*batchItem {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -156,8 +151,6 @@ func (b *batcher) flush(items []*batchItem) {
 	release()
 	elapsed := time.Since(start)
 	if err != nil || !resp.Success() {
-		// The whole request failed or answered one status for everything:
-		// each message sees it as if it had been sent alone.
 		answer(func(*batchItem) batchResult { return batchResult{resp: resp, url: url, elapsed: elapsed, err: err} })
 		return
 	}
@@ -186,8 +179,6 @@ func (b *batcher) flush(items []*batchItem) {
 	})
 }
 
-// itemBody is what a result's body becomes as a Kafka value: a JSON string
-// as its text, anything else as JSON, nothing as an empty value.
 func itemBody(raw json.RawMessage) []byte {
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {

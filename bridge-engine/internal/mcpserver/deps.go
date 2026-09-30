@@ -13,9 +13,6 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/tuning"
 )
 
-// ConfigSource is where the MCP config tools read the current pipelines
-// from and apply changes to: the config file on a single node, or the
-// cluster config topic in cluster mode.
 type ConfigSource interface {
 	Pipelines() []config.Pipeline
 	Apply(ctx context.Context, pipelines []config.Pipeline) error
@@ -25,8 +22,6 @@ type ConfigSource interface {
 	ApplyProjects(ctx context.Context, projects []config.Project) error
 	// DefaultModel is assistant.model, for pipelines outside a project.
 	DefaultModel() *config.AssistantModel
-	// Settings and ApplySettings read and change this node's engine-wide
-	// settings; ApplySettings fails where they can't be changed remotely.
 	Settings() Settings
 	ApplySettings(ctx context.Context, s Settings) error
 }
@@ -48,17 +43,13 @@ type Deps struct {
 	Audit             *slog.Logger
 	Version           string
 	// Location is the configured display timezone; nil means UTC.
-	Location *time.Location
-	// AllPipelines lifts the mcp_access filter, for the console's REST
-	// API where access is governed by the API tokens instead.
+	Location     *time.Location
 	AllPipelines bool
-	// Project limits everything to one project's pipelines (a project MCP
-	// endpoint or the assistant working in a project).
-	Project string
+	Project      string
 	// History is what get_metrics reads; the console samples into it.
-	History *History
-	// Sources lists the HTTP sources being served.
-	Sources func() []config.Source
+	History  *History
+	Sources  func() []config.Source
+	Accounts AccountStore
 }
 
 func (d Deps) loc() *time.Location {
@@ -68,8 +59,6 @@ func (d Deps) loc() *time.Location {
 	return time.UTC
 }
 
-// localize returns t in the display timezone. JSON renders it as ISO 8601
-// with that zone's offset, e.g. 2026-09-24T21:05:00+07:00.
 func (d Deps) localize(t time.Time) time.Time {
 	if t.IsZero() {
 		return t
@@ -111,8 +100,6 @@ func (d Deps) events() *events.Log {
 	return events.Default
 }
 
-// projectAccess is the AI access ceiling a pipeline's project sets; a
-// pipeline outside any project has no extra ceiling.
 func (d Deps) projectAccess(project string) config.AIAccess {
 	if project == "" || d.Config == nil {
 		return config.AIAccessConfigure
@@ -125,10 +112,6 @@ func (d Deps) projectAccess(project string) config.AIAccess {
 	return config.AIAccessNone
 }
 
-// visiblePipelines is every configured pipeline an MCP client may see:
-// everything except mcp_access: none or a project with ai_access: none,
-// limited to d.Project when set. A project with ai_access: read_only
-// lowers its pipelines to read_only here, so every write check applies it.
 func (d Deps) visiblePipelines() []config.Pipeline {
 	if d.Config == nil {
 		return nil

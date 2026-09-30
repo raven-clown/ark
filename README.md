@@ -117,7 +117,7 @@ Then ask *"how is the orders pipeline doing?"* or *"is there any weird
 data in orders?"* in English, Thai, or Chinese. ARK answers with what is
 happening, why, and what to do.
 
-**5. Open the console.** Go to [http://localhost:8088](http://localhost:8088)
+**5. Open the console.** Go to [http://localhost:8080](http://localhost:8080)
 and sign in with `demo-admin-token`. You'll see the pipeline with data
 flowing through it; click it to see its health, tail it live, browse dead
 letters, or change its rules.
@@ -126,28 +126,40 @@ letters, or change its rules.
 > `ARK_API_ADMIN_TOKENS` and `ARK_MCP_ADMIN_TOKENS` before running it
 > anywhere else, and point `ARK_CONFIG` at your own config file.
 
-### Published images
+### Run it with docker run
 
-Every release is published to GitHub Container Registry for amd64 and
-arm64, tagged with its version (`0.11.1`), its minor line (`0.11`) and
-`latest`:
-
-```bash
-docker pull ghcr.io/raven-clown/ark-bridge:0.11
-docker pull ghcr.io/raven-clown/ark-console:0.11
-```
+One image serves the console, the REST API, MCP and HTTP sources on one
+port. No reverse proxy or config file is needed; everything can be set
+with environment variables.
 
 ```bash
-docker run -d --name ark -p 8080:8080 \
-  -v "$PWD/config.yaml:/etc/bridge/config.yaml:ro" \
-  -e ARK_API_ADMIN_TOKENS=change-me \
-  ghcr.io/raven-clown/ark-bridge:0.11
-docker run -d --name ark-console -p 8088:8088 \
-  -e ARK_ENGINE_URL=http://ark:8080 --link ark \
-  ghcr.io/raven-clown/ark-console:0.11
+docker run -d --name ark -p 8080:8080 -v ark-data:/data \
+  -e ARK_BROKERS=kafka:9092 \
+  -e ARK_ADMIN_USER=admin -e ARK_ADMIN_PASSWORD='change-me-please' \
+  ghcr.io/raven-clown/ark:0.12
 ```
 
-The engine image also holds `demo-echo` (`--entrypoint demo-echo`).
+Open http://localhost:8080 and sign in. Pipelines, projects and accounts
+you create in the console are kept in `/data/config.yaml`, so keep the
+volume. To try it without signing in at all, use
+`-e ARK_AUTH_ANONYMOUS=admin` instead of the two admin variables.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `ARK_BROKERS` | | Kafka brokers, comma-separated (needed when there's no config file) |
+| `ARK_PORT` / `ARK_LISTEN` | `8080` | Port, or a full address such as `127.0.0.1:9000` |
+| `ARK_CONFIG_FILE` | `/data/config.yaml` | Config file; created on the first change if missing |
+| `ARK_PUBLIC_URL` | the request's host | Address browsers use, for sign-in redirects behind a load balancer |
+| `ARK_TIMEZONE` | `UTC` | Display timezone |
+| `ARK_REPLICATION_FACTOR` | `3` | For topics ARK creates (use `1` on a single broker) |
+| `ARK_TLS_CERT`, `ARK_TLS_KEY` | | Serve HTTPS with this certificate |
+| `ARK_TLS_DOMAINS`, `ARK_TLS_EMAIL` | | Serve HTTPS with a Let's Encrypt certificate for these domains |
+
+Every sign-in method below has variables of its own. Each release is
+published for amd64 and arm64 as `ghcr.io/raven-clown/ark` (tagged
+`0.12.0`, `0.12` and `latest`), plus the engine and console on their own
+as `ark-bridge` and `ark-console`. The image also holds `demo-echo`
+(`--entrypoint demo-echo`).
 
 ## ARK Console
 
@@ -867,18 +879,78 @@ cluster:
 </details>
 
 <details>
+<summary><b>Signing in</b></summary>
+
+Every way of signing in is optional, and any mix can be on at once. With
+none, ARK answers only its own machine. Each one ends with one of three
+access levels: **viewer** reads, **operator** can also pause, resume,
+restart, retry and discard, and **admin** can also change config and
+accounts. The console's sign-in page shows the methods that are on.
+
+| Method | Turn it on with | Access from |
+|---|---|---|
+| No sign-in | `ARK_AUTH_ANONYMOUS=viewer` (or `operator`, `admin`); `ARK_AUTH_MCP_ANONYMOUS` for MCP | The level you set. The console shows "Open access". |
+| API tokens | `ARK_API_VIEWER_TOKENS`, `_OPERATOR_TOKENS`, `_ADMIN_TOKENS`; `ARK_MCP_*_TOKENS` for MCP | Which list the token is in |
+| Accounts | `ARK_ADMIN_USER` and `ARK_ADMIN_PASSWORD` for the first admin, or `ARK_AUTH_ACCOUNTS=true` | Set per account under Settings, Accounts |
+| LDAP / Active Directory | `ARK_LDAP_URL`, then `ARK_LDAP_USER_DN` (such as `{username}@corp.example.com`) or `ARK_LDAP_BIND_DN`, `ARK_LDAP_BIND_PASSWORD` and `ARK_LDAP_BASE_DN` | `ARK_LDAP_ADMIN_GROUPS`, `_OPERATOR_GROUPS`, `_VIEWER_GROUPS`, from `memberOf` or a search under `ARK_LDAP_GROUP_BASE_DN` |
+| HTTP Basic | `ARK_AUTH_BASIC=true`, with accounts or LDAP | As above, for scripts |
+| OpenID Connect | `ARK_OIDC_PRESET`, `ARK_OIDC_ISSUER`, `ARK_OIDC_CLIENT_ID`, `ARK_OIDC_CLIENT_SECRET` | `ARK_OIDC_ADMIN_GROUPS`, `_OPERATOR_GROUPS`, `_VIEWER_GROUPS`, read from `ARK_OIDC_ROLES_CLAIM` |
+| SAML 2.0 | `ARK_SAML_METADATA_URL` (or `_METADATA_FILE`), optional `ARK_SAML_CERT_FILE` and `_KEY_FILE` | `ARK_SAML_ADMIN_GROUPS` and so on, from `ARK_SAML_ROLES_CLAIM` |
+| GitHub, GitLab, Bitbucket | `ARK_GITHUB_CLIENT_ID` and `ARK_GITHUB_CLIENT_SECRET` (likewise `GITLAB`, `BITBUCKET`) | `ARK_GITHUB_ADMIN_GROUPS` and so on: `org` or `org/team` for GitHub, group paths for GitLab, workspaces for Bitbucket |
+| Other OAuth 2.0 | `ARK_OAUTH2_NAME`, `_CLIENT_ID`, `_CLIENT_SECRET`, `_AUTH_URL`, `_TOKEN_URL`, `_USERINFO_URL`, optional `_GROUPS_URL` | `ARK_OAUTH2_ADMIN_GROUPS` and so on |
+| JWT from your own system | `ARK_JWT_JWKS_URL`, `ARK_JWT_PUBLIC_KEY_FILE` or `ARK_JWT_SECRET`, plus `ARK_JWT_ISSUER`, `ARK_JWT_AUDIENCES` | `ARK_JWT_ADMIN_GROUPS` and so on, from `ARK_JWT_ROLES_CLAIM` |
+| A proxy that already signed people in | `ARK_HEADER_PRESET` (`azure-easy-auth`, `cloudflare-access`, `oauth2-proxy`) or `ARK_HEADER_USER`, and always `ARK_HEADER_TRUSTED_PROXIES` | `ARK_HEADER_ADMIN_GROUPS` and so on |
+| Client certificates | `ARK_CLIENT_CA`, with HTTPS on | `ARK_CLIENT_CERT_ADMIN_GROUPS` and so on, matched against the certificate's OUs |
+
+OpenID Connect presets fill in what each provider needs:
+
+| Preset | Issuer | Groups come from |
+|---|---|---|
+| `azure` | built from `ARK_OIDC_TENANT` | the `roles` claim (app roles) |
+| `adfs` | `https://<adfs host>/adfs` | the `group` claim; asks for `allatclaims` |
+| `google` | `https://accounts.google.com` | `hd`, the Google Workspace domain |
+| `keycloak` | `https://<host>/realms/<realm>` | `groups` |
+| `okta` | `https://<org>.okta.com` | `groups`; asks for the `groups` scope |
+| `auth0` | `https://<tenant>.auth0.com/` | set `ARK_OIDC_ROLES_CLAIM` |
+| `cognito` | `https://cognito-idp.<region>.amazonaws.com/<pool>` | `cognito:groups` |
+
+Register `https://<ark>/auth/oidc/callback` (OIDC),
+`https://<ark>/auth/oauth2/<name>/callback` (OAuth 2.0) or
+`https://<ark>/auth/saml/acs` with the provider; ARK's SAML metadata is at
+`/auth/saml/metadata`. With no `ARK_OIDC_VIEWER_GROUPS` (and the like),
+anyone the provider signs in gets in as a viewer.
+
+Browser sign-ins end in an HttpOnly session cookie (12 hours, or
+`ARK_SESSION_HOURS`); changes made with it need the console's CSRF
+header. Set `ARK_SESSION_SECRET` (32+ characters) so sessions survive a
+restart and work on every node. A session ends as soon as its account is
+deleted or its access changes. Every method can also be set under `auth:`
+in the config file, which `config.example.yaml` shows.
+
+OIDC, SAML and plain OAuth 2.0 were tested against Keycloak, LDAP against
+OpenLDAP, and the rest against ARK itself. The Azure, ADFS, Google, Okta,
+Auth0, Cognito, GitHub, GitLab and Bitbucket presets follow each
+provider's documentation but haven't been tried against the real service.
+
+</details>
+
+<details>
 <summary><b>REST API</b></summary>
 
-Every route except `/healthz` and `/metrics` needs a bearer token.
-`ARK_API_VIEWER_TOKENS` can read, `ARK_API_OPERATOR_TOKENS` can also
-pause, resume, restart, retry and discard, and `ARK_API_ADMIN_TOKENS` can
-also change config (preview, confirm, scale, reload). With none set, the API only answers localhost. These are
-separate from the MCP tokens.
+Every route except `/healthz`, `/metrics` and `/api/v1/auth/info` needs
+someone signed in (see *Signing in*). Viewers can read, operators can
+also pause, resume, restart, retry and discard, and admins can also
+change config (preview, confirm, scale, reload) and accounts. The
+`ARK_API_*` tokens are separate from the `ARK_MCP_*` ones.
 
 | Route | What it does |
 |---|---|
 | `GET /healthz` | Liveness |
 | `GET /metrics` | Prometheus metrics |
+| `GET /api/v1/auth/info` | Which sign-in methods are on (public) |
+| `POST /api/v1/auth/login` | Username and password; answers a session token and cookie |
+| `GET /auth/oidc/login`, `/auth/saml/login`, `/auth/oauth2/<name>/login`, `/auth/logout` | Browser sign-in and sign-out |
+| `GET`, `PUT`, `DELETE /api/v1/config/users[/<name>]` | Accounts (admin) |
 | `POST /ingest/<source>` | An HTTP source; its own bearer token, see *HTTP sources* |
 | `GET /api/v1/pipelines` | Status of every pipeline worker |
 | `GET /api/v1/pipelines/{name}` | Status of one pipeline |

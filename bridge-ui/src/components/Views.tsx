@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { api, type ArkEvent } from '../api'
 import { LANGS, useT, type Lang } from '../i18n'
 import { ConfigEditor } from './ConfigEditor'
+import { Accounts } from './Accounts'
 import { EngineSettings } from './EngineSettings'
 import { Icon } from './Icon'
 
@@ -283,6 +284,9 @@ export function SettingsView(props: {
             {t('signout')}
           </button>
         </div>
+      </div>
+      <div style={{ marginTop: 16 }}>
+        <Accounts toast={props.toast} />
       </div>
       <div style={{ marginTop: 16 }}>
         <EngineSettings toast={props.toast} />

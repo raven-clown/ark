@@ -35,24 +35,11 @@ func (rp *runningPipeline) runners() []*consumer.Runner {
 	return out
 }
 
-// Manager owns the set of currently-running pipelines and implements
-// api.Registry, so the REST/MCP layer always sees whatever Reconcile last
-// converged to, including across a config reload.
-//
-// Every pipeline Manager starts runs under baseCtx, not whatever caller
-// happened to trigger the start. Reconcile is called from the HTTP
-// reload handler with that request's context, which is cancelled the
-// moment the response is written; a pipeline started under it would be
-// killed within milliseconds.
 type Manager struct {
 	baseCtx context.Context
 	deps    consumer.Deps
 	logger  *slog.Logger
 
-	// reconcileMu serializes whole Reconcile calls. The file watcher, the
-	// reload endpoint and cluster placement can all trigger one, and two
-	// interleaved starts of the same pipeline would orphan a full set of
-	// consumers that nothing could stop.
 	reconcileMu sync.Mutex
 
 	mu        sync.RWMutex
@@ -97,11 +84,6 @@ func (m *Manager) PipelineRunners(name string) []*consumer.Runner {
 	return nil
 }
 
-// SetPaused pauses or resumes a pipeline and remembers the choice, so a
-// restart caused by a reload or a cluster placement change doesn't
-// silently resume a pipeline an operator paused on purpose. The choice is
-// remembered even for a pipeline not running here yet (cluster placement
-// may start it later). It reports whether the pipeline is running here.
 func (m *Manager) SetPaused(name string, paused bool) bool {
 	m.mu.RLock()
 	_, known := m.desired[name]
@@ -112,9 +94,6 @@ func (m *Manager) SetPaused(name string, paused bool) bool {
 	return m.RememberPause(name, paused)
 }
 
-// RememberPause records a pause or resume decided elsewhere (the cluster
-// control topic), including for a pipeline not running on this node yet,
-// and applies it if the pipeline is running here.
 func (m *Manager) RememberPause(name string, paused bool) bool {
 	m.mu.Lock()
 	if paused {
@@ -142,16 +121,6 @@ func (m *Manager) RememberPause(name string, paused bool) bool {
 	return true
 }
 
-// Reconcile starts, stops, or restarts pipelines so the running set matches
-// pipelines exactly: pipelines no longer present are stopped, new ones are
-// started, and ones whose config changed are restarted, since fields like
-// workers, topics, or consumer_group aren't safe to change on a live
-// Runner. Unchanged pipelines are left running untouched.
-//
-// A pipeline that fails to start (for example Kafka briefly unreachable)
-// is not left down: it keeps retrying in the background with backoff until
-// it starts or a later Reconcile changes or removes it. The failure is
-// still returned so the caller can report it.
 func (m *Manager) Reconcile(pipelines []config.Pipeline) []error {
 	m.reconcileMu.Lock()
 	defer m.reconcileMu.Unlock()
@@ -209,8 +178,6 @@ func (m *Manager) Reconcile(pipelines []config.Pipeline) []error {
 	return errs
 }
 
-// retryStart keeps trying to start p until it succeeds, the process shuts
-// down, or a later Reconcile no longer wants this exact config.
 func (m *Manager) retryStart(p config.Pipeline) {
 	ctx, cancel := context.WithCancel(m.baseCtx)
 
@@ -285,9 +252,6 @@ func (m *Manager) start(p config.Pipeline) error {
 	return nil
 }
 
-// supervise runs one worker and restarts it with backoff if it stops on its
-// own, so a transient fetch error doesn't leave the pipeline permanently
-// short a worker. It returns once ctx is cancelled.
 func (m *Manager) supervise(ctx context.Context, runner *consumer.Runner) {
 	defer func() {
 		if err := runner.Close(); err != nil {
@@ -334,10 +298,6 @@ func (m *Manager) stop(name string) {
 	events.Record(name, events.PipelineStopped, "pipeline stopped on this node (removed, disabled, or restarting with a changed config)", nil)
 }
 
-// Restart stops a pipeline's workers on this node and starts them again
-// with the same config, for example to clear a stuck connection. Nothing
-// is lost: uncommitted messages are consumed again. It reports whether the
-// pipeline was running here.
 func (m *Manager) Restart(name string) (bool, error) {
 	m.reconcileMu.Lock()
 	defer m.reconcileMu.Unlock()
@@ -358,8 +318,6 @@ func (m *Manager) Restart(name string) (bool, error) {
 	return true, nil
 }
 
-// launch starts one supervised worker under its own cancel, so it can be
-// removed later without touching the pipeline's other workers.
 func (m *Manager) launch(rp *runningPipeline, runner *consumer.Runner) {
 	wctx, cancel := context.WithCancel(rp.ctx)
 	w := &worker{runner: runner, cancel: cancel, done: make(chan struct{})}
@@ -378,10 +336,6 @@ func sameExceptWorkers(a, b config.Pipeline) bool {
 	return reflect.DeepEqual(a, b)
 }
 
-// resize adds or removes workers of a running pipeline in place. Removed
-// workers drain and commit their finished work before leaving; the others
-// keep running, and the pipeline's producers, target pool, breaker and
-// pause state are untouched. Only the consumer group rebalances.
 func (m *Manager) resize(p config.Pipeline) {
 	m.mu.Lock()
 	rp := m.pipelines[p.Name]
@@ -414,8 +368,6 @@ func (m *Manager) resize(p config.Pipeline) {
 	events.Record(p.Name, events.PipelineResized, fmt.Sprintf("workers on this node changed from %d to %d without a restart", current, want), nil)
 }
 
-// ShutdownAll stops every running pipeline and waits for them to finish
-// closing their Kafka resources. Call it once, during process shutdown.
 func (m *Manager) ShutdownAll() {
 	m.reconcileMu.Lock()
 	defer m.reconcileMu.Unlock()

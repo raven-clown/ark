@@ -69,7 +69,6 @@ const roleColor: Record<string, string> = {
   dead_letter: '#EC6B77',
 }
 
-
 function PipelineNode({ data }: NodeProps<Node<PipeData>>) {
   const t = useT()
   const s = data.stats
@@ -146,27 +145,16 @@ const MAX_DOTS = 32
 const MAX_EMIT = 6
 const PER_DOT_STEPS = [10, 50, 100, 500, 1000, 5000, 10000, 50000, 100000]
 
-// messagesPerDot picks how many messages one dot stands for, the same on
-// every line so they can be compared: 10, or more when the busiest line
-// would otherwise release dots faster than the eye can follow.
 function messagesPerDot(maxRate: number) {
   return PER_DOT_STEPS.find((n) => maxRate / n <= MAX_EMIT) ?? PER_DOT_STEPS[PER_DOT_STEPS.length - 1]
 }
 
-// dotSpeed is how many pixels a second a dot travels on a line carrying
-// rate messages a second: busier lines run faster, slowly enough to follow.
 function dotSpeed(rate: number) {
   return Math.min(120, 25 + 18 * Math.log2(1 + rate))
 }
 
 type Live = { rate: number; perDot: number; enabled: boolean }
 
-// FlowDots releases one dot per perDot messages crossing the line and moves
-// each dot to the end of the
-// line at a speed set by that line's own rate. New numbers only change how
-// often dots are released and, gradually, how fast they move; dots already
-// on the line keep going, so a refresh never resets the animation. It only
-// re-renders when the line itself or its color changes.
 const FlowDots = memo(function FlowDots({ path, color, live }: { path: string; color: string; live: RefObject<Live> }) {
   const pathRef = useRef<SVGPathElement>(null)
   const dotRefs = useRef<(SVGGElement | null)[]>([])
@@ -252,8 +240,6 @@ const FlowDots = memo(function FlowDots({ path, color, live }: { path: string; c
   )
 })
 
-// FlowEdge draws a connection with dots moving along it at a speed and
-// density that follow the real message rate.
 function FlowEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data }: EdgeProps<Edge<FlowData>>) {
   const [path] = getBezierPath({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition })
   const d = data!
@@ -277,9 +263,6 @@ function FlowEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targ
   )
 }
 
-// splitTargets gives every pipeline its own copy of the HTTP targets it
-// calls, so each call line is a short straight link above its pipeline
-// instead of a long bent line to one shared node.
 function splitTargets(t: Topology): Topology {
   const nodes = (t.nodes ?? []).filter((n) => n.kind !== 'target')
   const byId = new Map((t.nodes ?? []).map((n) => [n.id, n]))
@@ -303,8 +286,6 @@ interface Menu {
   paused: boolean
 }
 
-// PipelineMenu is what right-clicking a pipeline opens: the same places
-// and actions as its side panel, one click away.
 function PipelineMenu({ menu, onClose, onSelect, onEdit, toast }: { menu: Menu; onClose: () => void; onSelect: Props['onSelect']; onEdit: Props['onEdit']; toast: Props['toast'] }) {
   const t = useT()
   const ref = useRef<HTMLDivElement>(null)
@@ -396,8 +377,6 @@ export function Canvas({ search, health, motion, selected, onSelect, onNew, refr
           const reject = d(n.stats.rejected, p.s.rejected)
           const dlq = d(n.stats.dead_lettered, p.s.dead_lettered)
           const calls = d(n.stats.callback_calls, p.s.callback_calls)
-          // Average the last three polls (about 6s) so a pause between
-          // bursts doesn't make the lines flicker off and on.
           const h = [...(recentRates.current[n.id] ?? []), { calls, in: out + reject + dlq, out, reject, dlq }].slice(-3)
           recentRates.current[n.id] = h
           const avg = (k: keyof Rates) => h.reduce((a, x) => a + x[k], 0) / h.length
@@ -550,8 +529,6 @@ export function Canvas({ search, health, motion, selected, onSelect, onNew, refr
         edges={edges}
         onNodesChange={(changes) => {
           onNodesChange(changes)
-          // Fit once the new nodes have been measured; fitting earlier uses
-          // zero sizes and leaves part of the graph off screen.
           if (pendingFit.current && changes.some((c) => c.type === 'dimensions')) {
             clearTimeout(fitTimer.current)
             fitTimer.current = window.setTimeout(() => {

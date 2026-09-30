@@ -1097,6 +1097,33 @@ the calling agent to self-restrict):**
 - [ ] Revisit: CDC source, RabbitMQ/NATS, schedule trigger, only if
       real demand shows up after Phase 1 through 6 are solid
 
+### Sign-in and packaging
+
+- [x] One image, `ghcr.io/raven-clown/ark`: the engine serves the
+      console itself, so there's one port and no reverse proxy. Every
+      setting has an `ARK_*` variable laid over the config file on each
+      load (never written into it), and a missing file is fine when
+      `ARK_BROKERS` is set. HTTPS with a given certificate or Let's
+      Encrypt (`ARK_TLS_DOMAINS`, TLS-ALPN, no port 80).
+- [x] Every sign-in method optional and combinable: none (anonymous at
+      a chosen level), API tokens, accounts managed in the console
+      (bcrypt, sessions end when an account is deleted or its access
+      changes, an admin can't demote or delete themselves), LDAP and
+      Active Directory, HTTP Basic, OpenID Connect with presets for
+      Entra ID, ADFS, Google, Keycloak, Okta, Auth0 and Cognito, SAML
+      2.0, OAuth 2.0 with presets for GitHub, GitLab and Bitbucket,
+      JWTs from another system (JWKS, public key or shared secret),
+      headers from a trusted proxy (Azure Easy Auth, Cloudflare Access,
+      oauth2-proxy) and client certificates. Browser sign-ins end in an
+      HttpOnly session cookie with a CSRF header for writes.
+      Verified live: OIDC, SAML and OAuth 2.0 through the real Keycloak
+      login page, LDAP against OpenLDAP (found and fixed: group lookups
+      have to use the service account where users can't read the
+      directory), and accounts, Basic, JWT, proxy headers, open access
+      and client certificates against ARK, each started with
+      `docker run -e` only. The provider presets other than Keycloak
+      haven't been tried against the real services.
+
 ### Backend: Phase 9: Flows (steps joined in any shape)
 
 Direction set on 2026-09-26: every point of a pipeline can carry rules

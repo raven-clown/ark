@@ -17,27 +17,20 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/tuning"
 )
 
-// Sample is one point of a pipeline's history: rates since the previous
-// sample, and gauges at the time of the sample. In cluster mode it covers
-// every node.
 type Sample struct {
-	Time          time.Time `json:"time"`
-	Processed     float64   `json:"processed_per_sec"`
-	Rejected      float64   `json:"rejected_per_sec"`
-	DeadLettered  float64   `json:"dead_lettered_per_sec"`
-	Failed        float64   `json:"failed_per_sec"`
-	Lag           int64     `json:"lag"`
-	AvgCallbackMs float64   `json:"avg_callback_ms"`
-	// Callback latency percentiles over the interval, from the
-	// ark_callback_duration_seconds histogram; 0 when no calls were made.
-	P50Ms   float64 `json:"p50_ms"`
-	P95Ms   float64 `json:"p95_ms"`
-	P99Ms   float64 `json:"p99_ms"`
-	Workers int     `json:"workers"`
-	Running int     `json:"running"`
-	// Partitions is the consumer group's position per source partition,
-	// read from Kafka, so it covers every consumer in the group.
-	Partitions []PartitionSample `json:"partitions,omitempty"`
+	Time          time.Time         `json:"time"`
+	Processed     float64           `json:"processed_per_sec"`
+	Rejected      float64           `json:"rejected_per_sec"`
+	DeadLettered  float64           `json:"dead_lettered_per_sec"`
+	Failed        float64           `json:"failed_per_sec"`
+	Lag           int64             `json:"lag"`
+	AvgCallbackMs float64           `json:"avg_callback_ms"`
+	P50Ms         float64           `json:"p50_ms"`
+	P95Ms         float64           `json:"p95_ms"`
+	P99Ms         float64           `json:"p99_ms"`
+	Workers       int               `json:"workers"`
+	Running       int               `json:"running"`
+	Partitions    []PartitionSample `json:"partitions,omitempty"`
 }
 
 // PartitionSample is one source partition at the time of a sample.
@@ -70,8 +63,6 @@ func newTiers() tiers {
 	return tiers{data: map[string][]Sample{}, long: map[string][]Sample{}, acc: map[string]*rollup{}}
 }
 
-// History samples every pipeline, and every tenant as the sum of its
-// pipelines, for the console charts and get_metrics.
 type History struct {
 	mu      sync.RWMutex
 	pipes   tiers
@@ -89,9 +80,6 @@ func NewHistory() *History {
 		buckets: map[string]map[float64]uint64{}, commits: map[string]map[int]int64{}, gather: prometheus.DefaultGatherer}
 }
 
-// RunHistory samples every pipeline's numbers until ctx ends, so the
-// console can chart the last hour as soon as it opens and the last day
-// in coarser steps.
 func (c *Console) RunHistory(ctx context.Context) {
 	if c.hist.offsets == nil && len(c.d.Brokers) > 0 {
 		c.hist.offsets = func(ctx context.Context, group, topic string) ([]kafkaadmin.PartitionLag, error) {
@@ -110,8 +98,6 @@ func (c *Console) RunHistory(ctx context.Context) {
 	}
 }
 
-// partitionLags asks Kafka where each pipeline's group stands, before the
-// history lock is taken, so a slow broker never blocks a reader.
 func (h *History) partitionLags(ctx context.Context, pipelines []config.Pipeline) map[string][]kafkaadmin.PartitionLag {
 	if h.offsets == nil {
 		return nil
@@ -194,8 +180,6 @@ func (h *History) sampleWith(d Deps, now time.Time, lags map[string][]kafkaadmin
 			pt.P50Ms, pt.P95Ms, pt.P99Ms = quantileMs(prevBuckets, cur, 0.5), quantileMs(prevBuckets, cur, 0.95), quantileMs(prevBuckets, cur, 0.99)
 		}
 		if l := lags[p.Name]; len(l) > 0 {
-			// The readers' own lag freezes while a pipeline is paused;
-			// Kafka's numbers don't.
 			pt.Lag = 0
 			for _, pl := range l {
 				pt.Lag += pl.Lag
@@ -269,8 +253,6 @@ func (t tiers) forget(seen map[string]bool) {
 	}
 }
 
-// delta is how many calls landed in each latency bucket between two
-// cumulative readings.
 func delta(prev, cur map[float64]uint64) map[float64]uint64 {
 	out := make(map[float64]uint64, len(cur))
 	for b, c := range cur {
@@ -283,10 +265,6 @@ func delta(prev, cur map[float64]uint64) map[float64]uint64 {
 	return out
 }
 
-// roll adds a raw sample to the long tier's current step, closing the step
-// into one point when the sample falls past it. Rates are averaged, gauges
-// keep their last value, and percentiles come from the step's summed
-// latency histogram rather than from averaging percentiles.
 func (t tiers) roll(name string, pt Sample, calls map[float64]uint64) {
 	step := tuning.HistoryLongStep()
 	start := pt.Time.Truncate(step)
@@ -362,8 +340,6 @@ func (h *History) since(name string, from time.Time) []Sample {
 	return pts
 }
 
-// window returns a pipeline's points from from on: the fine tier when it
-// reaches back that far, otherwise the long tier, with the spacing used.
 func (h *History) window(name string, from time.Time) ([]Sample, time.Duration) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()

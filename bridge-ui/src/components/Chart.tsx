@@ -6,9 +6,6 @@ import { CanvasRenderer } from 'echarts/renderers'
 
 echarts.use([LineChart, GridComponent, TooltipComponent, LegendComponent, CanvasRenderer])
 
-// Series colors validated for the dark console surface (#101318): lightness
-// band, chroma, CVD and normal-vision separation, 3:1 contrast. Rejected and
-// DLQ sit in the CVD warning band, so each series also has its own dash.
 export const SERIES = {
   processed: { color: '#1AA578', dash: 'solid' as const },
   rejected: { color: '#B08A1F', dash: 'dashed' as const },
@@ -37,9 +34,6 @@ function hexA(hex: string, a: number) {
   return `rgba(${n >> 16}, ${(n >> 8) & 255}, ${n & 255}, ${a})`
 }
 
-// wallMs reads an engine time as its own wall clock. The chart draws in UTC,
-// so the axis shows the engine's timezone like the rest of the console, not
-// the browser's.
 function wallMs(iso: string) {
   const m = /([+-])(\d{2}):?(\d{2})$/.exec(iso)
   const offset = m ? (m[1] === '-' ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3])) * 60000 : 0

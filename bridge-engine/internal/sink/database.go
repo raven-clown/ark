@@ -17,23 +17,14 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/config"
 )
 
-// Database inserts one row per message. Table and column names come from
-// the config and are checked to be plain identifiers; every value is a
-// query parameter, so nothing in a message can change the statement.
 type Database struct {
-	db    *sql.DB
-	query string
-	cols  []string
-	tmpls []*template.Template
-	// broken is why writes can't work, such as an unset dsn_env. It fails
-	// each write, so the step's failure path takes the messages, rather
-	// than stopping ARK from starting.
+	db     *sql.DB
+	query  string
+	cols   []string
+	tmpls  []*template.Template
 	broken error
 }
 
-// NewDatabase sets up the connection pool for d, reading the connection
-// string from the environment variable d.DSNEnv. Nothing connects until the
-// first write.
 func NewDatabase(d config.Database, funcs template.FuncMap) (*Database, error) {
 	out := &Database{}
 	for col := range d.Columns {
@@ -105,8 +96,6 @@ func insertQuery(table string, cols, upsertOn []string) string {
 	return q + " DO UPDATE SET " + strings.Join(set, ", ")
 }
 
-// values renders each column for m; an empty result or a missing field is
-// NULL.
 func (d *Database) values(m Message) ([]any, error) {
 	args := make([]any, len(d.tmpls))
 	for i, t := range d.tmpls {

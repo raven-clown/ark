@@ -17,14 +17,6 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/tuning"
 )
 
-// Pipeline config in cluster mode lives in a compacted topic keyed by
-// pipeline name, so every node runs the same config no matter which node's
-// file was edited. The local YAML only seeds an empty topic; after that, a
-// reload on any node publishes its file's pipelines here, and every node
-// (that one included) applies what it reads back.
-
-// SetConfigHandler sets what applies the cluster-wide pipeline config on
-// this node. Call before Start.
 func (n *Node) SetConfigHandler(fn func(pipelines []config.Pipeline)) { n.onConfig = fn }
 
 // ConfigVersion is the offset of the last config record this node applied.
@@ -44,9 +36,6 @@ func (n *Node) distributedPipelines() []config.Pipeline {
 	return out
 }
 
-// PublishConfig makes pipelines the cluster's config: changed or new
-// pipelines are written, pipelines no longer present are tombstoned, all in
-// one batch. It validates first, so a bad file never reaches other nodes.
 func (n *Node) PublishConfig(ctx context.Context, pipelines []config.Pipeline) error {
 	if err := config.ValidatePipelines(pipelines); err != nil {
 		return err
@@ -85,9 +74,6 @@ func (n *Node) PublishConfig(ctx context.Context, pipelines []config.Pipeline) e
 	return nil
 }
 
-// watchConfig tails the config topic and applies the full config once the
-// existing records have been read, then again after every change. A config
-// that fails validation is logged and skipped; nodes keep the last good one.
 func (n *Node) watchConfig(ctx context.Context) {
 	var lastOffset int64 = -1
 	kafkatail.Compacted(ctx, n.brokers, n.topics.Config, n.log,
@@ -142,9 +128,6 @@ func (n *Node) applyDistributed(version int64) {
 	}
 }
 
-// startConfig reads the config topic and, if the cluster has no config
-// yet, seeds it from this node's local file. It returns once this node has
-// applied a config, or after a bounded wait.
 func (n *Node) startConfig(ctx context.Context, seed []config.Pipeline) error {
 	go n.watchConfig(ctx)
 
@@ -177,12 +160,8 @@ func (n *Node) startConfig(ctx context.Context, seed []config.Pipeline) error {
 	return wait(func() bool { return n.configVersion.Load() >= 0 || len(seed) == 0 })
 }
 
-// projectKeyPrefix marks project records in the config topic, next to the
-// pipeline records keyed by pipeline name.
 const projectKeyPrefix = "@project:"
 
-// SetSeedProjects sets the projects to publish if the cluster has no config
-// yet. Call it before Start.
 func (n *Node) SetSeedProjects(projects []config.Project) { n.seedProjects = projects }
 
 // Projects returns the cluster's current projects.
@@ -197,8 +176,6 @@ func (n *Node) Projects() []config.Project {
 	return out
 }
 
-// PublishProjects makes projects the cluster's project config, checked
-// against the current pipelines first.
 func (n *Node) PublishProjects(ctx context.Context, projects []config.Project) error {
 	if err := config.ValidateProjects(projects, n.distributedPipelines()); err != nil {
 		return err

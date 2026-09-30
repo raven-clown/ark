@@ -15,8 +15,6 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/mcpserver"
 )
 
-// fileSource applies MCP config changes on a single node by rewriting the
-// config file and reloading it, the same path an operator's edit takes.
 type fileSource struct {
 	path   string
 	reload *configReloader
@@ -26,6 +24,7 @@ type fileSource struct {
 	projects []config.Project
 	model    *config.AssistantModel
 	settings mcpserver.Settings
+	users    []config.User
 }
 
 func (f *fileSource) Mode() string { return "file" }
@@ -33,7 +32,7 @@ func (f *fileSource) Mode() string { return "file" }
 func (f *fileSource) set(cfg *config.Config) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.current, f.projects, f.model = cfg.Pipelines, cfg.Projects, cfg.Assistant.Model
+	f.current, f.projects, f.model, f.users = cfg.Pipelines, cfg.Projects, cfg.Assistant.Model, cfg.Auth.Users
 	f.settings = mcpserver.Settings{Timezone: cfg.Timezone, Model: cfg.Assistant.Model, Tuning: cfg.Tuning}
 }
 
@@ -43,12 +42,20 @@ func (f *fileSource) Settings() mcpserver.Settings {
 	return f.settings
 }
 
-// ApplySettings writes the timezone, default model and tuning into the
-// config file. A timezone change shows after a restart.
 func (f *fileSource) ApplySettings(_ context.Context, s mcpserver.Settings) error {
 	return f.write(func(cfg *config.Config) {
 		cfg.Timezone, cfg.Assistant.Model, cfg.Tuning = s.Timezone, s.Model, s.Tuning
 	})
+}
+
+func (f *fileSource) Users() []config.User {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]config.User(nil), f.users...)
+}
+
+func (f *fileSource) ApplyUsers(_ context.Context, users []config.User) error {
+	return f.write(func(cfg *config.Config) { cfg.Auth.Users = users })
 }
 
 func (f *fileSource) Projects() []config.Project {
@@ -63,8 +70,6 @@ func (f *fileSource) DefaultModel() *config.AssistantModel {
 	return f.model
 }
 
-// ApplyProjects writes projects into the config file the same way Apply
-// writes pipelines.
 func (f *fileSource) ApplyProjects(ctx context.Context, projects []config.Project) error {
 	return f.write(func(cfg *config.Config) { cfg.Projects = projects })
 }
@@ -77,9 +82,6 @@ func (f *fileSource) Pipelines() []config.Pipeline {
 	return out
 }
 
-// Apply writes pipelines into the config file (keeping brokers, topics and
-// cluster settings), keeps the previous file as <path>.bak, and reloads.
-// Comments in the file are not preserved.
 func (f *fileSource) Apply(_ context.Context, pipelines []config.Pipeline) error {
 	return f.write(func(cfg *config.Config) { cfg.Pipelines = pipelines })
 }
@@ -88,12 +90,17 @@ func (f *fileSource) write(change func(*config.Config)) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	cfg, err := config.Load(f.path)
+	cfg, err := config.LoadFile(f.path)
 	if err != nil {
 		return err
 	}
 	change(cfg)
-	if err := cfg.Validate(); err != nil {
+	check, err := config.LoadFile(f.path)
+	if err != nil {
+		return err
+	}
+	change(check)
+	if err := config.Prepare(check); err != nil {
 		return err
 	}
 	body, err := yaml.Marshal(cfg)
@@ -102,19 +109,19 @@ func (f *fileSource) write(change func(*config.Config)) error {
 	}
 	header := fmt.Sprintf("# Written by ARK at %s after a confirmed change made through MCP or the console.\n# The previous version is in %s.bak.\n", time.Now().UTC().Format(time.RFC3339), filepath.Base(f.path))
 
-	info, err := os.Stat(f.path)
-	if err != nil {
-		return err
-	}
-	old, err := os.ReadFile(f.path)
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(f.path+".bak", old, info.Mode().Perm()); err != nil { // #nosec G703 -- path is the operator-supplied -config flag, not network input
-		return fmt.Errorf("the config file's directory isn't writable (mounted read-only?); change the file by hand or use cluster mode: %w", err)
+	perm := os.FileMode(0o600)
+	if info, err := os.Stat(f.path); err == nil {
+		perm = info.Mode().Perm()
+		old, err := os.ReadFile(f.path)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(f.path+".bak", old, perm); err != nil { // #nosec G703 -- path is the operator-supplied -config flag, not network input
+			return fmt.Errorf("the config file's directory isn't writable (mounted read-only?); change the file by hand or use cluster mode: %w", err)
+		}
 	}
 	tmp := f.path + ".tmp"
-	if err := os.WriteFile(tmp, append([]byte(header), body...), info.Mode().Perm()); err != nil {
+	if err := os.WriteFile(tmp, append([]byte(header), body...), perm); err != nil {
 		return err
 	}
 	if err := os.Rename(tmp, f.path); err != nil {
@@ -125,8 +132,6 @@ func (f *fileSource) write(change func(*config.Config)) error {
 	return f.reload.Reload()
 }
 
-// clusterSource applies MCP config changes by publishing them to the
-// cluster config topic, which every node applies.
 type clusterSource struct {
 	node     *cluster.Node
 	model    *config.AssistantModel

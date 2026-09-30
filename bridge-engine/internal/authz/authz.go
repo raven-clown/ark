@@ -1,7 +1,3 @@
-// Package authz holds the bearer-token scopes shared by the REST API and
-// the MCP server. The two surfaces load separate token sets, so a token
-// issued to an AI agent for MCP can't be replayed against REST to get
-// around per-pipeline mcp_access.
 package authz
 
 import (
@@ -39,8 +35,6 @@ type TokenStore struct {
 	entries []entry
 }
 
-// LoadFromEnv reads <prefix>_VIEWER_TOKENS, <prefix>_OPERATOR_TOKENS and
-// <prefix>_ADMIN_TOKENS, each a comma-separated list.
 func LoadFromEnv(prefix string) *TokenStore {
 	store := &TokenStore{}
 	store.load(os.Getenv(prefix+"_VIEWER_TOKENS"), ScopeViewer)
@@ -58,8 +52,6 @@ func (t *TokenStore) load(csv string, scope Scope) {
 	}
 }
 
-// Lookup compares against every configured token in constant time, so
-// response timing doesn't reveal how much of a guess matched.
 func (t *TokenStore) Lookup(token string) (Scope, bool) {
 	var found Scope
 	candidate := []byte(token)
@@ -84,8 +76,6 @@ func BearerToken(r *http.Request) (string, bool) {
 	return token, true
 }
 
-// UserID is a stable, non-reversible identifier for a token, used to bind
-// an MCP session to the token that created it.
 func UserID(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:16])
@@ -103,8 +93,9 @@ func IsLoopback(r *http.Request) bool {
 
 // Caller is who made a request, as established by the API guard.
 type Caller struct {
-	ID    string
-	Scope Scope
+	ID        string
+	Scope     Scope
+	Anonymous bool
 }
 
 type callerKey struct{}
@@ -119,8 +110,6 @@ func CallerFrom(ctx context.Context) (Caller, bool) {
 	return c, ok
 }
 
-// NewTokenStore builds a store where every token in csv (comma-separated)
-// has the same scope, for an endpoint with its own token list.
 func NewTokenStore(csv string, scope Scope) *TokenStore {
 	store := &TokenStore{}
 	store.load(csv, scope)

@@ -22,6 +22,8 @@ jobs:
     strategy:
       matrix:
         include:
+          - name: ark
+            context: .
           - name: ark-bridge
             context: bridge-engine
           - name: ark-console

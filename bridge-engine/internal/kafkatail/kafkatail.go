@@ -1,6 +1,3 @@
-// Package kafkatail reads single-partition compacted topics that hold
-// latest-value-per-key state (cluster placements, config, control, DLQ
-// state) into memory.
 package kafkatail
 
 import (
@@ -15,17 +12,6 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/tuning"
 )
 
-// idleCatchUp is how long a read may go quiet before the existing records
-// are considered fully read. It covers a topic whose last records were
-// removed by compaction, where there is nothing left to see "lag reach 0"
-// on.
-
-// Compacted tails partition 0 of topic from the beginning until ctx ends.
-// It calls onRecord for every record and onCaughtUp exactly once, after the
-// records that existed when it started have been read. Catch-up is
-// detected from the reader's own lag reaching zero, or from the topic
-// going quiet, never from comparing against an offset that compaction may
-// have deleted.
 func Compacted(ctx context.Context, brokers []string, topic string, log *slog.Logger, onRecord func(kafka.Message), onCaughtUp func()) {
 	reader := kafka.NewReader(kafka.ReaderConfig{
 		Brokers:     brokers,

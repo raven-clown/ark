@@ -12,11 +12,6 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/config"
 )
 
-// interpret_request is the "understand before acting" pass. It reads the
-// user's own words (Thai or English), works out what they want, ties every
-// name they mention to something that actually exists in ARK, and says what
-// is still ambiguous, so the model plans from facts instead of guesses.
-
 type intentRule struct {
 	intent   string
 	keywords []string
@@ -277,9 +272,6 @@ func words(s string) []string {
 	})
 }
 
-// matchPipelines links what the user wrote to real pipeline names: exact
-// names, then names whose parts appear in the text ("orders" matches
-// "order-processor"), then close spellings.
 func matchPipelines(text string, pipelines []config.Pipeline) []nameMatch {
 	lower := strings.ToLower(text)
 	tokens := words(text)
@@ -331,8 +323,6 @@ func matchPipelines(text string, pipelines []config.Pipeline) []nameMatch {
 	return out
 }
 
-// mentionedTenants finds the tenants of visible pipelines named in text as
-// a whole word.
 func mentionedTenants(text string, pipelines []config.Pipeline) []string {
 	lower := strings.ToLower(text)
 	word := func(r byte) bool { return r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' || r == '_' }

@@ -1,7 +1,3 @@
-// Package events keeps a bounded, in-memory history of the things an
-// operator (or an AI agent answering one) needs to explain what happened
-// and why: pipelines starting and stopping, pauses, breaker trips, messages
-// retried, rejected or dead-lettered, and the reason for each.
 package events
 
 import (
@@ -63,8 +59,6 @@ func (l *Log) Add(e Event) {
 	}
 }
 
-// Recent returns up to limit events, newest first. An empty pipeline
-// matches every pipeline; an empty kinds list matches every kind.
 func (l *Log) Recent(pipeline string, since time.Time, limit int, kinds ...Kind) []Event {
 	want := make(map[Kind]bool, len(kinds))
 	for _, k := range kinds {
@@ -95,8 +89,6 @@ func (l *Log) Recent(pipeline string, since time.Time, limit int, kinds ...Kind)
 	return out
 }
 
-// Default is the process-wide log every package records into, the same way
-// Prometheus has a default registry.
 var Default = New(2000)
 
 func Record(pipeline string, kind Kind, message string, details map[string]string) {

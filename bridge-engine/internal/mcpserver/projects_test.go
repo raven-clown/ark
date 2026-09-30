@@ -11,6 +11,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/raven-clown/ark/bridge-engine/internal/api"
+	"github.com/raven-clown/ark/bridge-engine/internal/authz"
 	"github.com/raven-clown/ark/bridge-engine/internal/config"
 )
 
@@ -74,7 +75,7 @@ func projectFixture(t *testing.T) (*memSource, *httptest.Server) {
 	d := Deps{Registry: api.NewRegistry(nil), Config: src}
 	mux := http.NewServeMux()
 	mux.Handle("/mcp/", NewProjectHandler(d))
-	mux.Handle("/mcp", NewHTTPHandler(d, LoadTokenStoreFromEnv()))
+	mux.Handle("/mcp", NewHTTPHandler(d, &authz.Authenticator{Tokens: LoadTokenStoreFromEnv()}))
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return src, srv

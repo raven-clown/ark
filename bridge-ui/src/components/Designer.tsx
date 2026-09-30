@@ -95,8 +95,6 @@ const TYPES: { type: StepType; icon: IconName }[] = [
 ]
 const iconOf = (t: StepType) => TYPES.find((x) => x.type === t)!.icon
 
-// APPS are ready-made steps for products people send messages to. Each is
-// a webhook or topic step set up the way that product expects.
 interface AppPreset {
   app: string
   label: string
@@ -127,9 +125,6 @@ function AppBadge({ app }: { app: AppPreset }) {
   )
 }
 
-// UrlParts is a webhook url taken apart: its base address, the index for
-// search apps, and the value that fills in /{{path .<id>}}, such as
-// data.order_id or original.order_id.
 interface UrlParts {
   base: string
   index: string
@@ -150,15 +145,11 @@ function urlParts(step: Step): UrlParts {
   return m ? { base: url.slice(0, m.index), index: '', id: m[1] } : { base: url, index: '', id: '' }
 }
 
-// webhookURLOK accepts template actions only after http(s)://host/, the
-// same rule the engine checks.
 const webhookURLOK = (url: string) => {
   const at = url.indexOf('{{')
   return at < 0 ? /^https?:\/\/\S+$/.test(url) : /^https?:\/\/[^\s/?#{]+[/?]/.test(url.slice(0, at))
 }
 const sqlName = /^[A-Za-z_][A-Za-z0-9_]{0,62}$/
-// dbOK mirrors the engine's check: plain table and column names, and an
-// environment variable for the connection string.
 const dbOK = (d?: DatabaseCfg) =>
   !!d &&
   /^[A-Z_][A-Z0-9_]*$/.test(d.dsn_env) &&
@@ -188,8 +179,6 @@ const cardTitle = '{{json (or .reason "New message")}}'
 const dataBlock = '{{json (printf "```%s```" (json .data))}}'
 const envelope = '{"data": {{json .data}}, "key": {{json .key}}, "headers": {{json .headers}}, "reason": {{json .reason}}}'
 
-// A Pattern is one way of sending to an app: the url, method and body or
-// message that kind of request needs.
 interface Pattern {
   id: string
   label: Key
@@ -230,8 +219,6 @@ const PATTERNS: Record<string, Pattern[]> = {
 }
 const CARD_NAME: Record<string, string> = { slack: 'Block Kit', discord: 'Embed', teams: 'Adaptive Card' }
 
-// patternOf names the pattern a step was made with, or '' once it has been
-// changed by hand.
 function patternOf(step: Step): string {
   const parts = urlParts(step)
   const same = (a?: string, b?: string) => (a || '') === (b || '')
@@ -263,8 +250,6 @@ const list = (v: unknown): Fields[] => (Array.isArray(v) ? v.map(obj) : [])
 const str = (v: unknown) => (v === undefined || v === null ? '' : String(v))
 const num = (s: unknown, def: number) => (/^\d+$/.test(str(s).trim()) ? Number(s) : def)
 
-// handlesOf lists a step's ways out: the key in the step that holds where
-// each leads, and the label drawn next to it.
 function handlesOf(s: Step): { key: string; label: string }[] {
   switch (s.type) {
     case 'call':
@@ -312,9 +297,6 @@ function allOutputs(s: Step): string[] {
   return handlesOf(s).flatMap((h) => outputsAt(s, h.key))
 }
 
-// fromLegacy turns a fixed-path pipeline into a flow that does the same:
-// data check, rules before the call as one first-match condition, the call,
-// rules after it, and the result, reject and dead-letter topics.
 export function fromLegacy(cfg: Fields): FlowCfg {
   const steps: Step[] = []
   const add = (s: Step) => (steps.push(s), s.id)
@@ -373,9 +355,6 @@ function readFlow(cfg: Fields): FlowCfg {
   return { start, steps: (f.steps as Step[]).map((s) => ({ ...s })) }
 }
 
-// layout places steps in columns by how far they are from the source, and
-// within a column in the order their ways out are drawn, so lines from one
-// step fan out without crossing lines from another.
 function layout(flow: FlowCfg): Record<string, { x: number; y: number }> {
   const depth: Record<string, number> = {}
   const order: string[] = []
@@ -550,8 +529,6 @@ function issuesOf(name: string, pipe: Fields, flow: FlowCfg): Issue[] {
   return out
 }
 
-// toConfig writes the flow over the pipeline's config. The fixed path's
-// fields are dropped since the steps carry them now.
 export function toConfig(base: Fields, name: string, project: string, pipe: Fields, flow: FlowCfg): Fields {
   const out: Fields = structuredClone(base)
   for (const k of ['target', 'destination_topic', 'fast_path_rules', 'post_callback_rules', 'data_rules']) delete out[k]
@@ -579,8 +556,6 @@ export function toConfig(base: Fields, name: string, project: string, pipe: Fiel
 const KEY_ORDER = ['name', 'id', 'type', 'project', 'tenant', 'mcp_access', 'enabled', 'source_topic', 'consumer_group', 'workers', 'reject_topic', 'dead_letter_topic', 'ordering', 'when', 'next', 'start', 'steps', 'flow', 'path', 'url']
 const rank = (k: string) => (KEY_ORDER.includes(k) ? KEY_ORDER.indexOf(k) : KEY_ORDER.length)
 
-// yamlOf writes plain data as YAML, quoting every string, with the keys a
-// person looks for first at the top.
 export function yamlOf(v: unknown, indent = ''): string {
   const scalar = (x: unknown) => (x === null || x === undefined ? 'null' : typeof x === 'string' ? JSON.stringify(x) : String(x))
   const isEmpty = (x: unknown) => (Array.isArray(x) ? x.length === 0 : x !== null && typeof x === 'object' ? Object.keys(x).length === 0 : false)
@@ -619,8 +594,6 @@ function Input({ label, value, onChange, placeholder, mono = true, options }: { 
   )
 }
 
-// useKafkaNames lists the cluster's topics and consumer groups, so fields
-// can offer them while still taking a name that doesn't exist yet.
 function useKafkaNames() {
   const [names, setNames] = useState<{ topics: string[]; groups: string[] }>({ topics: [], groups: [] })
   useEffect(() => {
@@ -771,8 +744,6 @@ function StepFields({ step, pipe, onChange }: { step: Step; pipe: Fields; onChan
       const patterns = PATTERNS[app]
       const current = patterns ? patternOf(step) : ''
       const parts = urlParts(step)
-      // Changing the address keeps the pattern when there is one, and edits
-      // the url in place when the step was changed by hand.
       const setParts = (patch: Partial<UrlParts>) => {
         const next = { ...parts, ...patch }
         if (current) return set(withPattern(app, current, next))
@@ -963,8 +934,6 @@ function Board({ onClose, onApplied, onSimple, existing }: DesignerProps) {
     setSel(id)
   }
   const selected = flow.steps.find((s) => s.id === sel)
-  // Fit once, when the steps first show, and leave the view alone after
-  // that so adding or moving a step doesn't jump the board around.
   const fitted = useRef(false)
   const allSized = flow.steps.every((s) => dims[s.id]) && !!dims[SOURCE]
   useEffect(() => {

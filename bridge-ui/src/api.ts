@@ -1,6 +1,3 @@
-// Client for the ARK engine REST API. The console server proxies /api to
-// the engine, so every call is same-origin; the token is kept for this
-// browser tab only.
 
 const TOKEN_KEY = 'ark.token'
 
@@ -37,7 +34,7 @@ export class ApiError extends Error {
 }
 
 function headers(json: boolean): HeadersInit {
-  const h: Record<string, string> = {}
+  const h: Record<string, string> = { 'X-Ark-Csrf': '1' }
   if (token) h.Authorization = `Bearer ${token}`
   if (json) h['Content-Type'] = 'application/json'
   return h
@@ -64,8 +61,6 @@ export async function api<T>(path: string, opts: { method?: string; body?: unkno
   return data as T
 }
 
-// streamEvents reads a Server-Sent Events response with the auth header
-// (EventSource can't send one) and calls onEvent for each event.
 export async function streamEvents(path: string, signal: AbortSignal, onEvent: (event: string, data: string) => void): Promise<void> {
   const res = await fetch(`/api/v1${path}`, { headers: headers(false), signal })
   if (!res.ok || !res.body) {
@@ -92,8 +87,6 @@ export async function streamEvents(path: string, signal: AbortSignal, onEvent: (
   }
 }
 
-// clock returns the wall-clock part of an ISO 8601 time as sent by the
-// engine, which drops trailing zeros from the fraction.
 export function clock(iso: string, millis = false): string {
   const m = /T(\d{2}:\d{2}:\d{2})(?:\.(\d+))?/.exec(iso)
   if (!m) return iso

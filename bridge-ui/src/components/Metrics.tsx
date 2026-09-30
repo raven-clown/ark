@@ -39,8 +39,6 @@ interface HistoryOut {
 
 const RANGES = [5, 15, 30, 60, 360, 1440]
 
-// rolling averages each point with the ones before it (3 samples = 15s),
-// so bursty traffic reads as a trend. Charts that use it say so.
 export function rolling(samples: Sample[], window = 3): Sample[] {
   return samples.map((s, i) => {
     const w = samples.slice(Math.max(0, i - window + 1), i + 1)

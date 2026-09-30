@@ -46,10 +46,6 @@ func New(target config.Target, client *callback.Client) *Pool {
 	return p
 }
 
-// Run health-checks every endpoint that has a health_check_urls entry, on
-// target.health_check_interval_seconds. Endpoints with no health check
-// configured are always treated as healthy. Blocks until ctx is done; call
-// it once per pool, in its own goroutine. A no-op if nothing needs probing.
 func (p *Pool) Run(ctx context.Context) {
 	if p.interval <= 0 {
 		return
@@ -88,11 +84,6 @@ func (p *Pool) probe(ctx context.Context, ep *endpoint) {
 	ep.healthy.Store(p.client.Probe(probeCtx, ep.healthURL) == nil)
 }
 
-// Pick selects an endpoint using the pool's strategy, skipping any endpoint
-// its health probe has marked down. partitionKey drives sticky_partition.
-// release must be called with the call's outcome once the request finishes,
-// so least_inflight has an accurate in-flight count. ok is false only when
-// every endpoint is unhealthy.
 func (p *Pool) Pick(partitionKey int) (url string, release func(), ok bool) {
 	n := len(p.endpoints)
 	if n == 0 {

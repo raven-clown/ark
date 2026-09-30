@@ -28,8 +28,6 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/tap"
 )
 
-// flowRuntime is a flow's compiled steps: a caller per call step, the
-// programs of every condition and a checker per data check.
 type flowRuntime struct {
 	flow       *config.Flow
 	callers    map[string]*caller
@@ -44,8 +42,6 @@ type flowRuntime struct {
 
 var templateFuncs = template.FuncMap{"json": toJSON, "path": pathValue}
 
-// pathValue escapes v for a url path. A missing value is an error, so a
-// request never goes to /<nil> or an empty id.
 func pathValue(v any) (string, error) {
 	s := fmt.Sprint(v)
 	if v == nil || s == "" {
@@ -54,9 +50,6 @@ func pathValue(v any) (string, error) {
 	return url.PathEscape(s), nil
 }
 
-// flowEnv is what a condition can read: the message as it is at that step
-// (data), as it was consumed (original), the last call's answer (response),
-// why it failed when on a failure path (reason), its key and headers.
 var flowEnv = map[string]any{
 	"data":     map[string]any{},
 	"original": map[string]any{},
@@ -134,8 +127,6 @@ type flowMsg struct {
 	reason   string
 }
 
-// flowOutcome sums what happened to one message across every path, so it
-// is counted once however many ways it went.
 type flowOutcome struct {
 	delivered    bool
 	rejected     bool
@@ -343,8 +334,6 @@ func (r *Runner) runStep(ctx context.Context, id string, partition int, m flowMs
 	return fmt.Errorf("flow step %q: unhandled type %q", id, s.Type)
 }
 
-// flowReject sends m to the step's topic, or the pipeline's reject topic,
-// or its dead-letter topic when it has no reject topic.
 func (r *Runner) flowReject(ctx context.Context, s config.Step, m flowMsg, out *flowOutcome, log *slog.Logger) error {
 	topic := s.Topic
 	if topic == "" {
@@ -458,8 +447,6 @@ func toJSON(v any) string {
 	return string(b)
 }
 
-// webhookURL fills in a webhook's url template for m. The filled-in url must
-// keep the template's scheme and host.
 func (rt *flowRuntime) webhookURL(s config.Step, m flowMsg) (string, error) {
 	tmpl := rt.urls[s.ID]
 	if tmpl == nil {

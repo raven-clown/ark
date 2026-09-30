@@ -9,9 +9,6 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/tuning"
 )
 
-// standbyBrowsers lets a node inspect, retry and discard dead-letter and
-// reject entries of a pipeline it isn't running itself, so in a cluster any
-// node can answer for any pipeline.
 type standbyBrowsers struct {
 	cfg    config.Pipeline
 	dlq    *dlq.Browser
@@ -20,8 +17,6 @@ type standbyBrowsers struct {
 	cancel context.CancelFunc
 }
 
-// SyncStandbyBrowsers keeps one standby DLQ/reject browser per configured
-// pipeline that has such topics, independent of whether it runs here.
 func (m *Manager) SyncStandbyBrowsers(pipelines []config.Pipeline) {
 	want := make(map[string]config.Pipeline)
 	for _, p := range pipelines {
@@ -61,8 +56,6 @@ func (m *Manager) SyncStandbyBrowsers(pipelines []config.Pipeline) {
 	}
 }
 
-// DLQBrowser returns the standby browser for a pipeline's "dlq" or "reject"
-// topic and the pipeline's mcp_access, if one exists.
 func (m *Manager) DLQBrowser(name, kind string) (*dlq.Browser, config.MCPAccess, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

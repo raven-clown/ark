@@ -1,7 +1,3 @@
-// Package cluster implements ARK Cluster (PLAN.md, Phase 4b/4c): an opt-in
-// mechanism for spreading a pipeline's workers across multiple ARK
-// processes, using Kafka itself as the coordination backbone instead of an
-// embedded Raft implementation or an external coordinator.
 package cluster
 
 import (
@@ -23,9 +19,6 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/tuning"
 )
 
-// Topics are namespaced by cluster.name so separate ARK deployments sharing
-// one Kafka cluster never join each other's election or read each other's
-// placements.
 type Topics struct {
 	Heartbeat string
 	Election  string
@@ -45,8 +38,6 @@ func TopicsFor(clusterName string) Topics {
 	}
 }
 
-// ReconcileFunc applies a set of pipeline configs to the local orchestrator,
-// with the same contract as orchestrator.Manager.Reconcile.
 type ReconcileFunc func(pipelines []config.Pipeline) []error
 
 type Status struct {
@@ -60,10 +51,6 @@ type Status struct {
 	NodeLabels    map[string]map[string]string `json:"node_labels,omitempty"`
 }
 
-// Node coordinates this process's participation in an ARK cluster: it
-// heartbeats its own liveness, takes part in leader election, and, whether
-// or not it currently is leader, applies whatever placement decision the
-// current leader has published for pipelines it should run locally.
 type Node struct {
 	id                string
 	brokers           []string
@@ -133,19 +120,10 @@ func defaultNodeID() string {
 
 func (n *Node) ID() string { return n.id }
 
-// SetStatsProvider sets where this node's per-pipeline numbers come from;
-// they ride along in its heartbeat. Call before Start.
 func (n *Node) SetStatsProvider(fn func() map[string]PipelineStats) { n.statsFn = fn }
 
-// SetPauseHandler sets what applies a cluster-wide pause or resume on this
-// node. Call before Start.
 func (n *Node) SetPauseHandler(fn func(pipeline string, paused bool)) { n.onPause = fn }
 
-// Start ensures the internal cluster topics exist and launches every
-// background loop (heartbeat, election, placement, control, config). seed
-// is this node's local pipeline config, used only if the cluster has no
-// config yet. It returns once this node has applied the cluster's config;
-// the loops keep running until ctx is cancelled.
 func (n *Node) Start(ctx context.Context, seed []config.Pipeline) error {
 	if err := kafkaadmin.EnsureCompactedTopic(ctx, n.brokers, n.topics.Heartbeat, 1, n.replicationFactor); err != nil {
 		return fmt.Errorf("ensuring %s exists: %w", n.topics.Heartbeat, err)
@@ -173,9 +151,6 @@ func (n *Node) Start(ctx context.Context, seed []config.Pipeline) error {
 	n.placer = newPlacer(n.brokers, n.topics.Placement, n.log)
 	go n.placer.watch(ctx, n.onPlacementUpdate)
 
-	// Give the first ApplyConfig the current placement to work from, so a
-	// joining node starts with its real share instead of starting at full
-	// workers and being narrowed a moment later (two restarts per join).
 	deadline := time.Now().Add(tuning.ClusterCatchUp())
 	for !n.placer.caughtUp.Load() && time.Now().Before(deadline) {
 		select {
@@ -217,9 +192,6 @@ func (n *Node) nodeTimeout() time.Duration {
 	return time.Duration(n.cfg.NodeTimeoutSeconds) * time.Second
 }
 
-// runLeaderDuties runs for as long as this node holds one election
-// generation. It publishes only placements that changed since its last
-// publish, under an epoch newer than any earlier leader's.
 func (n *Node) runLeaderDuties(genCtx context.Context, generation int32) {
 	epoch, err := n.placer.leaderEpoch(genCtx, generation)
 	if err != nil {
@@ -232,8 +204,6 @@ func (n *Node) runLeaderDuties(genCtx context.Context, generation int32) {
 	ticker := time.NewTicker(time.Duration(n.cfg.PlacementIntervalSeconds) * time.Second)
 	defer ticker.Stop()
 
-	// Partition counts rarely change, so they're refreshed on a slower
-	// clock than placement instead of dialing Kafka every tick.
 	var partitions map[string]int
 	var partitionsAt time.Time
 	publish := func() {
@@ -283,9 +253,6 @@ func (n *Node) runLeaderDuties(genCtx context.Context, generation int32) {
 	}
 }
 
-// ApplyConfig is called with the pipeline set every time the local config
-// (re)loads. It stores the pipelines as the cluster-wide desired state and
-// reconciles this node's local runners against the latest known placement.
 func (n *Node) ApplyConfig(pipelines []config.Pipeline) []error {
 	n.mu.Lock()
 	n.base = pipelines
@@ -297,8 +264,6 @@ func (n *Node) ApplyConfig(pipelines []config.Pipeline) []error {
 func (n *Node) onPlacementUpdate(assignments map[string]map[string]int) {
 	local := make(map[string]int, len(assignments))
 	for pipeline, byNode := range assignments {
-		// A pipeline the leader has placed but not on this node gets 0
-		// here, rather than falling back to its full configured workers.
 		local[pipeline] = byNode[n.id]
 	}
 
@@ -316,14 +281,6 @@ func (n *Node) onPlacementUpdate(assignments map[string]map[string]int) {
 	}
 }
 
-// reconcileLocal narrows each pipeline's Workers to this node's share of the
-// current placement decision, then reconciles.
-//
-// A pipeline the leader hasn't decided on yet keeps its full configured
-// Workers, the same as single-node mode: over-provisioning a few idle
-// consumers before placement stabilizes is harmless, since Kafka's own
-// group coordinator still only ever hands each partition to one consumer,
-// while under-provisioning would leave the pipeline unprocessed.
 func (n *Node) reconcileLocal(pipelines []config.Pipeline) []error {
 	n.mu.Lock()
 	local := n.local
@@ -346,9 +303,6 @@ func (n *Node) reconcileLocal(pipelines []config.Pipeline) []error {
 	return n.reconcile(adjusted)
 }
 
-// AssignedElsewhere reports whether name is a configured pipeline that the
-// leader placed entirely on other nodes, so the API can say so instead of
-// answering "not found".
 func (n *Node) AssignedElsewhere(name string) bool {
 	n.mu.Lock()
 	defer n.mu.Unlock()

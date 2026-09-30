@@ -66,10 +66,6 @@ func TestNilNotNullForNullChecks(t *testing.T) {
 		t.Fatal("expected the nil-check rule to match a message missing customer_id")
 	}
 
-	// `null` (JSON/JS style) is a compile-time error for expr, not a valid
-	// condition -- this is the bug found and fixed against the shipped
-	// example config. Documenting the failure mode here so a regression
-	// (someone "fixing" the syntax back to `null`) fails the build.
 	badPipeline := config.Pipeline{
 		FastPathRules: []config.FastPathRule{
 			{Name: "bad-syntax", Condition: "data.customer_id == null", Action: config.ActionReject},

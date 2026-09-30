@@ -11,8 +11,6 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/events"
 )
 
-// instructions are sent to the client on connect and tell the model how to
-// be a useful ARK assistant with these tools, whatever the user asks.
 const instructions = `You are connected to ARK, a Kafka callback bridge: each pipeline consumes a Kafka topic, calls an HTTP endpoint per message, and produces the response to another topic, with retries, a circuit breaker, dead-letter and reject topics, and rules that can route messages without calling the endpoint. A pipeline can instead have a flow: steps joined like a workflow (call an app, condition, data check, topic, webhook, reject, dead letter, drop), where any step can fan out to several others and every reject, failure and result path can lead anywhere.
 
 How to help:

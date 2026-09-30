@@ -12,8 +12,6 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/config"
 )
 
-// openAIProvider speaks the OpenAI chat completions format, which OpenAI
-// and most other providers and local servers accept.
 type openAIProvider struct {
 	url, key, model string
 	hc              *http.Client
@@ -108,8 +106,6 @@ func (p *openAIProvider) Chat(ctx context.Context, system string, history []Mess
 	return Reply{Message: out, Done: len(out.ToolCalls) == 0}, nil
 }
 
-// postJSON sends body and decodes the answer into out, turning an error
-// status into an error that carries the provider's own message.
 func postJSON(ctx context.Context, hc *http.Client, url string, headers map[string]string, body, out any) error {
 	b, err := json.Marshal(body)
 	if err != nil {

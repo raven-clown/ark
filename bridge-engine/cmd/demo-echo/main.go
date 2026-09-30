@@ -1,13 +1,3 @@
-// demo-echo is a tiny stand-in for "your app", used by docker compose so
-// ARK can be tried without writing anything: it answers every POST with
-// the message it received plus a processed_at timestamp. A message with
-// "fail": true gets a 500, and one with "invalid": true a 400, to show
-// retries, dead-lettering and rejects. POST /batch takes ARK's batch
-// format and answers each item the same way.
-//
-// DEMO_ECHO_DELAY_MS adds a fixed cost to every request and
-// DEMO_ECHO_MAX_CONCURRENT limits how many are handled at once, to stand in
-// for an app with a per-request cost such as a database round trip.
 package main
 
 import (

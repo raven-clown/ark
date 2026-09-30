@@ -306,9 +306,6 @@ func getPipelineStatus(d Deps) mcp.ToolHandlerFor[pipelineNameIn, getPipelineSta
 	}
 }
 
-// findDLQBrowser returns name's dlq or reject browser and the access this
-// caller has to it. The pipeline must be visible to the caller: in its
-// project, and not hidden by mcp_access or the project's ai_access.
 func findDLQBrowser(d Deps, name, kind string) (*dlq.Browser, string, error) {
 	p, ok := d.pipeline(name)
 	if !ok {
@@ -394,9 +391,6 @@ func requireWritable(access, pipeline string) error {
 	return nil
 }
 
-// writablePipeline is name when the caller may change it: visible to them
-// (project, ai_access, mcp_access) and mcp_access: read_write after the
-// project's ai_access cap.
 func writablePipeline(d Deps, name string) error {
 	p, ok := d.pipeline(name)
 	if !ok {

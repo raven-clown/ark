@@ -2,6 +2,8 @@ package mcpserver
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"net/http"
 
 	"github.com/modelcontextprotocol/go-sdk/auth"
@@ -10,18 +12,11 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/authz"
 )
 
-// NewHTTPHandler serves MCP behind bearer-token auth. Each request's
-// TokenInfo carries a UserID derived from its token, which the SDK checks
-// on every request that reuses a session: a session opened with an
-// operator token can't be driven by a request holding a different token,
-// even if the session ID leaks.
-func NewHTTPHandler(d Deps, tokens *TokenStore) http.Handler {
-	return newEndpointHandler(d, tokens, nil)
+func NewHTTPHandler(d Deps, authn *authz.Authenticator) http.Handler {
+	return newEndpointHandler(d, authn, nil)
 }
 
-// newEndpointHandler serves MCP for d with tokens, offering only tools
-// (all tools when empty).
-func newEndpointHandler(d Deps, tokens *TokenStore, tools []string) http.Handler {
+func newEndpointHandler(d Deps, authn *authz.Authenticator, tools []string) http.Handler {
 	cf := newConfirmations()
 	servers := map[Scope]*mcp.Server{
 		ScopeViewer:   buildServer(ScopeViewer, d, cf),
@@ -42,13 +37,24 @@ func newEndpointHandler(d Deps, tokens *TokenStore, tools []string) http.Handler
 		return servers[Scope(info.Scopes[0])]
 	}, nil)
 
-	verify := func(_ context.Context, token string, _ *http.Request) (*auth.TokenInfo, error) {
-		scope, ok := tokens.Lookup(token)
-		if !ok {
+	anon := make([]byte, 16)
+	_, _ = rand.Read(anon)
+	anonToken := "anonymous-" + hex.EncodeToString(anon)
+	verify := func(ctx context.Context, token string, _ *http.Request) (*auth.TokenInfo, error) {
+		if token == anonToken {
+			return &auth.TokenInfo{Scopes: []string{string(authn.Anonymous)}, UserID: "anonymous"}, nil
+		}
+		c, err := authn.AuthenticateToken(ctx, token)
+		if err != nil {
 			return nil, auth.ErrInvalidToken
 		}
-		return &auth.TokenInfo{Scopes: []string{string(scope)}, UserID: authz.UserID(token)}, nil
+		return &auth.TokenInfo{Scopes: []string{string(c.Scope)}, UserID: c.ID}, nil
 	}
-
-	return auth.RequireBearerToken(verify, &auth.RequireBearerTokenOptions{AllowMissingExpiration: true})(mcpHandler)
+	guarded := auth.RequireBearerToken(verify, &auth.RequireBearerTokenOptions{AllowMissingExpiration: true})(mcpHandler)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, has := authz.BearerToken(r); !has && authn.Anonymous != "" {
+			r.Header.Set("Authorization", "Bearer "+anonToken)
+		}
+		guarded.ServeHTTP(w, r)
+	})
 }

@@ -31,17 +31,11 @@ type Response struct {
 	RetryAfter    time.Duration
 }
 
-// MessageCorrelationID is stable for a given Kafka record, so every retry
-// and every redelivery after a crash carries the same ID and the target
-// can use it as an idempotency key.
 func MessageCorrelationID(topic string, partition int, offset int64) string {
 	sum := sha256.Sum256([]byte(topic + "/" + strconv.Itoa(partition) + "/" + strconv.FormatInt(offset, 10)))
 	return hex.EncodeToString(sum[:16])
 }
 
-// RetryLater reports the 4xx statuses that mean "come back later" rather
-// than "this message is invalid". They don't use up a retry attempt and
-// Retry-After is honored.
 func (r *Response) RetryLater() bool {
 	switch r.StatusCode {
 	case http.StatusRequestTimeout, http.StatusTooEarly, http.StatusTooManyRequests:
@@ -69,8 +63,6 @@ func (c *Client) Post(ctx context.Context, url string, correlationID string, pay
 	return c.Send(ctx, http.MethodPost, url, correlationID, payload, nil)
 }
 
-// Send is Post with a chosen method and extra headers, which override the
-// defaults (Content-Type: application/json).
 func (c *Client) Send(ctx context.Context, method, url, correlationID string, payload []byte, headers map[string]string) (*Response, error) {
 	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(payload))
 	if err != nil {

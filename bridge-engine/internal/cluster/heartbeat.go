@@ -12,40 +12,30 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/producer"
 )
 
-// PipelineStats is one node's view of one pipeline, carried in its
-// heartbeat so any node can answer for the whole cluster.
 type PipelineStats struct {
-	Workers       int     `json:"workers"`
-	Running       int     `json:"running"`
-	Processed     int64   `json:"processed"`
-	Rejected      int64   `json:"rejected"`
-	DeadLettered  int64   `json:"dead_lettered"`
-	Failed        int64   `json:"failed"`
-	Paused        bool    `json:"paused"`
-	Lag           int64   `json:"lag"`
-	CallbackCalls int64   `json:"callback_calls"`
-	AvgCallbackMs float64 `json:"avg_callback_ms"`
-	BreakerOpen   bool    `json:"breaker_open,omitempty"`
-	// LatencyBuckets are the node's cumulative callback latency histogram
-	// counts by upper bound in seconds ("+Inf" last), so the cluster's
-	// percentiles can be worked out from every node's calls.
+	Workers        int               `json:"workers"`
+	Running        int               `json:"running"`
+	Processed      int64             `json:"processed"`
+	Rejected       int64             `json:"rejected"`
+	DeadLettered   int64             `json:"dead_lettered"`
+	Failed         int64             `json:"failed"`
+	Paused         bool              `json:"paused"`
+	Lag            int64             `json:"lag"`
+	CallbackCalls  int64             `json:"callback_calls"`
+	AvgCallbackMs  float64           `json:"avg_callback_ms"`
+	BreakerOpen    bool              `json:"breaker_open,omitempty"`
 	LatencyBuckets map[string]uint64 `json:"latency_buckets,omitempty"`
 }
 
 type heartbeatRecord struct {
-	NodeID    string                   `json:"node_id"`
-	LastSeen  time.Time                `json:"last_seen"`
-	Labels    map[string]string        `json:"labels,omitempty"`
-	Leader    bool                     `json:"leader,omitempty"`
-	Pipelines map[string]PipelineStats `json:"pipelines,omitempty"`
-	// ConfigVersion lets any node see which nodes haven't applied the
-	// latest cluster config yet.
-	ConfigVersion int64 `json:"config_version"`
+	NodeID        string                   `json:"node_id"`
+	LastSeen      time.Time                `json:"last_seen"`
+	Labels        map[string]string        `json:"labels,omitempty"`
+	Leader        bool                     `json:"leader,omitempty"`
+	Pipelines     map[string]PipelineStats `json:"pipelines,omitempty"`
+	ConfigVersion int64                    `json:"config_version"`
 }
 
-// runHeartbeatProducer produces one heartbeat record for this node on every
-// tick until ctx is done, then writes a tombstone for its key so the leader
-// drops this node immediately instead of waiting out node_timeout.
 func runHeartbeatProducer(ctx context.Context, w *producer.Producer, nodeID string, interval time.Duration, snapshot func() heartbeatRecord, log *slog.Logger) {
 	beat := func() {
 		rec := snapshot()
@@ -81,12 +71,6 @@ func runHeartbeatProducer(ctx context.Context, w *producer.Producer, nodeID stri
 	}
 }
 
-// heartbeatView keeps this node's picture of which nodes are alive. A node
-// counts as alive based on when this process last received its heartbeat,
-// by this process's own clock, so clock skew between hosts can't make a
-// live node look dead or a dead one look alive. Only heartbeats produced
-// after this view started are counted; replaying old ones would say nothing
-// about who is alive now.
 type heartbeatView struct {
 	startedAt time.Time
 
@@ -160,15 +144,10 @@ func (v *heartbeatView) liveInfo(timeout time.Duration) map[string]heartbeatReco
 	return out
 }
 
-// warm reports whether the view has been running long enough to have
-// heard from every live node at least once.
 func (v *heartbeatView) warm(heartbeatInterval time.Duration) bool {
 	return time.Since(v.startedAt) >= 2*heartbeatInterval
 }
 
-// liveNodes returns the IDs of every node heard from within timeout, and
-// forgets nodes silent for much longer than that so the map can't grow
-// without bound across restarts.
 func (v *heartbeatView) liveNodes(timeout time.Duration) []string {
 	now := time.Now()
 	cutoff := now.Add(-timeout)

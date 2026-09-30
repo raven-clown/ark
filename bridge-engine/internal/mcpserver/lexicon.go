@@ -1,8 +1,5 @@
 package mcpserver
 
-// Built-in words for recognizing intents in Chinese (simplified and
-// traditional). English and Thai live in intentRules; more languages can be
-// added at runtime with ExtendLexicon (for example from config).
 var builtinLexicon = map[string][]string{
 	"greeting":      {"你好", "您好", "嗨", "哈囉", "哈喽"},
 	"capabilities":  {"你能做什么", "你能做什麼", "能做什么", "能做什麼", "怎么用", "怎麼用", "帮助", "幫助", "功能"},
@@ -45,8 +42,6 @@ func init() {
 	}
 }
 
-// ExtendLexicon adds words that signal an intent, for languages beyond the
-// built-in ones. Unknown intents are ignored.
 func ExtendLexicon(intent string, words ...string) {
 	for i := range intentRules {
 		if intentRules[i].intent == intent {

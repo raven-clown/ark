@@ -2,8 +2,6 @@ import { useEffect, useRef, useState } from 'react'
 
 const reduced = () => typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
 
-// CountUp eases a number from its previous value to the new one, so live
-// figures change smoothly instead of jumping.
 export function CountUp({ value, decimals = 0, duration = 700 }: { value: number; decimals?: number; duration?: number }) {
   const [shown, setShown] = useState(value)
   const from = useRef(value)

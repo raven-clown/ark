@@ -17,9 +17,6 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/producer"
 )
 
-// StateTopic records which dead-letter/reject entries have already been
-// retried or discarded. It's compacted and keyed by "<topic>/<entry id>",
-// so every node (and every restart) agrees on what is still pending.
 const StateTopic = "__ark_dlq_state"
 
 const (
@@ -60,8 +57,6 @@ func (s *StateStore) Handled(topic, id string) (string, bool) {
 	return state, ok
 }
 
-// Mark durably records an entry's state before updating the local view, so
-// a successful return means every node will see it too.
 func (s *StateStore) Mark(ctx context.Context, topic, id, state string) error {
 	key := stateKey(topic, id)
 	if err := s.writer.Send(ctx, []byte(key), []byte(state), nil); err != nil {
@@ -73,10 +68,6 @@ func (s *StateStore) Mark(ctx context.Context, topic, id, state string) error {
 	return nil
 }
 
-// Prune tombstones the state of every entry on topic/partition below
-// firstOffset: those records were already removed by retention, so their
-// state can never matter again. This keeps the state topic and every
-// node's memory from growing forever.
 func (s *StateStore) Prune(ctx context.Context, topic string, partition int, firstOffset int64) (int, error) {
 	prefix := topic + "/" + strconv.Itoa(partition) + ":"
 	s.mu.RLock()

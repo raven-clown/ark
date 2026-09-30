@@ -1,7 +1,3 @@
-// Package llm talks to AI models from several providers through one small
-// interface, so the console's assistant works with whichever model a
-// project chooses: Anthropic, OpenAI, Google Gemini, or any API that
-// speaks the OpenAI chat format.
 package llm
 
 import (
@@ -21,10 +17,7 @@ type Message struct {
 	Text        string
 	ToolCalls   []ToolCall
 	ToolResults []ToolResult
-	// raw is the provider's own form of an assistant turn, replayed as-is
-	// on the next request so provider-specific parts (such as thinking
-	// blocks) survive the tool loop. Only the provider that made it reads it.
-	raw any
+	raw         any
 }
 
 type ToolCall struct {
@@ -57,8 +50,6 @@ type Provider interface {
 	Chat(ctx context.Context, system string, history []Message, tools []Tool) (Reply, error)
 }
 
-// New builds the provider m names. The API key comes from the environment
-// variable m.APIKeyEnv, or the provider's usual variable when unset.
 func New(m *config.AssistantModel, client *http.Client) (Provider, error) {
 	if m == nil {
 		return nil, fmt.Errorf("no assistant model is configured (set assistant.model, or assistant on the project)")

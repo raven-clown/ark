@@ -1,7 +1,3 @@
-// Package tuning holds the engine-wide knobs from the config's tuning
-// section. Code reads them through the getters, so a config reload takes
-// effect the next time a value is used; each getter falls back to the
-// built-in default when the config leaves it at zero.
 package tuning
 
 import (
@@ -10,9 +6,6 @@ import (
 	"time"
 )
 
-// Values is the config's tuning section. Zero means "use the default".
-// Values marked (restart) are read once at startup; the rest apply on the
-// next use after a reload.
 type Values struct {
 	DLQBrowserEntries         int `yaml:"dlq_browser_entries,omitempty"`
 	EventLogEntries           int `yaml:"event_log_entries,omitempty"`
@@ -77,8 +70,6 @@ func HistoryKeep() time.Duration {
 	return time.Duration(or(get().HistoryKeepMinutes, 60)) * time.Minute
 }
 
-// HistoryLongStep and HistoryLongKeep shape the second, coarser tier of
-// metrics history that outlives HistoryKeep.
 func HistoryLongStep() time.Duration { return secs(get().HistoryLongStepSeconds, 60) }
 func HistoryLongKeep() time.Duration {
 	return time.Duration(or(get().HistoryLongKeepHours, 24)) * time.Hour

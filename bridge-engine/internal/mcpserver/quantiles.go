@@ -8,8 +8,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// bucketCounts reads the cumulative callback latency buckets per pipeline
-// (summed across tenants) from the Prometheus registry.
 func bucketCounts(g prometheus.Gatherer) map[string]map[float64]uint64 {
 	out := map[string]map[float64]uint64{}
 	families, err := g.Gather()
@@ -45,8 +43,6 @@ func bucketCounts(g prometheus.Gatherer) map[string]map[float64]uint64 {
 	return out
 }
 
-// LatencyBuckets returns this process's callback latency histogram per
-// pipeline, keyed by upper bound in seconds, for cluster heartbeats.
 func LatencyBuckets() map[string]map[string]uint64 {
 	out := map[string]map[string]uint64{}
 	for pipeline, buckets := range bucketCounts(prometheus.DefaultGatherer) {
@@ -73,9 +69,6 @@ func parseBuckets(in map[string]uint64) map[float64]uint64 {
 	return out
 }
 
-// quantileMs estimates the q quantile, in milliseconds, of the calls made
-// between two cumulative bucket snapshots, interpolating inside a bucket.
-// It returns 0 when there were no calls in between.
 func quantileMs(prev, cur map[float64]uint64, q float64) float64 {
 	bounds := make([]float64, 0, len(cur))
 	for b := range cur {

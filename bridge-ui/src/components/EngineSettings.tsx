@@ -19,8 +19,6 @@ interface SettingsOut {
   editable: boolean
 }
 
-// The tuning struct's JSON keys are its Go field names; map the yaml names
-// the knobs use onto them.
 const FIELD: Record<string, string> = {
   retry_backoff_cap_seconds: 'RetryBackoffCapSeconds',
   retry_after_cap_seconds: 'RetryAfterCapSeconds',

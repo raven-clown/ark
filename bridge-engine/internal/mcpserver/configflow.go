@@ -36,10 +36,6 @@ func applyTool(d Deps, cf *confirmations, action string, scope Scope) mcp.ToolHa
 	}
 }
 
-// previewChange validates a create or update and, if it would change
-// something, returns a confirm token that applies exactly this change.
-// "create_pipeline" refuses to touch an existing pipeline. MCP callers are
-// also held to each pipeline's mcp_access.
 func previewChange(ctx context.Context, d Deps, cf *confirmations, action, user, src string) (applyOut, error) {
 	p, existing, preview := validate(ctx, d, src)
 	if action == "create_pipeline" && existing != nil {
@@ -88,8 +84,6 @@ func previewDelete(d Deps, cf *confirmations, user, name string) (applyOut, erro
 	return applyOut{State: "awaiting_confirmation", Preview: &preview, ConfirmToken: token}, nil
 }
 
-// confirmChange applies a previewed change once, for the caller it was
-// previewed for, and only if the pipeline hasn't changed since.
 func confirmChange(ctx context.Context, d Deps, cf *confirmations, user, token string, accept func(action string) bool, via, scope string) (applyOut, error) {
 	pc, err := cf.take(token, user)
 	if err != nil {

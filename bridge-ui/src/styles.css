@@ -297,7 +297,15 @@ table.list td.mono { font-size: 11.5px; color: var(--t2); white-space: nowrap; }
 @media (max-width: 560px) { .grid2 { grid-template-columns: 1fr; } }
 
 .login { height: 100%; display: grid; place-items: center; padding: 16px; background: radial-gradient(800px 420px at 50% 20%, rgba(52, 211, 153, 0.05), transparent 70%), var(--bg); }
-.login form { width: min(380px, 100%); display: grid; gap: 14px; padding: 28px; border-radius: 16px; background: var(--s1); border: 1px solid var(--line); }
+.login-box { width: min(380px, 100%); display: grid; gap: 12px; padding: 28px; border-radius: 16px; background: var(--s1); border: 1px solid var(--line); }
+.login form { display: grid; gap: 10px; }
+.login .btn.sso { display: flex; align-items: center; justify-content: center; gap: 10px; text-decoration: none; padding: 10px; }
+.login .btn.sso svg { font-size: 17px; }
+.login-or { display: flex; align-items: center; gap: 10px; color: var(--t3); font-size: 11.5px; }
+.login-or::before, .login-or::after { content: ''; flex: 1; height: 1px; background: var(--line); }
+.accounts td .row { flex-wrap: nowrap; }
+.accounts td .row .input { width: 170px; }
+.chip-open { font-size: 11.5px; padding: 3px 9px; border-radius: 999px; background: var(--warn-soft); color: var(--warn); border: 1px solid var(--warn); }
 .login svg.word { height: 26px; width: auto; justify-self: center; margin-bottom: 8px; }
 .login h1 { font-size: 17px; font-weight: 600; margin: 0; text-align: center; }
 .login p { color: var(--t2); margin: 0 0 4px; text-align: center; font-size: 12.5px; }

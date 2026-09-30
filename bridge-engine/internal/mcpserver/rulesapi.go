@@ -12,8 +12,6 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/rules"
 )
 
-// asJSON turns a config value into plain data keyed by its YAML names, so
-// the console sees the same field names as the config file.
 func asJSON(v any) any {
 	b, err := yaml.Marshal(v)
 	if err != nil {
@@ -38,9 +36,6 @@ type ruleTestOut struct {
 	Note     string   `json:"note,omitempty"`
 }
 
-// testRule evaluates a condition against recent messages. Fast path
-// conditions run on the source topic; post-callback conditions run on the
-// destination topic, treating each result as a 200 response body.
 func (c *Console) testRule(r *http.Request, p config.Pipeline, in ruleTestIn) ruleTestOut {
 	out := ruleTestOut{Examples: []string{}}
 	if strings.TrimSpace(in.Condition) == "" {
@@ -111,16 +106,11 @@ func (c *Console) rulesRoutes(mux *http.ServeMux) {
 		writeJSON(w, http.StatusOK, c.testRule(r, p, in))
 	}))
 
-	// rules/preview replaces any of the three rule sets it is given and
-	// returns the usual preview and confirm token; apply with
-	// POST /api/v1/config/confirm.
 	mux.HandleFunc("POST /api/v1/pipelines/{name}/rules/preview", c.withPipeline(func(w http.ResponseWriter, r *http.Request, p config.Pipeline) {
 		var in map[string]json.RawMessage
 		if !readJSON(w, r, &in) {
 			return
 		}
-		// JSON is valid YAML, so decoding through yaml keeps the config's
-		// own field names (destination_override, on_violation, ...).
 		decode := func(key string, into any) error {
 			raw, ok := in[key]
 			if !ok {

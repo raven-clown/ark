@@ -21,10 +21,6 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/tuning"
 )
 
-// Console serves what the ARK console needs over REST: the same overview,
-// diagnosis, tuning, data checks and config preview/confirm flow the MCP
-// assistant uses, plus topology, live tail, restart and scale. Access is
-// decided by the REST API tokens (see api.Guard), not by mcp_access.
 type Console struct {
 	d    Deps
 	cf   *confirmations
@@ -34,8 +30,6 @@ type Console struct {
 	Tap *tap.Hub
 }
 
-// Restarter is implemented by registries that can restart a pipeline's
-// workers on this node.
 type Restarter interface {
 	Restart(name string) (bool, error)
 }
@@ -197,8 +191,10 @@ func (c *Console) Handler() *http.ServeMux {
 	mux.HandleFunc("GET /api/v1/history", c.historyRoute)
 	mux.HandleFunc("GET /api/v1/node", c.nodeRoute)
 	mux.HandleFunc("GET /api/v1/whoami", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]string{"scope": string(callerOf(r).Scope)})
+		caller := callerOf(r)
+		writeJSON(w, http.StatusOK, map[string]any{"scope": string(caller.Scope), "id": caller.ID, "anonymous": caller.Anonymous})
 	})
+	c.accountRoutes(mux)
 
 	mux.HandleFunc("GET /api/v1/topics", func(w http.ResponseWriter, r *http.Request) {
 		topics, err := listTopics(r.Context(), d)
@@ -247,9 +243,6 @@ func (c *Console) Handler() *http.ServeMux {
 		writeJSON(w, http.StatusOK, out)
 	})
 
-	// Changes are two steps, like the MCP config tools: preview returns a
-	// diff and a confirm token, and only confirm with that token applies
-	// it. The token is bound to the caller that previewed it.
 	mux.HandleFunc("POST /api/v1/config/preview", func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			YAML   string `json:"yaml"`
@@ -313,10 +306,6 @@ func (c *Console) audit(r *http.Request, action, pipeline string) {
 	}
 }
 
-// tail streams what crosses a pipeline on this node as Server-Sent Events.
-// Filters: stage (in, callback, out), to (destination, reject, dlq, ...),
-// key, correlation_id, and max_per_sec (default 50) to keep a busy
-// pipeline readable. In cluster mode each node only sees its own workers.
 func (c *Console) tail(w http.ResponseWriter, r *http.Request, p config.Pipeline) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -379,8 +368,6 @@ func (c *Console) tail(w http.ResponseWriter, r *http.Request, p config.Pipeline
 	}
 }
 
-// Topology describes how pipelines connect through topics and targets, so
-// the console can draw chained pipelines as one graph.
 type Topology struct {
 	Nodes []TopologyNode `json:"nodes"`
 	Edges []TopologyEdge `json:"edges"`
@@ -400,8 +387,6 @@ type TopologyEdge struct {
 	Rule string `json:"rule,omitempty"`
 }
 
-// PipelineStats sums a pipeline's workers on this node. The console turns
-// the counters into rates by polling.
 type PipelineStats struct {
 	Enabled       bool    `json:"enabled"`
 	LocalWorkers  int     `json:"local_workers"`
@@ -444,8 +429,6 @@ func pipelineStats(p config.Pipeline, statuses []consumer.Status) *PipelineStats
 	return s
 }
 
-// clusterWide replaces this node's numbers with the whole cluster's, so the
-// canvas shows every node's work and not only the node the console reached.
 func clusterWide(s *PipelineStats, total cluster.PipelineStats) *PipelineStats {
 	s.LocalWorkers, s.Running = total.Workers, total.Running
 	s.Processed, s.Rejected, s.DeadLettered, s.Failed = total.Processed, total.Rejected, total.DeadLettered, total.Failed
@@ -457,8 +440,6 @@ func clusterWide(s *PipelineStats, total cluster.PipelineStats) *PipelineStats {
 	return s
 }
 
-// flowEdges draws a flow pipeline's outputs: every app it calls, every
-// topic and webhook it sends to, and the reject and dead-letter topics.
 func flowEdges(p config.Pipeline, pid string, node func(id, kind, label string), edge func(from, to, role, rule string), topic func(string) string) {
 	outs := map[string]bool{}
 	add := func(to, role, step string) {

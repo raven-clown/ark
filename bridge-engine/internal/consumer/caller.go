@@ -20,9 +20,6 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/tuning"
 )
 
-// caller calls one HTTP target with retries, a circuit breaker and health
-// checks. The fixed path has one for the pipeline's target; a flow has one
-// per call step.
 type caller struct {
 	step    string
 	headers map[string]string
@@ -50,8 +47,6 @@ func newCaller(step string, t config.Target, r config.Retry, cb config.CircuitBr
 	return c
 }
 
-// callOutcome is how a call ended: answered (resp set, neither flag), a
-// reject status, or every attempt used up.
 type callOutcome struct {
 	resp     *callback.Response
 	attempts int
@@ -60,8 +55,6 @@ type callOutcome struct {
 	reason   string
 }
 
-// call posts value until the target answers something final. It returns an
-// error only when ctx ends.
 func (r *Runner) call(ctx context.Context, c *caller, partition int, correlationID string, key, value []byte, log *slog.Logger) (callOutcome, error) {
 	var out callOutcome
 	var lastFailure string
@@ -112,8 +105,6 @@ func (r *Runner) call(ctx context.Context, c *caller, partition int, correlation
 		}
 
 		if err == nil && resp.RetryLater() {
-			// An explicit "come back later" is not a failed attempt: it
-			// neither spends a retry nor sends the message to the DLQ.
 			out.attempts--
 			wait := resp.RetryAfter
 			if wait <= 0 {
@@ -157,8 +148,6 @@ func (r *Runner) call(ctx context.Context, c *caller, partition int, correlation
 	return out, nil
 }
 
-// send makes one attempt, alone or as part of a batch. ok is false when no
-// target endpoint is healthy.
 func (c *caller) send(ctx context.Context, partition int, correlationID string, key, value []byte) (*callback.Response, string, time.Duration, error, bool) {
 	if c.batch != nil {
 		res, err := c.batch.submit(ctx, &batchItem{id: correlationID, key: key, value: value, partition: partition})

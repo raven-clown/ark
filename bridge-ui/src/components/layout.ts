@@ -11,11 +11,6 @@ const PIPE_ROW = 280
 const TOPIC_GAP = 64
 const ROLE_ORDER = ['destination', 'override', 'webhook', 'database', 'reject', 'dead_letter']
 
-// layout places a topology left to right: source topics, then the
-// pipelines reading them, then what they write to, so a chain of pipelines
-// reads as one line. Each pipeline's outputs stay together beside it, in
-// the same order every time, so lines from different pipelines don't cross.
-// Targets sit above their pipeline.
 export function layout(topo: Topology): Map<string, Placed> {
   const nodes = topo.nodes ?? []
   const edges = topo.edges ?? []
@@ -67,8 +62,6 @@ export function layout(topo: Topology): Map<string, Placed> {
     placed.set(p.id, { id: p.id, x: c * COL_W, y })
   }
 
-  // Outputs: one block per pipeline, centred on it, pushed down only if the
-  // block above reaches into it.
   const bottom = new Map<number, number>()
   for (const p of pipelines) {
     const at = placed.get(p.id)!

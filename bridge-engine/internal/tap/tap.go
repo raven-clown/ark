@@ -1,7 +1,3 @@
-// Package tap lets the console watch messages move through a pipeline
-// live. Publishing costs one atomic load while nobody is watching, and a
-// watcher that can't keep up loses records instead of slowing the
-// pipeline down.
 package tap
 
 import (
@@ -79,8 +75,6 @@ func NewHub() *Hub { return &Hub{subs: make(map[string]map[*Sub]struct{})} }
 // Default is the hub the pipelines on this node publish to.
 var Default = NewHub()
 
-// Watching reports whether anyone is tailing pipeline. Callers check it
-// before building a Record so an unwatched pipeline pays nothing.
 func (h *Hub) Watching(pipeline string) bool {
 	if h.watchers.Load() == 0 {
 		return false

@@ -4,9 +4,6 @@ import { api, ApiError, type ApplyOut, type ValidationOut } from '../api'
 import { useT } from '../i18n'
 import { FindingCard } from './Icon'
 
-// ConfigEditor edits one pipeline as YAML with the same two-step flow as
-// the MCP config tools: preview shows the diff and warnings, and only an
-// explicit confirm applies it.
 export function ConfigEditor({ initial, onApplied }: { initial: string; onApplied: () => void }) {
   const t = useT()
   const [yaml, setYaml] = useState(initial)

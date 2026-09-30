@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 	_ "time/tzdata" // IANA zones work even on images without /usr/share/zoneinfo
@@ -26,20 +27,12 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/tuning"
 )
 
-// configReloader re-reads the config file and reconciles the running
-// pipelines to match it via reconcile, which is orchestrator.Manager's own
-// Reconcile in single-node mode, or cluster.Node's ApplyConfig (adjusting
-// each pipeline's Workers to this node's placement share first) when
-// cluster mode is on. It implements api.Reloader, so it also drives the
-// manual POST /api/v1/config/reload endpoint.
 type configReloader struct {
 	path      string
 	reconcile cluster.ReconcileFunc
 	log       *slog.Logger
-	// loaded is told about every config that passed validation, so the MCP
-	// config tools see what's actually applied.
-	loaded  func(*config.Config)
-	sources *source.HTTP
+	loaded    func(*config.Config)
+	sources   *source.HTTP
 }
 
 func (c *configReloader) Reload() error {
@@ -68,10 +61,6 @@ func (c *configReloader) Reload() error {
 	return nil
 }
 
-// watchFile polls the config file's mtime and calls reload whenever it
-// changes, so an operator (or a ConfigMap sync) editing the file on disk
-// takes effect without a restart. A failed reload just logs and keeps the
-// previously-running pipelines untouched.
 func watchFile(ctx context.Context, path string, interval time.Duration, reload *configReloader, log *slog.Logger) {
 	lastMod := time.Time{}
 	if info, err := os.Stat(path); err == nil {
@@ -101,9 +90,6 @@ func watchFile(ctx context.Context, path string, interval time.Duration, reload 
 	}
 }
 
-// clusterRegistry routes pause/resume through the cluster control topic,
-// so a pause made through any node holds on every node and survives
-// restarts. Everything else is served from this node's own Manager.
 type clusterRegistry struct {
 	*orchestrator.Manager
 	node *cluster.Node
@@ -153,8 +139,8 @@ func localStats(mgr *orchestrator.Manager) map[string]cluster.PipelineStats {
 var version = "dev"
 
 func main() {
-	configPath := flag.String("config", "config.yaml", "path to pipelines config file")
-	apiAddr := flag.String("api-addr", ":8080", "address for the REST API")
+	configPath := flag.String("config", envOr("ARK_CONFIG_FILE", "config.yaml"), "path to the config file (ARK_CONFIG_FILE)")
+	apiAddr := flag.String("api-addr", listenAddr(), "address to serve the console, API and MCP on (ARK_LISTEN or ARK_PORT)")
 	flag.Parse()
 
 	level := slog.LevelInfo
@@ -211,8 +197,6 @@ func main() {
 			logger.Error("starting cluster node failed", "error", err)
 			os.Exit(1)
 		}
-		// In cluster mode a reload publishes the file's pipelines to the
-		// cluster; every node, this one included, applies them from there.
 		reconcile = func(pipelines []config.Pipeline) []error {
 			pubCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			defer cancel()
@@ -256,18 +240,32 @@ func main() {
 				logger.Error("publishing projects to the cluster failed", "error", err)
 			}
 		}
-	} else {
+	}
+	apiAuth, mcpAuth, err := authz.FromConfig(cfg.Auth, authz.LoadFromEnv("ARK_API"), mcpserver.LoadTokenStoreFromEnv())
+	if err != nil {
+		logger.Error("setting up sign-in failed", "error", err)
+		os.Exit(1)
+	}
+	var accounts mcpserver.AccountStore
+	if clusterNode == nil {
 		fs := &fileSource{path: *configPath, reload: reload}
 		fs.set(cfg)
-		reload.loaded = fs.set
-		configSource = fs
+		reload.loaded = func(c *config.Config) {
+			fs.set(c)
+			apiAuth.SetUsers(c.Auth.Users)
+			mcpAuth.SetUsers(c.Auth.Users)
+		}
+		configSource, accounts = fs, fs
 	}
 	go watchFile(ctx, *configPath, 5*time.Second, reload, logger)
 
 	rootMux := http.NewServeMux()
-	apiTokens := authz.LoadFromEnv("ARK_API")
-	if !apiTokens.Enabled() {
-		logger.Warn("no ARK_API_*_TOKENS set: the REST API only accepts requests from localhost")
+	apiAuth.Routes(rootMux)
+	switch {
+	case apiAuth.Anonymous != "":
+		logger.Warn("anonymous access is on: anyone who can reach ARK gets this scope without signing in", "scope", apiAuth.Anonymous)
+	case !apiAuth.Configured():
+		logger.Warn("no way of signing in is configured: the REST API only accepts requests from localhost")
 	}
 	var registry api.Registry = mgr
 	if clusterNode != nil {
@@ -284,14 +282,17 @@ func main() {
 		Location:          displayLocation,
 		History:           mcpserver.NewHistory(),
 		Sources:           sources.List,
+		Accounts:          accounts,
 	}
 	consoleDeps := deps
 	consoleDeps.Audit = logger.With("component", "console-audit")
 	console := mcpserver.NewConsole(consoleDeps)
 	go console.RunHistory(ctx)
 	consoleRoutes := console.Handler()
-	rootMux.Handle("/", withConsole(consoleRoutes, api.Guard(apiTokens, consoleRoutes),
-		api.NewServer(registry, reload, clusterNode, apiTokens)))
+	rootMux.Handle("/", route(withConsole(consoleRoutes, api.Guard(apiAuth, consoleRoutes),
+		api.NewServer(registry, reload, clusterNode, apiAuth))))
+	rootMux.HandleFunc("GET /api/v1/auth/info", apiAuth.InfoHandler)
+	rootMux.HandleFunc("POST /api/v1/auth/login", apiAuth.LoginHandler)
 	for intent, words := range cfg.Assistant.Lexicon {
 		mcpserver.ExtendLexicon(intent, words...)
 	}
@@ -301,15 +302,13 @@ func main() {
 	// Each source checks its own token, so ingest stays off the API guard.
 	rootMux.Handle("/ingest/", sources)
 
-	mcpTokens := mcpserver.LoadTokenStoreFromEnv()
-	if mcpTokens.Enabled() {
-		auditLog := logger.With("component", "mcp-audit")
+	if mcpAuth.Configured() {
 		mcpDeps := deps
-		mcpDeps.Audit = auditLog
-		rootMux.Handle("/mcp", mcpserver.NewHTTPHandler(mcpDeps, mcpTokens))
+		mcpDeps.Audit = logger.With("component", "mcp-audit")
+		rootMux.Handle("/mcp", mcpserver.NewHTTPHandler(mcpDeps, mcpAuth))
 		logger.Info("mcp server enabled", "path", "/mcp")
 	} else {
-		logger.Info("mcp server disabled: no ARK_MCP_*_TOKENS set")
+		logger.Info("mcp server disabled: no ARK_MCP_*_TOKENS, auth.oidc, auth.jwt or auth.mcp_anonymous set")
 	}
 
 	apiServer := &http.Server{
@@ -317,13 +316,22 @@ func main() {
 		Handler:           rootMux,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+	serveTLS, err := setupTLS(apiServer, cfg.Auth, filepath.Dir(*configPath))
+	if err != nil {
+		logger.Error("setting up HTTPS failed", "error", err)
+		os.Exit(1)
+	}
 
 	serverDone := make(chan struct{})
 	go func() {
 		defer close(serverDone)
-		logger.Info("starting api server", "addr", *apiAddr)
-		if err := apiServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Error("api server stopped with error", "error", err)
+		logger.Info("serving the console, API and MCP", "addr", *apiAddr, "https", serveTLS)
+		serve := apiServer.ListenAndServe
+		if serveTLS {
+			serve = func() error { return apiServer.ListenAndServeTLS(os.Getenv("ARK_TLS_CERT"), os.Getenv("ARK_TLS_KEY")) }
+		}
+		if err := serve(); err != nil && err != http.ErrServerClosed {
+			logger.Error("server stopped with error", "error", err)
 		}
 	}()
 
@@ -339,9 +347,6 @@ func main() {
 	logger.Info("bridge shut down")
 }
 
-// withConsole sends requests matching one of the console's routes to
-// console and everything else to apiHandler. Both are behind the API token
-// guard.
 func withConsole(routes *http.ServeMux, console, apiHandler http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if _, pattern := routes.Handler(r); pattern != "" {

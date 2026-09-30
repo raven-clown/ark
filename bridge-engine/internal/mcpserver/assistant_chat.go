@@ -26,8 +26,6 @@ const (
 	maxChatSession = 200
 )
 
-// understandPrompt is the first pass: work out what the person means, or
-// ask them, before anything is looked up or changed.
 const understandPrompt = `You are the first step of ARK's assistant. ARK is a Kafka callback bridge: pipelines consume a Kafka topic, call an HTTP endpoint per message, and produce the answer to another topic, with retries, dead-letter and reject topics, data rules and routing rules.
 
 Read the conversation and the person's latest message. Work out precisely what they want, in plain words, naming pipelines, topics, numbers and time ranges they mean. A hint from ARK's own parser is included; use it, but trust the person's words over it.
@@ -72,15 +70,11 @@ type awaitingYes struct {
 	tool, token string
 }
 
-// Short replies that mean yes or no to a previewed change, in the
-// languages the assistant answers in.
 var (
 	yesWords = []string{"yes", "yep", "confirm", "apply", "go ahead", "do it", "ok", "okay", "sure", "ยืนยัน", "ใช่", "ตกลง", "โอเค", "ใช้ได้", "ทำเลย", "จัดไป", "เอาเลย", "确认", "確認", "是的", "好的", "可以", "应用", "套用"}
 	noWords  = []string{"no", "cancel", "stop", "don't", "wait", "ไม่", "ยกเลิก", "อย่า", "รอก่อน", "不", "取消", "别", "別"}
 )
 
-// answersPreview reports whether message is a clear yes (true, true) or no
-// (false, true) to a pending change; anything longer or unclear is neither.
 func answersPreview(message string) (yes, clear bool) {
 	m := strings.ToLower(strings.TrimSpace(message))
 	if m == "" || len([]rune(m)) > 40 {
@@ -106,8 +100,6 @@ func answersPreview(message string) (yes, clear bool) {
 	return false, false
 }
 
-// notePreview remembers or clears a pending change from a config tool's
-// result.
 func (s *chatSession) notePreview(tool, result string, isErr bool) {
 	if tool != "create_pipeline" && tool != "apply_pipeline_config" || isErr {
 		return
@@ -288,10 +280,6 @@ func extractJSON(s string) map[string]string {
 	return out
 }
 
-// Chat answers one message: first it works out what the person means
-// (asking back when something essential is missing), then it looks things
-// up and acts through the same MCP tools any agent uses, within the
-// caller's scope and the project's ai_access.
 func (a *assistant) Chat(ctx context.Context, caller authz.Caller, conversationID, project, message, reply string) (ChatOut, error) {
 	s, id, err := a.session(ctx, conversationID, caller, project)
 	if err != nil {
@@ -306,8 +294,6 @@ func (a *assistant) Chat(ctx context.Context, caller authz.Caller, conversationI
 	}
 	lang := replyLanguage(reply, message)
 
-	// A yes to a previewed change applies it here rather than trusting the
-	// model to pass the confirm token back; a no drops it.
 	if p := s.pending; p != nil {
 		if yes, clear := answersPreview(message); clear {
 			s.pending = nil
@@ -417,9 +403,6 @@ func (a *assistant) applyPending(ctx context.Context, provider llm.Provider, s *
 	return out, nil
 }
 
-// parserWouldAsk reports whether interpret_request also found something the
-// tools can't answer. Small models ask back about things a tool would find,
-// so a question goes to the person only when the parser agrees one is needed.
 func parserWouldAsk(hint string) bool {
 	var h struct {
 		AskTheUser []string `json:"ask_the_user"`
@@ -430,8 +413,6 @@ func parserWouldAsk(hint string) bool {
 	return len(h.AskTheUser) > 0
 }
 
-// languageNames are the languages an answer can be asked for, by code: the
-// console's own languages, plus the scripts scriptOf recognizes.
 var languageNames = map[string]string{
 	"en":      "English",
 	"th":      "Thai",
@@ -442,9 +423,6 @@ var languageNames = map[string]string{
 	"ko":      "Korean",
 }
 
-// replyLanguage picks the language to answer in: the one the person chose in
-// the console, or else the one their message is written in. It returns ""
-// when neither says anything beyond plain English.
 func replyLanguage(chosen, message string) string {
 	if _, ok := languageNames[chosen]; ok {
 		return chosen
@@ -452,10 +430,6 @@ func replyLanguage(chosen, message string) string {
 	return scriptOf(message)
 }
 
-// written reports whether text is in language code's script.
-// written reports whether text reads as the language code: no letters from
-// another language's script, and for languages not written in Latin letters,
-// no English sentence among them. Names, code spans and URLs don't count.
 func written(text, code string) bool {
 	prose := codeOrURL.ReplaceAllString(text, " ")
 	want := code
@@ -496,8 +470,6 @@ func scriptCounts(s string) map[string]int {
 	return out
 }
 
-// longestLatinRun is the most English words in a row, a sign of a sentence
-// left untranslated rather than a product name or a field.
 func longestLatinRun(s string) int {
 	best, run := 0, 0
 	for _, w := range strings.Fields(s) {
@@ -519,8 +491,6 @@ func longestLatinRun(s string) int {
 	return best
 }
 
-// mentionsTools lists the internal tool names an answer mentions; the
-// person can't call them, so they only confuse.
 func mentionsTools(answer string, tools []llm.Tool) []string {
 	var out []string
 	for _, t := range tools {
@@ -531,8 +501,6 @@ func mentionsTools(answer string, tools []llm.Tool) []string {
 	return out
 }
 
-// polish asks the model once to fix an answer that drifted into another
-// language or names internal tools, keeping the original if that fails.
 func polish(ctx context.Context, provider llm.Provider, code, answer string, tools []llm.Tool) string {
 	named := mentionsTools(answer, tools)
 	if (code == "" || written(answer, code)) && len(named) == 0 {
@@ -563,9 +531,6 @@ func rewriteIn(ctx context.Context, provider llm.Provider, code, answer string) 
 	return polish(ctx, provider, code, answer, nil)
 }
 
-// scriptOf names the language of a message when its script makes it plain:
-// th, ja, ko or zh, and "" for Latin script. Small models tend to answer in
-// English after reading English tool results unless they're told.
 func scriptOf(s string) string {
 	var thai, kana, hangul, han int
 	for _, r := range s {
@@ -616,9 +581,7 @@ func (c *Console) assistantRoutes(mux *http.ServeMux) {
 			ConversationID string `json:"conversation_id"`
 			Project        string `json:"project"`
 			Message        string `json:"message"`
-			// Reply is the language to answer in (en, th, zh-Hans, zh-Hant);
-			// empty follows the language of the message.
-			Reply string `json:"reply_language"`
+			Reply          string `json:"reply_language"`
 		}
 		if !readJSON(w, r, &in) {
 			return

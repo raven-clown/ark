@@ -34,10 +34,11 @@ services:
 
   bridge:
     build:
-      context: ./bridge-engine
+      context: .
     ports:
       - "8080:8080"
     environment:
+      ARK_CONFIG_FILE: /var/lib/ark/config.yaml
       # Demo tokens. Change them (or unset them to allow only localhost)
       # before exposing this anywhere.
       ARK_API_ADMIN_TOKENS: ${ARK_API_ADMIN_TOKENS:-demo-admin-token}
@@ -48,10 +49,9 @@ services:
       ARK_PROJECT_DEMO_TOKENS: ${ARK_PROJECT_DEMO_TOKENS:-demo-project-token}
       # Connection string for flow database steps with dsn_env: ARK_DEMO_DB.
       ARK_DEMO_DB: ${ARK_DEMO_DB:-}
-    # The config file is copied into the ark-config volume on first start,
-    # so changes made in the console or through MCP are kept. To start over
-    # from ARK_CONFIG, remove the volume: docker compose down -v
-    entrypoint: ["sh", "-c", "test -f /var/lib/ark/config.yaml || cp /etc/bridge/seed.yaml /var/lib/ark/config.yaml; exec bridge -config /var/lib/ark/config.yaml"]
+    # The demo config is copied into the volume on first start, so console
+    # and MCP changes are kept; docker compose down -v starts over.
+    entrypoint: ["sh", "-c", "test -f /var/lib/ark/config.yaml || cp /etc/bridge/seed.yaml /var/lib/ark/config.yaml; exec ark"]
     volumes:
       - ${ARK_CONFIG:-./bridge-engine/config.demo.yaml}:/etc/bridge/seed.yaml:ro
       - ark-config:/var/lib/ark
@@ -71,16 +71,6 @@ services:
     command: ["chown", "-R", "10001:10001", "/var/lib/ark"]
     volumes:
       - ark-config:/var/lib/ark
-
-  console:
-    build:
-      context: ./bridge-ui
-    depends_on:
-      - bridge
-    ports:
-      - "8088:8088"
-    environment:
-      ARK_ENGINE_URL: http://bridge:8080
 
   demo-echo:
     build:

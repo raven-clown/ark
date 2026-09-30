@@ -21,11 +21,6 @@ import (
 	"github.com/raven-clown/ark/bridge-engine/internal/rules"
 )
 
-// check_data reads real recent messages and looks for what's odd about
-// them: bad JSON, missing or mixed-type fields, values that break the
-// usual format, outliers, missing keys, and data rule violations. It then
-// proposes data_rules that match what the data actually looks like.
-
 type fieldProfile struct {
 	Path       string         `json:"path"`
 	PresentPct float64        `json:"present_pct"`
@@ -69,8 +64,6 @@ var detectors = []struct {
 	{"url", regexp.MustCompile(`^https?://\S+$`).MatchString},
 }
 
-// sampleTopic reads up to n recent messages from topic, spread across its
-// partitions, without joining any consumer group.
 func sampleTopic(ctx context.Context, brokers []string, topic string, n int) ([]kafka.Message, error) {
 	conn, err := kafkaadmin.DialAny(ctx, brokers)
 	if err != nil {
@@ -365,8 +358,6 @@ func checkData(ctx context.Context, d Deps, p config.Pipeline, n int, from strin
 	return out, nil
 }
 
-// suggestRules drafts data_rules from what the sample looks like, starting
-// with on_violation: tag so an operator can watch before rejecting.
 func suggestRules(fields []fieldProfile, objects int) string {
 	if objects == 0 {
 		return ""
@@ -426,8 +417,6 @@ type testMessageOut struct {
 	Explained  string                `json:"explanation"`
 }
 
-// testMessage predicts what the pipeline would do with a message, without
-// sending it anywhere.
 func testMessage(p config.Pipeline, in testMessageIn) (testMessageOut, error) {
 	var out testMessageOut
 	checker, err := datarules.New(p.DataRules)

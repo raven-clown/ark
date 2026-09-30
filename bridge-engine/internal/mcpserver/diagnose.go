@@ -22,8 +22,6 @@ const (
 
 var severityRank = map[string]int{SeverityOK: 0, SeverityInfo: 1, SeverityWarning: 2, SeverityCritical: 3}
 
-// Finding is one thing worth telling an operator: what is happening, why
-// (with the evidence), and what they can do about it.
 type Finding struct {
 	Severity string   `json:"severity"`
 	What     string   `json:"what"`

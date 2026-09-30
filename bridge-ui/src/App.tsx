@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
 
-import { api, ApiError, getToken, setToken, type Health, type Overview, type PipelineConfig } from './api'
+import { api, ApiError, setToken, type Health, type Overview, type PipelineConfig } from './api'
 import { Canvas, type TailFocus } from './components/Canvas'
 import { Icon, type IconName } from './components/Icon'
 import { CountUp } from './components/fx'
-import { Mark, Wordmark } from './components/Logo'
+import { Mark } from './components/Logo'
 import type { Sample } from './components/Metrics'
 import { MetricsView } from './components/Metrics'
 import { ProjectsView } from './components/ProjectsView'
@@ -12,10 +12,10 @@ import { AssistantPanel } from './components/Assistant'
 import { PipelinePanel } from './components/PipelinePanel'
 import { Designer } from './components/Designer'
 import { ClusterView, EventsView, NewPipelineModal, SettingsView, TopicsView } from './components/Views'
+import { SignIn } from './components/SignIn'
 import { detectLang, LangContext, translate, type Key, type Lang } from './i18n'
 
 type View = 'pipelines' | 'projects' | 'metrics' | 'events' | 'cluster' | 'topics' | 'settings'
-
 
 function readPref(key: string, fallback: string) {
   try {
@@ -49,6 +49,8 @@ export function App() {
   const [chatOpen, setChatOpen] = useState(false)
   const [node, setNode] = useState<NodeInfo | null>(null)
   const [scope, setScope] = useState('')
+  const [anon, setAnon] = useState(false)
+  const [who, setWho] = useState('')
   const [io, setIo] = useState({ rate: 0, lag: 0, peak: 0 })
   const [toastMsg, setToastMsg] = useState<{ text: string; error?: boolean } | null>(null)
   const t = (k: Key) => translate(lang, k)
@@ -100,7 +102,10 @@ export function App() {
     const load = async () => {
       try {
         setNode(await api<NodeInfo>('/node'))
-        setScope((await api<{ scope: string }>('/whoami')).scope)
+        const me = await api<{ scope: string; id: string; anonymous: boolean }>('/whoami')
+        setScope(me.scope)
+        setAnon(me.anonymous)
+        setWho(me.id.replace(/^user:/, ''))
         const h = await api<{ pipelines: Record<string, Sample[]> }>('/history?minutes=15')
         let rate = 0
         let lag = 0
@@ -140,7 +145,8 @@ export function App() {
   if (!authed)
     return (
       <LangContext.Provider value={lang}>
-        <Login
+        <SignIn
+          lang={lang}
           onDone={() => {
             setChecking(false)
             loadOverview()
@@ -240,13 +246,18 @@ export function App() {
           <span className="sc hide-md">
             <Clock tz={overview?.timezone ?? 'UTC'} />
           </span>
-          {scope && <span className="sc hide-md">{scope}</span>}
+          {anon && (
+            <span className="chip-open" title={t('auth.openHint')}>
+              {t('auth.open')}
+            </span>
+          )}
+          {scope && <span className="sc hide-md">{who && !anon && who.length < 40 ? `${who} · ${scope}` : scope}</span>}
           <button className="btn primary sm ask-btn" onClick={() => setChatOpen(!chatOpen)}>
             <Icon name="spark" className="" />
             {t('chat.ask')}
           </button>
-          <span className="avatar" title={scope}>
-            {(scope || '?').slice(0, 1).toUpperCase()}
+          <span className="avatar" title={who ? `${who} (${scope})` : scope}>
+            {(who && !anon && who.length < 40 ? who : scope || '?').slice(0, 1).toUpperCase()}
           </span>
         </header>
         <main className="stage-area">
@@ -301,7 +312,7 @@ export function App() {
               timezone={overview?.timezone ?? ''}
               onSignOut={() => {
                 setToken('')
-                setAuthed(false)
+                location.href = '/auth/logout'
               }}
               toast={toast}
             />
@@ -348,44 +359,6 @@ export function App() {
         </div>
       )}
     </LangContext.Provider>
-  )
-}
-
-function Login({ onDone }: { onDone: () => void }) {
-  const [lang] = useState<Lang>(detectLang)
-  const t = (k: Key) => translate(lang, k)
-  const [value, setValue] = useState(getToken())
-  const [error, setError] = useState('')
-  const [busy, setBusy] = useState(false)
-  return (
-    <div className="login">
-      <form
-        onSubmit={async (e) => {
-          e.preventDefault()
-          setBusy(true)
-          setError('')
-          setToken(value.trim())
-          try {
-            await api('/overview')
-            onDone()
-          } catch {
-            setToken('')
-            setError(t('login.bad'))
-          } finally {
-            setBusy(false)
-          }
-        }}
-      >
-        <Wordmark className="word" />
-        <h1>{t('login.title')}</h1>
-        <p>{t('login.hint')}</p>
-        <input className="input mono" type="password" autoComplete="off" placeholder={t('login.token')} value={value} onChange={(e) => setValue(e.target.value)} autoFocus />
-        {error && <p className="err">{error}</p>}
-        <button className="btn primary" disabled={busy || !value.trim()}>
-          {t('login.submit')}
-        </button>
-      </form>
-    </div>
   )
 }
 

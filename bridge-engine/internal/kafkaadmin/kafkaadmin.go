@@ -13,16 +13,10 @@ import (
 	"github.com/segmentio/kafka-go"
 )
 
-// EnsureTopic creates topic if it doesn't exist; an existing topic is left
-// exactly as it is. replicationFactor is capped at the number of brokers so
-// a single-broker dev setup still works with a production default.
 func EnsureTopic(ctx context.Context, brokers []string, topic string, partitions, replicationFactor int) error {
 	return ensureTopic(ctx, brokers, topic, partitions, replicationFactor, nil)
 }
 
-// EnsureCompactedTopic is like EnsureTopic but sets cleanup.policy=compact,
-// for internal topics that hold latest-value-per-key state (cluster
-// heartbeats, placements) rather than an event log.
 func EnsureCompactedTopic(ctx context.Context, brokers []string, topic string, partitions, replicationFactor int) error {
 	return ensureTopic(ctx, brokers, topic, partitions, replicationFactor, []kafka.ConfigEntry{
 		{ConfigName: "cleanup.policy", ConfigValue: "compact"},
@@ -94,8 +88,6 @@ func ensureTopic(ctx context.Context, brokers []string, topic string, partitions
 	return fmt.Errorf("topic %s did not become visible within timeout", topic)
 }
 
-// PartitionCount returns how many partitions topic has, or 0 if it doesn't
-// exist yet.
 func PartitionCount(ctx context.Context, brokers []string, topic string) (int, error) {
 	conn, err := DialAny(ctx, brokers)
 	if err != nil {
@@ -120,10 +112,6 @@ type PartitionLag struct {
 	Lag       int64 `json:"lag"`
 }
 
-// GroupLag reads, from Kafka itself, where group has committed on each of
-// topic's partitions and where each partition ends, so the lag covers the
-// whole group rather than one consumer's view. A partition the group never
-// committed on counts from its first retained offset.
 func GroupLag(ctx context.Context, brokers []string, group, topic string) ([]PartitionLag, error) {
 	n, err := PartitionCount(ctx, brokers, topic)
 	if err != nil || n == 0 {
@@ -172,8 +160,6 @@ func GroupLag(ctx context.Context, brokers []string, group, topic string) ([]Par
 	return out, nil
 }
 
-// DialAny connects to the first reachable broker, so one broker being down
-// doesn't stop ARK from reaching the cluster.
 func DialAny(ctx context.Context, brokers []string) (*kafka.Conn, error) {
 	var errs []error
 	for _, b := range brokers {
@@ -186,9 +172,6 @@ func DialAny(ctx context.Context, brokers []string) (*kafka.Conn, error) {
 	return nil, fmt.Errorf("no broker reachable: %w", errors.Join(errs...))
 }
 
-// WaitReady blocks until a broker answers a metadata request, backing off up
-// to max between tries, so ARK started before Kafka waits for it instead of
-// exiting. It returns early only when ctx ends.
 func WaitReady(ctx context.Context, brokers []string, max time.Duration, log *slog.Logger) error {
 	wait := time.Second
 	for {
@@ -210,8 +193,6 @@ func WaitReady(ctx context.Context, brokers []string, max time.Duration, log *sl
 	}
 }
 
-// DialLeaderAny connects to the leader of topic/partition, looking it up
-// through the first reachable broker.
 func DialLeaderAny(ctx context.Context, brokers []string, topic string, partition int) (*kafka.Conn, error) {
 	var errs []error
 	for _, b := range brokers {

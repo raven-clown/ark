@@ -78,6 +78,35 @@ timezone: UTC
 #   cluster_catch_up_seconds: 10       # (restart)
 #   compacted_idle_seconds: 2
 
+# Signing in. All optional and combinable; every ARK_* variable in the
+# README sets the same thing without this file.
+# auth:
+#   anonymous: viewer              # no sign-in needed, with this access
+#   accounts: true                 # username/password accounts managed in the console
+#   basic: true                    # HTTP Basic for scripts
+#   session_hours: 12
+#   oidc:                          # Entra ID, ADFS, Google, Keycloak, Okta ...
+#     preset: azure
+#     tenant: 00000000-0000-0000-0000-000000000000
+#     client_id: ark
+#     client_secret_env: ARK_OIDC_CLIENT_SECRET
+#     admin: [ARK.Admin]
+#     operator: [ARK.Operator]
+#   saml:
+#     metadata_url: https://adfs.example.com/FederationMetadata/2007-06/FederationMetadata.xml
+#     roles_claim: http://schemas.microsoft.com/ws/2008/06/identity/claims/groups
+#     admin: [ark-admins]
+#   oauth2:
+#     - {name: github, preset: github, client_id: Iv1.abc, client_secret_env: ARK_GITHUB_CLIENT_SECRET, admin: [my-org/platform]}
+#   ldap:
+#     url: ldaps://ad.example.com:636
+#     user_dn: "{username}@example.com"
+#     base_dn: dc=example,dc=com
+#     admin: [ARK Admins]
+#   jwt: {jwks_url: https://auth.example.com/.well-known/jwks.json, issuer: https://auth.example.com, audiences: [ark], admin: [ops]}
+#   header: {preset: oauth2-proxy, trusted_proxies: [10.0.0.0/8], operator: [sre]}
+#   client_cert: {ca_file: /certs/ca.crt, admin: [platform]}
+
 # HTTP sources: POST /ingest/<name> with "Authorization: Bearer <token>"
 # writes the body to topic, answering 202 once Kafka has it.
 # sources:

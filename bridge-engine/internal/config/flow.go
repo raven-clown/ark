@@ -7,15 +7,10 @@ import (
 	"text/template" // nosemgrep: go.lang.security.audit.xss.import-text-template.import-text-template -- builds request bodies for other services, not HTML
 )
 
-// templateStubs lets validation parse templates that use the consumer's
-// functions without running them.
 var templateStubs = template.FuncMap{"json": func(any) string { return "" }, "path": func(any) string { return "" }}
 
 var urlTemplateHost = regexp.MustCompile(`^(https?://[^/?#{]+)[/?]`)
 
-// URLTemplateHost returns the scheme and host of a url template, which must
-// come before its first action so a message can't send the request
-// somewhere else.
 func URLTemplateHost(u string) (string, bool) {
 	m := urlTemplateHost.FindStringSubmatch(u[:strings.Index(u+"{{", "{{")])
 	if m == nil {
@@ -28,55 +23,30 @@ func URLTemplateHost(u string) (string, bool) {
 type StepType string
 
 const (
-	// StepCall posts the message to an HTTP app. Its answer continues on
-	// next (2xx), on_reject (a reject status) or on_failure (retries
-	// used up).
-	StepCall StepType = "call"
-	// StepCondition sends the message down every branch whose condition
-	// holds (match: all) or only the first (match: first, the default),
-	// and to otherwise when none holds.
+	StepCall      StepType = "call"
 	StepCondition StepType = "condition"
-	// StepCheck checks the message against data rules: next when it
-	// passes, on_fail when it breaks one.
-	StepCheck StepType = "data_check"
+	StepCheck     StepType = "data_check"
 	// StepTopic produces the message to a topic and continues on next.
-	StepTopic StepType = "topic"
-	// StepWebhook posts the message to a URL without waiting for an answer
-	// to route on, then continues on next; on_failure when it keeps failing.
-	StepWebhook StepType = "webhook"
-	// StepReject sends the message to a reject topic with a reason, then
-	// carries on to next, if any.
-	StepReject StepType = "reject"
-	// StepDeadLetter sends the message to a dead-letter topic with a reason,
-	// then carries on to next, if any.
+	StepTopic      StepType = "topic"
+	StepWebhook    StepType = "webhook"
+	StepReject     StepType = "reject"
 	StepDeadLetter StepType = "dead_letter"
 	// StepDrop discards the message.
-	StepDrop StepType = "drop"
-	// StepDatabase writes the message as a row, then continues on next;
-	// on_failure when the write keeps failing.
+	StepDrop     StepType = "drop"
 	StepDatabase StepType = "database"
 )
 
-// Database is where a database step writes. Each column's value is a
-// text/template over the message, sent as a query parameter.
 type Database struct {
 	// Driver is postgres, the only one so far.
-	Driver string `yaml:"driver"`
-	// DSNEnv names the environment variable holding the connection
-	// string, so credentials stay out of the config.
-	DSNEnv  string            `yaml:"dsn_env"`
-	Table   string            `yaml:"table"`
-	Columns map[string]string `yaml:"columns"`
-	// UpsertOn makes the insert update the row with the same values in
-	// these columns instead of failing, so a redelivered message doesn't
-	// write twice. It needs a unique index on them.
-	UpsertOn []string `yaml:"upsert_on,omitempty"`
+	Driver   string            `yaml:"driver"`
+	DSNEnv   string            `yaml:"dsn_env"`
+	Table    string            `yaml:"table"`
+	Columns  map[string]string `yaml:"columns"`
+	UpsertOn []string          `yaml:"upsert_on,omitempty"`
 }
 
 var sqlIdent = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,62}$`)
 
-// SQLIdent reports whether name is a plain table or column name, optionally
-// schema-qualified for a table.
 func SQLIdent(name string, qualified bool) bool {
 	parts := []string{name}
 	if qualified {
@@ -125,9 +95,6 @@ func validateDatabase(d *Database) error {
 	return nil
 }
 
-// Flow is a pipeline drawn as steps joined in any shape without loops: every
-// step can lead to several others, and conditions can split the message
-// anywhere. A message is committed only after every path it took is done.
 type Flow struct {
 	Start []string `yaml:"start"`
 	Steps []Step   `yaml:"steps"`
@@ -144,14 +111,9 @@ type Step struct {
 	ID   string   `yaml:"id"`
 	Type StepType `yaml:"type"`
 	Name string   `yaml:"name,omitempty"`
-	// App names the product a step talks to (opensearch, nifi, slack, ...),
-	// for the console to show; it doesn't change what the step does.
 	App  string   `yaml:"app,omitempty"`
 	Next []string `yaml:"next,omitempty"`
 
-	// call and webhook: extra request headers. ${NAME} in a value is
-	// replaced with the environment variable NAME, so secrets stay out of
-	// the config.
 	Headers map[string]string `yaml:"headers,omitempty"`
 
 	// call
@@ -171,18 +133,11 @@ type Step struct {
 	Rules  *DataRules `yaml:"rules,omitempty"`
 	OnFail []string   `yaml:"on_fail,omitempty"`
 
-	// topic, reject and dead_letter; reject and dead_letter fall back to the
-	// pipeline's reject_topic and dead_letter_topic.
 	Topic string `yaml:"topic,omitempty"`
 	// webhook
-	URL    string `yaml:"url,omitempty"`
-	Method string `yaml:"method,omitempty"`
-	// Body is a Go text/template for the request body, reading data,
-	// original, response, reason, key and headers; empty sends the message.
-	Body string `yaml:"body,omitempty"`
-	// Message is a text/template for chat apps: the request body becomes
-	// {"<message_field>": message}, message_field defaulting to "text"
-	// (Slack, Teams) and "content" for Discord.
+	URL          string `yaml:"url,omitempty"`
+	Method       string `yaml:"method,omitempty"`
+	Body         string `yaml:"body,omitempty"`
 	Message      string `yaml:"message,omitempty"`
 	MessageField string `yaml:"message_field,omitempty"`
 	// topic: brokers of another Kafka cluster to send to instead of this one.
@@ -458,8 +413,6 @@ func findCycle(f *Flow, byID map[string]Step) string {
 	return ""
 }
 
-// validateFlowPipeline checks the pipeline-wide settings a flow still uses,
-// then the flow itself.
 func validateFlowPipeline(p Pipeline) error {
 	if p.ConsumerGroup == "" {
 		return fmt.Errorf("pipeline %q: consumer_group is required to enable this pipeline", p.Name)

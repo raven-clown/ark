@@ -8,6 +8,8 @@ bridge-engine/bin/
 # Node
 node_modules/
 bridge-ui/dist/
+bridge-engine/internal/webui/dist/*
+!bridge-engine/internal/webui/dist/.gitkeep
 
 # IDE
 .vscode/

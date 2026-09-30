@@ -1,7 +1,3 @@
-// Package source brings data into Kafka from outside. Pipelines only ever
-// read Kafka, whose committed offsets are what makes delivery safe, so a
-// source's whole job is to get a message durably onto a topic and tell the
-// sender whether that happened.
 package source
 
 import (
@@ -32,8 +28,6 @@ const (
 	SourceHeader = "X-Ark-Source"
 )
 
-// Source is where messages come from. HTTP is the implementation that
-// isn't Kafka; Kafka topics are read by pipelines directly.
 type Source interface {
 	Name() string
 	Topic() string
@@ -68,8 +62,6 @@ func NewHTTP(brokers []string, replicationFactor int, log *slog.Logger) *HTTP {
 		}}
 }
 
-// Set replaces the served sources with list, creating their topics.
-// Sources that are gone stop answering; the rest keep their producers.
 func (h *HTTP) Set(ctx context.Context, list []config.Source) error {
 	next := map[string]*httpSource{}
 	var errs []error
@@ -185,8 +177,6 @@ func (h *HTTP) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.rules != nil {
 		if vs := s.rules.Check(key, nil, body); len(vs) > 0 {
-			// Bad data is answered here, while the sender can still fix
-			// it, instead of travelling to a reject topic nobody watches.
 			reply(http.StatusUnprocessableEntity, answer{Error: datarules.Summary(vs), Violations: vs}, "rejected")
 			return
 		}

@@ -30,7 +30,7 @@ This starts a single-node Kafka broker, the bridge engine wired to
 that echoes what it receives (400 for `"invalid": true`, 500 for
 `"fail": true`). The README's Quick start walks through it. To run your
 own config, set `ARK_CONFIG=path/to/config.yaml`. The console runs on
-[http://localhost:8088](http://localhost:8088) (sign in with
+[http://localhost:8080](http://localhost:8080) (sign in with
 `demo-admin-token`); see [bridge-ui/README.md](bridge-ui/README.md) to
 work on it with hot reload.
 

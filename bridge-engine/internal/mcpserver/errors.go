@@ -5,8 +5,6 @@ import (
 	"time"
 )
 
-// knownError explains one family of errors ARK or Kafka can produce, in
-// terms an operator can act on.
 type knownError struct {
 	Match     []string `json:"-"`
 	Title     string   `json:"title"`
