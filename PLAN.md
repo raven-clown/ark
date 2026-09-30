@@ -13,7 +13,9 @@ top of §6; all of it, including T1 (batched calls), is fixed and
 verified live. Phase 7 (HTTP source, sinks, database step) is done too.
 CI (`.github/workflows/ci.yml`) runs build/vet/test, govulncheck,
 gosec, Semgrep, OSV-Scanner, Gitleaks, and a Trivy image scan on
-every PR.
+every PR. `release-images.yml` builds the engine and console images for
+amd64 and arm64 on every release tag, pushes them to
+`ghcr.io/raven-clown/ark-bridge` and `ark-console`, and scans them.
 
 ---
 

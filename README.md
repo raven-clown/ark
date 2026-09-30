@@ -126,6 +126,29 @@ letters, or change its rules.
 > `ARK_API_ADMIN_TOKENS` and `ARK_MCP_ADMIN_TOKENS` before running it
 > anywhere else, and point `ARK_CONFIG` at your own config file.
 
+### Published images
+
+Every release is published to GitHub Container Registry for amd64 and
+arm64, tagged with its version (`0.11.1`), its minor line (`0.11`) and
+`latest`:
+
+```bash
+docker pull ghcr.io/raven-clown/ark-bridge:0.11
+docker pull ghcr.io/raven-clown/ark-console:0.11
+```
+
+```bash
+docker run -d --name ark -p 8080:8080 \
+  -v "$PWD/config.yaml:/etc/bridge/config.yaml:ro" \
+  -e ARK_API_ADMIN_TOKENS=change-me \
+  ghcr.io/raven-clown/ark-bridge:0.11
+docker run -d --name ark-console -p 8088:8088 \
+  -e ARK_ENGINE_URL=http://ark:8080 --link ark \
+  ghcr.io/raven-clown/ark-console:0.11
+```
+
+The engine image also holds `demo-echo` (`--entrypoint demo-echo`).
+
 ## ARK Console
 
 One place to see and run everything, with no Grafana or Kafka tooling on
