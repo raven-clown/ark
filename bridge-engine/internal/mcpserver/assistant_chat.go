@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -351,7 +352,7 @@ func (a *assistant) Chat(ctx context.Context, caller authz.Caller, conversationI
 	if out.Understood != "" {
 		system += "\nWhat the person wants, restated: " + out.Understood
 	}
-	system += "\nThe person sees your answer as Markdown. They can't see tool results, so say what you found."
+	system += "\nThe person sees your answer as Markdown. They can't see tool results, so say what you found. They can't call tools either, so don't name them; say what you checked or did in plain words."
 	system += "\nEvery time from the tools is ISO 8601 in " + a.d.loc().String() + ", the engine's timezone. Quote times exactly as given, in that zone and format; never convert them to another zone."
 	if lang != "" {
 		system += "\nWrite your whole answer in " + languageNames[lang] + ", even though the tool results are in English."
@@ -371,11 +372,8 @@ func (a *assistant) Chat(ctx context.Context, caller authz.Caller, conversationI
 			return out, err
 		}
 		if reply.Done || len(reply.Message.ToolCalls) == 0 {
-			out.Answer = strings.TrimSpace(reply.Message.Text)
-			if lang != "" && !written(out.Answer, lang) {
-				out.Answer = rewriteIn(ctx, provider, lang, out.Answer)
-				reply.Message.Text = out.Answer
-			}
+			out.Answer = polish(ctx, provider, lang, strings.TrimSpace(reply.Message.Text), s.tools)
+			reply.Message.Text = out.Answer
 			s.history = append(s.history, reply.Message)
 			return out, nil
 		}
@@ -414,10 +412,7 @@ func (a *assistant) applyPending(ctx context.Context, provider llm.Provider, s *
 	if err != nil {
 		return out, err
 	}
-	out.Answer = strings.TrimSpace(res.Message.Text)
-	if lang != "" && !written(out.Answer, lang) {
-		out.Answer = rewriteIn(ctx, provider, lang, out.Answer)
-	}
+	out.Answer = polish(ctx, provider, lang, strings.TrimSpace(res.Message.Text), s.tools)
 	s.history = append(s.history, llm.Message{Role: "user", Text: message}, llm.Message{Role: "assistant", Text: out.Answer})
 	return out, nil
 }
@@ -458,7 +453,11 @@ func replyLanguage(chosen, message string) string {
 }
 
 // written reports whether text is in language code's script.
+// written reports whether text reads as the language code: no letters from
+// another language's script, and for languages not written in Latin letters,
+// no English sentence among them. Names, code spans and URLs don't count.
 func written(text, code string) bool {
+	prose := codeOrURL.ReplaceAllString(text, " ")
 	want := code
 	switch code {
 	case "en":
@@ -466,21 +465,102 @@ func written(text, code string) bool {
 	case "zh-Hans", "zh-Hant":
 		want = "zh"
 	}
-	return scriptOf(text) == want
+	counts := scriptCounts(prose)
+	for script, n := range counts {
+		if n > 0 && script != want {
+			return false
+		}
+	}
+	if want != "" && counts[want] == 0 {
+		return false
+	}
+	return want == "" || longestLatinRun(prose) < 7
 }
 
-// rewriteIn asks the model once to put an answer that drifted into another
-// language into the one asked for, keeping the original if that fails.
-func rewriteIn(ctx context.Context, provider llm.Provider, code, answer string) string {
-	prompt := "Rewrite the user's text in " + languageNames[code] + ". Keep every name, number, time, topic, URL, Markdown mark and code span exactly as it is. Reply with only the rewritten text."
+var codeOrURL = regexp.MustCompile("(?s)```.*?```|`[^`]*`|https?://\\S+")
+
+func scriptCounts(s string) map[string]int {
+	out := map[string]int{}
+	for _, r := range s {
+		switch {
+		case unicode.Is(unicode.Thai, r):
+			out["th"]++
+		case unicode.In(r, unicode.Hiragana, unicode.Katakana):
+			out["ja"]++
+		case unicode.Is(unicode.Hangul, r):
+			out["ko"]++
+		case unicode.Is(unicode.Han, r):
+			out["zh"]++
+		}
+	}
+	return out
+}
+
+// longestLatinRun is the most English words in a row, a sign of a sentence
+// left untranslated rather than a product name or a field.
+func longestLatinRun(s string) int {
+	best, run := 0, 0
+	for _, w := range strings.Fields(s) {
+		w = strings.Trim(w, ".,:;!?()[]*\"'“”-—")
+		latin := w != ""
+		for _, r := range w {
+			if !(r < utf8.RuneSelf && (unicode.IsLetter(r) || r == '\'' || r == '-')) {
+				latin = false
+				break
+			}
+		}
+		if latin {
+			run++
+			best = max(best, run)
+		} else if w != "" {
+			run = 0
+		}
+	}
+	return best
+}
+
+// mentionsTools lists the internal tool names an answer mentions; the
+// person can't call them, so they only confuse.
+func mentionsTools(answer string, tools []llm.Tool) []string {
+	var out []string
+	for _, t := range tools {
+		if strings.Contains(answer, t.Name) {
+			out = append(out, t.Name)
+		}
+	}
+	return out
+}
+
+// polish asks the model once to fix an answer that drifted into another
+// language or names internal tools, keeping the original if that fails.
+func polish(ctx context.Context, provider llm.Provider, code, answer string, tools []llm.Tool) string {
+	named := mentionsTools(answer, tools)
+	if (code == "" || written(answer, code)) && len(named) == 0 {
+		return answer
+	}
+	prompt := "Rewrite the user's text"
+	if code != "" {
+		prompt += " entirely in " + languageNames[code] + ", leaving no sentence in another language"
+	}
+	prompt += ". Keep every name, number, time, unit, topic, URL, Markdown mark and code span exactly as it is."
+	if len(named) > 0 {
+		prompt += " These are internal tool names the reader can't use: " + strings.Join(named, ", ") + ". Replace each mention with what it does in plain words, or drop it."
+	}
+	prompt += " Reply with only the rewritten text."
 	r, err := provider.Chat(ctx, prompt, []llm.Message{{Role: "user", Text: answer}}, nil)
 	if err != nil {
 		return answer
 	}
-	if t := strings.TrimSpace(r.Message.Text); t != "" && written(t, code) {
-		return t
+	t := strings.TrimSpace(r.Message.Text)
+	if t == "" || (code != "" && !written(t, code) && written(answer, code)) {
+		return answer
 	}
-	return answer
+	return t
+}
+
+// rewriteIn is polish for language only.
+func rewriteIn(ctx context.Context, provider llm.Provider, code, answer string) string {
+	return polish(ctx, provider, code, answer, nil)
 }
 
 // scriptOf names the language of a message when its script makes it plain:

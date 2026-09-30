@@ -29,6 +29,7 @@ type metricsSummary struct {
 
 type metricsOut struct {
 	Of           string         `json:"of"`
+	Units        string         `json:"units"`
 	Timezone     string         `json:"timezone"`
 	From         string         `json:"from"`
 	To           string         `json:"to"`
@@ -67,7 +68,7 @@ func getMetrics(d Deps, in metricsIn) (metricsOut, error) {
 	if !from.Before(to) {
 		return metricsOut{}, fmt.Errorf("from must be before to")
 	}
-	out := metricsOut{Timezone: d.loc().String()}
+	out := metricsOut{Timezone: d.loc().String(), Units: "*_per_sec are messages per second; *_ms and avg_callback_ms are milliseconds, not seconds; lag is messages"}
 	if from.Before(oldest) {
 		from = oldest
 		out.Note = fmt.Sprintf("history only goes back %s, so the range starts there", tuning.HistoryLongKeep())

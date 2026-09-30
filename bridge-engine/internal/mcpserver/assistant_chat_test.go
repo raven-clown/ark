@@ -206,6 +206,39 @@ func TestAssistantAppliesAPreviewWhenThePersonSaysYes(t *testing.T) {
 	}
 }
 
+func TestWrittenCatchesMixedLanguages(t *testing.T) {
+	cases := []struct {
+		text, lang string
+		want       bool
+	}{
+		{"orders มี dead letter 200 รายการ ส่วน `retry.max_attempts` เป็น 3", "th", true},
+		{"การอัปเดตพร้อมแล้ว Here's what's changing: the workers go from three to two now", "th", false},
+		{"แนะนำให้ตั้งค่า health check 建議设置", "th", false},
+		{"Everything is healthy.", "en", true},
+		{"Everything is healthy. ทุกอย่างปกติ", "en", false},
+		{"管道 orders 运行正常，延迟 12 ms。", "zh-Hans", true},
+		{"see https://example.com/a/very/long/path/with/many/words/in/it for details ดูเพิ่มเติม", "th", true},
+	}
+	for _, c := range cases {
+		if got := written(c.text, c.lang); got != c.want {
+			t.Errorf("written(%q, %s) = %v, want %v", c.text, c.lang, got, c.want)
+		}
+	}
+}
+
+func TestPolishRemovesToolNamesAndDrift(t *testing.T) {
+	fake := &scripted{replies: []llm.Reply{text("เปลี่ยนแล้ว ลองตรวจสถานะ pipeline อีกครั้งในไม่กี่วินาที")}}
+	tools := []llm.Tool{{Name: "diagnose_pipeline"}, {Name: "get_overview"}}
+	got := polish(context.Background(), fake, "th", "เปลี่ยนแล้ว เรียกใช้ diagnose_pipeline เพื่อตรวจ", tools)
+	if got != "เปลี่ยนแล้ว ลองตรวจสถานะ pipeline อีกครั้งในไม่กี่วินาที" || !strings.Contains(fake.systems[0], "diagnose_pipeline") {
+		t.Fatalf("got %q, prompt %q", got, fake.systems)
+	}
+	clean := &scripted{}
+	if got := polish(context.Background(), clean, "th", "ทุกอย่างปกติ", tools); got != "ทุกอย่างปกติ" || len(clean.systems) != 0 {
+		t.Fatal("a clean answer must not be rewritten")
+	}
+}
+
 func TestAnswersPreviewOnlyTakesAClearReply(t *testing.T) {
 	cases := map[string][2]bool{
 		"ยืนยัน": {true, true}, "yes please": {true, true}, "确认": {true, true}, "OK": {true, true},
