@@ -9,6 +9,7 @@ import {
   useReactFlow,
   type Connection,
   type Edge,
+  type EdgeChange,
   type Node,
   type NodeChange,
   type NodeProps,
@@ -892,6 +893,7 @@ function Board({ onClose, onApplied, onSimple, existing }: DesignerProps) {
   const [pos, setPos] = useState<Record<string, { x: number; y: number }>>(() => layout(initial))
   const [dims, setDims] = useState<Record<string, { width: number; height: number }>>({})
   const [sel, setSel] = useState<string | null>(null)
+  const [selEdges, setSelEdges] = useState<string[]>([])
   const [yaml, setYaml] = useState<string | null>(null)
 
   // A new pipeline's topics follow its name until someone types their own.
@@ -917,12 +919,13 @@ function Board({ onClose, onApplied, onSimple, existing }: DesignerProps) {
       sourceHandle: handle,
       target,
       type: 'smoothstep',
-      style: { stroke: edgeColor(handle === 'start' ? 'next' : handle), strokeWidth: 1.6 },
+      selected: selEdges.includes(id),
+      style: { stroke: edgeColor(handle === 'start' ? 'next' : handle), strokeWidth: selEdges.includes(id) ? 3 : 1.6 },
     })
     const out: Edge[] = flow.start.map((id) => line(`${SOURCE}:start>${id}`, SOURCE, 'start', id))
     for (const s of flow.steps) for (const h of handlesOf(s)) for (const to of outputsAt(s, h.key)) out.push(line(`${s.id}:${h.key}>${to}`, s.id, h.key, to))
     return out
-  }, [flow])
+  }, [flow, selEdges])
 
   const connect = (c: Connection) => {
     const from = c.source
@@ -1073,7 +1076,13 @@ function Board({ onClose, onApplied, onSimple, existing }: DesignerProps) {
             for (const c of ch) if (c.type === 'remove' && c.id !== SOURCE) removeStep(c.id)
           }}
           onConnect={connect}
-          onEdgesDelete={removeEdges}
+          onEdgesChange={(ch: EdgeChange[]) =>
+            setSelEdges((cur) => ch.reduce((acc, c) => (c.type !== 'select' ? acc : c.selected ? [...acc.filter((x) => x !== c.id), c.id] : acc.filter((x) => x !== c.id)), cur))
+          }
+          onEdgesDelete={(gone) => {
+            removeEdges(gone)
+            setSelEdges([])
+          }}
           onEdgeDoubleClick={(_, e) => removeEdges([e])}
           onNodeClick={(_, n) => setSel(n.id)}
           onPaneClick={() => setSel(null)}
